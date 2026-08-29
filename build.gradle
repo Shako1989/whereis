@@ -1,0 +1,92 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.13'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'az.technest'
+version = '0.1.0-SNAPSHOT'
+description = 'whereis — remember where you put your things'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+// MinIO SDK requires OkHttp >= 4.12; keep any BOM-managed pin from downgrading it.
+ext['okhttp3.version'] = '4.12.0'
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
+    runtimeOnly 'org.postgresql:postgresql'
+
+    implementation 'io.minio:minio:8.5.17'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.13'
+    implementation 'org.mapstruct:mapstruct:1.6.3'
+    implementation 'net.logstash.logback:logstash-logback-encoder:8.1'
+
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
+    annotationProcessor 'org.mapstruct:mapstruct-processor:1.6.3'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.security:spring-security-test'
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
+    testImplementation 'org.testcontainers:minio'
+    testImplementation 'org.awaitility:awaitility'
+    testImplementation 'com.tngtech.archunit:archunit-junit5:1.3.0'
+    testCompileOnly 'org.projectlombok:lombok'
+    testAnnotationProcessor 'org.projectlombok:lombok'
+    testAnnotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
+    testAnnotationProcessor 'org.mapstruct:mapstruct-processor:1.6.3'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += [
+            '-Amapstruct.defaultComponentModel=spring',
+            '-Amapstruct.unmappedTargetPolicy=ERROR',
+            '-parameters'
+    ]
+}
+
+// Unit tests: always runnable, no Docker required.
+tasks.named('test') {
+    useJUnitPlatform {
+        excludeTags 'integration'
+    }
+    jvmArgs '-XX:+EnableDynamicAgentLoading'
+}
+
+// Integration tests: Testcontainers-based, require a running Docker daemon.
+tasks.register('integrationTest', Test) {
+    description = 'Runs Testcontainers-based integration tests (requires Docker).'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'integration'
+    }
+    jvmArgs '-XX:+EnableDynamicAgentLoading'
+    // Container image overrides for networks where Docker Hub is blocked (registry mirror).
+    ['it.postgres.image', 'it.minio.image'].each { prop ->
+        if (System.getProperty(prop) != null) {
+            systemProperty prop, System.getProperty(prop)
+        }
+    }
+    shouldRunAfter tasks.named('test')
+}

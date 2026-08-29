@@ -1,0 +1,76 @@
+spring:
+  application:
+    name: whereis
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/whereis}
+    username: ${DB_USERNAME:whereis}
+    password: ${DB_PASSWORD:whereis}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    connect-retries: 10
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
+  data:
+    web:
+      pageable:
+        max-page-size: 100
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+security:
+  jwt:
+    # Must be at least 32 bytes; validated at startup.
+    secret: ${JWT_SECRET:}
+    access-ttl: ${JWT_ACCESS_TTL:15m}
+    refresh-ttl: ${JWT_REFRESH_TTL:30d}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+
+minio:
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  # Endpoint reachable by browsers for presigned URLs; falls back to `endpoint` when blank.
+  external-endpoint: ${MINIO_EXTERNAL_ENDPOINT:}
+  access-key: ${MINIO_ACCESS_KEY:}
+  secret-key: ${MINIO_SECRET_KEY:}
+  bucket: ${MINIO_BUCKET:item-images}
+  presign-ttl: ${MINIO_PRESIGN_TTL:10m}
+
+storage:
+  janitor:
+    delay: ${STORAGE_JANITOR_DELAY:PT60S}
+
+ai:
+  provider: ${AI_PROVIDER:mock}
+  base-url: ${AI_BASE_URL:https://api.openai.com/v1}
+  api-key: ${AI_API_KEY:}
+  model: ${AI_MODEL:gpt-4o-mini}
+  temperature: ${AI_TEMPERATURE:0.0}
+  timeout: ${AI_TIMEOUT:30s}
+  max-output-tokens: ${AI_MAX_OUTPUT_TOKENS:800}

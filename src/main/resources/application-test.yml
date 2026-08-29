@@ -1,0 +1,11 @@
+# Used by integration tests; datasource and MinIO endpoints are injected by Testcontainers.
+security:
+  jwt:
+    secret: integration-test-secret-0123456789abcdefghij
+
+ai:
+  provider: mock
+
+storage:
+  janitor:
+    delay: PT2S

@@ -1,0 +1,19 @@
+# Local development against `docker compose up postgres minio`.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:${POSTGRES_PORT:5432}/whereis
+    username: whereis
+    password: whereis
+
+security:
+  jwt:
+    secret: ${JWT_SECRET:local-dev-only-secret-0123456789abcdefghij}
+
+minio:
+  endpoint: http://localhost:${MINIO_PORT:9000}
+  access-key: ${MINIO_ACCESS_KEY:minioadmin}
+  secret-key: ${MINIO_SECRET_KEY:minioadmin}
+
+logging:
+  level:
+    az.technest.whereis: DEBUG
