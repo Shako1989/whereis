@@ -1,0 +1,43 @@
+# Append these two vhosts to autoparts-api/deploy/Caddyfile, then add
+#   WHEREIS_API_HOST: ${WHEREIS_API_HOST}
+#   WHEREIS_MEDIA_HOST: ${WHEREIS_MEDIA_HOST}
+# to that stack's `caddy` service `environment:` block and define both in its .env.
+# Reload without downtime:
+#   docker exec autoparts-caddy caddy reload --config /etc/caddy/Caddyfile
+
+# ---- whereis API ----
+{$WHEREIS_API_HOST} {
+    encode zstd gzip
+    reverse_proxy whereis-api:8080 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+    }
+}
+
+# ---- whereis item photos ----
+#
+# Unlike the BakuParts cdn vhost, this bucket is PRIVATE and there is no anonymous
+# read. Every object is fetched through a presigned GET (10 min TTL) minted by the
+# API, so MinIO validates the SigV4 signature on each request and Caddy needs no
+# authorization logic of its own.
+#
+# GET/HEAD only: uploads go through the API's multipart endpoint, never a presigned
+# PUT, so there is no write path to expose here.
+#
+# No CORS block: the client is native Android and sends no Origin. Add one only if
+# a browser client is introduced.
+{$WHEREIS_MEDIA_HOST} {
+    encode zstd gzip
+
+    @read method GET HEAD
+    handle @read {
+        reverse_proxy minio:9000 {
+            # SigV4 signs the Host header. MinIO must see the same public hostname
+            # the presigner used, not the docker-internal minio:9000 — otherwise
+            # every image 403s with SignatureDoesNotMatch.
+            header_up Host {host}
+        }
+    }
+
+    respond 405
+}

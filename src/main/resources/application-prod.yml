@@ -1,0 +1,32 @@
+# Production profile. Activate together with `json` for structured logs:
+#   SPRING_PROFILES_ACTIVE=prod,json
+spring:
+  datasource:
+    hikari:
+      # This app shares a PostgreSQL instance with other services on the box,
+      # so keep the connection budget modest rather than taking the default 10.
+      maximum-pool-size: ${DB_POOL_SIZE:8}
+      minimum-idle: 2
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+server:
+  # Behind Caddy: trust X-Forwarded-* so the app knows the request arrived over
+  # HTTPS and logs the real client IP instead of the proxy's.
+  forward-headers-strategy: framework
+  shutdown: graceful
+
+springdoc:
+  # Closes the unauthenticated /v3/api-docs + /swagger-ui surface. SecurityConfig
+  # reads this same flag, so its permitAll matcher disappears along with it.
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+logging:
+  level:
+    root: INFO
+    # Never DEBUG in prod: assistant messages and tokens are only ever logged at DEBUG,
+    # and they must not reach a production log.
+    az.technest.whereis: INFO

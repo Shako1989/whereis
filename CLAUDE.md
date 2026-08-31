@@ -6,7 +6,16 @@ Flyway, MinIO, JWT (Nimbus/oauth2-resource-server), package-by-feature under `az
 **Before implementing, reviewing, or planning anything here, load the `whereis-spec` skill** —
 it holds the business rules, locked architecture decisions, database invariants, AI-safety
 pipeline, and the review-confirmed guardrails that must not regress. Project agents live in
-`.claude/agents/` (senior-java-backend-developer, senior-devops-engineer, senior-qa-tester).
+`.claude/agents/` (senior-java-backend-developer, senior-devops-engineer, senior-qa-tester,
+senior-android-developer).
+
+## Mobile clients
+
+The Android app lives in its own repo at `/Users/shakirg/Projects/whereis-android` (a sibling of
+this directory — never inside `src/`). It is built against `docs/ANDROID_APP_PROMPT.md` — the
+authoritative client contract (API shapes, client-side rules derived from the backend, screens,
+definition of done). Use the `senior-android-developer` agent for it. API gaps found from the client
+go in `docs/BACKEND_REQUESTS.md`; the app never dictates a backend change unilaterally.
 
 ## Commands
 

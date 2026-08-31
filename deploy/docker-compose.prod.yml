@@ -1,0 +1,83 @@
+# whereis production stack — Hetzner VM, co-tenant of the AutoParts/BakuParts stack.
+#
+# This file deliberately defines ONE service. PostgreSQL, MinIO and Caddy are
+# already running on the box from autoparts-api/deploy/docker-compose.prod.yml,
+# and whereis reuses all three:
+#   * postgres  -> its own `whereis` database + role (see README step 2)
+#   * minio     -> its own private bucket + scoped user (README step 3)
+#   * caddy     -> two extra vhosts (README step 4)
+#
+# There is no `depends_on`: Compose cannot depend across projects. The app tolerates
+# a not-yet-ready database via `spring.flyway.connect-retries: 10` plus the restart
+# policy below.
+#
+# Usage (on the VM, from this directory):
+#   cp .env.example .env && nano .env
+#   docker compose -f docker-compose.prod.yml --env-file .env build
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+
+name: whereis
+
+services:
+  whereis-api:
+    image: whereis-api:${WHEREIS_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: whereis-api
+    restart: unless-stopped
+
+    # REQUIRED, not a tuning knob. The image sets -XX:MaxRAMPercentage=75, which
+    # without a cgroup limit is 75% of TOTAL HOST RAM — on a 4GB CX22 that is ~3GB
+    # of heap for this JVM alone and would OOM the box, taking BakuParts with it.
+    # This cap is what that percentage resolves against.
+    mem_limit: ${WHEREIS_MEM_LIMIT:-768m}
+
+    # No `ports:` — the only way in is Caddy, over the shared network.
+    networks:
+      - shared
+
+    environment:
+      SPRING_PROFILES_ACTIVE: prod,json
+
+      DB_URL: jdbc:postgresql://postgres:5432/${WHEREIS_DB_NAME:-whereis}
+      DB_USERNAME: ${WHEREIS_DB_USER:-whereis}
+      DB_PASSWORD: ${WHEREIS_DB_PASSWORD:?set WHEREIS_DB_PASSWORD in .env}
+
+      JWT_SECRET: ${WHEREIS_JWT_SECRET:?set WHEREIS_JWT_SECRET in .env (>= 32 bytes)}
+      JWT_ACCESS_TTL: ${WHEREIS_JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${WHEREIS_JWT_REFRESH_TTL:-30d}
+
+      # Internal endpoint for SDK operations (upload/delete/head).
+      MINIO_ENDPOINT: http://minio:9000
+      # Public endpoint baked into presigned GET URLs handed to the Android app.
+      # SigV4 signs the Host header, so this MUST match the Caddy vhost exactly.
+      MINIO_EXTERNAL_ENDPOINT: https://${WHEREIS_MEDIA_HOST:?set WHEREIS_MEDIA_HOST in .env}
+      MINIO_ACCESS_KEY: ${WHEREIS_MINIO_ACCESS_KEY:?set WHEREIS_MINIO_ACCESS_KEY in .env}
+      MINIO_SECRET_KEY: ${WHEREIS_MINIO_SECRET_KEY:?set WHEREIS_MINIO_SECRET_KEY in .env}
+      MINIO_BUCKET: ${WHEREIS_MINIO_BUCKET:-whereis-item-images}
+      MINIO_PRESIGN_TTL: ${WHEREIS_MINIO_PRESIGN_TTL:-10m}
+
+      AI_PROVIDER: ${WHEREIS_AI_PROVIDER:-mock}
+      AI_BASE_URL: ${WHEREIS_AI_BASE_URL:-https://api.openai.com/v1}
+      AI_API_KEY: ${WHEREIS_AI_API_KEY:-}
+      AI_MODEL: ${WHEREIS_AI_MODEL:-gpt-4o-mini}
+
+      # Native Android clients do not send Origin, so this only matters if a web
+      # client is added later. Keep it tight rather than permissive.
+      CORS_ALLOWED_ORIGINS: ${WHEREIS_CORS_ALLOWED_ORIGINS:-https://${WHEREIS_API_HOST}}
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+networks:
+  # The network the AutoParts stack already created. Compose derives the name from
+  # that project's directory, so it is `deploy_default` unless you ran it with -p.
+  # Confirm with: docker network ls
+  shared:
+    external: true
+    name: ${SHARED_NETWORK:-deploy_default}

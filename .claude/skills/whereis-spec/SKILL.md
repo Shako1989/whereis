@@ -147,13 +147,19 @@ integration suite green when Docker is available, no guardrail above violated.
 
 ## 8. Current state (update this section as work proceeds)
 
-As of 2026-08-29: all code complete (waves 0–7); 82 unit tests green; all 7 migrations
+As of 2026-08-31: all code complete (waves 0–7); 82 unit tests green; all 7 migrations
 empirically validated against real PostgreSQL; two multi-lens review passes done and every
-confirmed finding fixed. **Integration tests have NOT yet run green** — blocked on the original
-laptop by a corporate proxy that black-holes all Docker registries except quay.io. First task on
-a machine with working Docker: `./gradlew integrationTest` (expect ~17 tests incl. MvpJourneyIT)
-and fix anything it surfaces. Known accepted MVP gaps: Swagger UI is permitAll (profile-gate
-before real deployment); no user-deletion endpoint/cascade; `openai` provider's analyzeImage
+confirmed finding fixed. **The integration suite is now green** — `./gradlew integrationTest`
+runs 17 tests across 6 classes (AuthFlowIT, FileStorageIT, ItemMoveIT, MvpJourneyIT, SearchIT,
+SpaceLocationIT) with 0 failures, 0 errors, 0 skipped, against real Testcontainers PostgreSQL 16
+and MinIO. It needed no code changes and no image overrides: the corporate-proxy registry block
+was specific to the original laptop, and Docker Hub is reachable from this machine. The
+`-Dit.postgres.image` / `-Dit.minio.image` overrides in §7 remain the workaround if a future
+machine is behind that proxy again. Production deploy artifacts now live in `deploy/`
+(co-tenant of the Hetzner AutoParts stack: shared Postgres/MinIO/Caddy, one new container);
+`application-prod.yml` disables springdoc and `SecurityConfig` gates the docs matcher on
+`springdoc.api-docs.enabled` — verified by booting the prod profile against real PostgreSQL,
+so the Swagger-permitAll gap is closed. Remaining accepted MVP gaps: no user-deletion endpoint/cascade; `openai` provider's analyzeImage
 returns 501 (mock returns canned suggestions).
 
 ## 9. Future extension points (design for, do not build)
