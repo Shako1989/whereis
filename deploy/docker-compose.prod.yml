@@ -3,9 +3,9 @@
 # This file deliberately defines ONE service. PostgreSQL, MinIO and Caddy are
 # already running on the box from autoparts-api/deploy/docker-compose.prod.yml,
 # and whereis reuses all three:
-#   * postgres  -> its own `whereis` database + role (see README step 2)
-#   * minio     -> its own private bucket + scoped user (README step 3)
-#   * caddy     -> two extra vhosts (README step 4)
+#   * postgres  -> its own `whereis` database + role (see README step 3)
+#   * minio     -> its own private bucket + scoped user (README step 4)
+#   * caddy     -> two extra vhosts (README step 5)
 #
 # There is no `depends_on`: Compose cannot depend across projects. The app tolerates
 # a not-yet-ready database via `spring.flyway.connect-retries: 10` plus the restart
