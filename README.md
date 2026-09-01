@@ -122,3 +122,4 @@ Errors use one shape: `{timestamp, status, code, message, path}`.
   unambiguously resolved space. Assistant answers are composed from retrieved rows only.
   Swap providers via `ai.provider`; vector/semantic search can implement the `SearchService`
   port later without API changes.
+# whereis

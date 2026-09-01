@@ -155,7 +155,9 @@ SpaceLocationIT) with 0 failures, 0 errors, 0 skipped, against real Testcontaine
 and MinIO. It needed no code changes and no image overrides: the corporate-proxy registry block
 was specific to the original laptop, and Docker Hub is reachable from this machine. The
 `-Dit.postgres.image` / `-Dit.minio.image` overrides in §7 remain the workaround if a future
-machine is behind that proxy again. Production deploy artifacts now live in `deploy/`
+machine is behind that proxy again. The full MVP journey has also been exercised live against a
+running instance (register → NL remember → search → move → history → photo upload → presigned
+fetch). Production deploy artifacts now live in `deploy/`
 (co-tenant of the Hetzner AutoParts stack: shared Postgres/MinIO/Caddy, one new container);
 `application-prod.yml` disables springdoc and `SecurityConfig` gates the docs matcher on
 `springdoc.api-docs.enabled` — verified by booting the prod profile against real PostgreSQL,
