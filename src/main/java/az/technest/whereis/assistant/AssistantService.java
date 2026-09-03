@@ -65,9 +65,19 @@ public class AssistantService {
             List<SpaceOption> candidates = spaces.stream()
                     .map(s -> new SpaceOption(s.getId(), s.getName()))
                     .toList();
-            String hint = candidates.isEmpty()
-                    ? "You have no spaces yet. Create one first (for example \"Home\"), then try again."
-                    : "I couldn't tell which space you meant. Please pick one and try again.";
+            // Three genuinely different situations, so three different messages — a single
+            // "pick one" wording is misleading when the user actually named a space that simply
+            // does not exist yet (e.g. "işdə"/"at work" with no Office space).
+            String named = placement.spaceName();
+            String hint;
+            if (candidates.isEmpty()) {
+                hint = "You have no spaces yet. Create one first (for example \"Home\"), then try again.";
+            } else if (named != null) {
+                hint = "You don't have a space for \"" + named + "\" yet. Create it first, or resend "
+                        + "with the spaceId of one of your existing spaces.";
+            } else {
+                hint = "I couldn't tell which space you meant. Resend with the spaceId of one of these.";
+            }
             return RememberResponse.needsConfirmation(hint, candidates);
         }
         PlacementExecutor.ExecutionResult result =

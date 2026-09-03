@@ -239,6 +239,16 @@ class ClaudeLiveApiTest {
     // ------------------------------------------------- space matching across languages
 
     @Test
+    void workInAzerbaijaniMatchesAnOfficeOrWorkSpaceByMeaning() {
+        // "işdə/işte" is "at work". It must reach a space named "Office" (a synonym) and, when the
+        // space is literally named "Work", that too — the match is by meaning, not by word.
+        assertThat(validate("Termosu ishte otagimda stolun ustunde qoydum",
+                List.of("Home", "Office")).orElseThrow().spaceName()).isEqualTo("Office");
+        assertThat(validate("Termosu ishte otagimda stolun ustunde qoydum",
+                List.of("Home", "Work")).orElseThrow().spaceName()).isEqualTo("Work");
+    }
+
+    @Test
     void aGardenMentionedInAzerbaijaniResolvesToTheEnglishNamedSpace() {
         // The exact case a user hit: "bagda" (in the garden) with a space literally named
         // "Garden" — the message language and the space name differ, and it must still match.

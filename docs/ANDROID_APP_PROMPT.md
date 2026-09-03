@@ -245,7 +245,9 @@ formatter so the UI looks uniform.
 - `NEEDS_CONFIRMATION` — the message was understood but the target space was ambiguous.
   **Answer it by resending the same `message` with `spaceId` set to the chosen `candidateSpaces[].id`.**
   The id settles the space outright; the assistant does not ask again. A space that is not yours
-  is a 404 like every other ownership miss.
+  is a 404 like every other ownership miss. The `message` distinguishes three cases: no spaces yet,
+  a named space that does not exist yet ("You don't have a space for \"Office\"..."), and a
+  genuinely ambiguous one — render it verbatim above the picker.
   **Zero writes happened.** Show `candidateSpaces` as a picker (see §7.1 for the required workaround).
 - `NOT_UNDERSTOOD` — show `message` and fall back to the manual add-item form, pre-filled with
   whatever the user typed as the item name.

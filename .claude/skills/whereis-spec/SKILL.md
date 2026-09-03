@@ -96,7 +96,9 @@ assistant/ fixed pipeline: read the user's spaces → AiAssistant.interpret(mess
            dictionary forms for every name — the location dedup key is the normalized name, so
            "şkafın içində" and "şkafa" must both yield "Şkaf" or the tree grows duplicates.
            An explicit request-level spaceId (BR-2) settles the space without asking the AI at all;
-           an id that is not the caller's is a 404.
+           an id that is not the caller's is a 404. NEEDS_CONFIRMATION carries one of three
+           messages: no spaces yet, a named-but-missing space ("işdə" with no Office), or genuine
+           ambiguity — spaces are still never auto-created from AI output.
 common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler; CurrentUser
            (JWT subject → UUID); CorrelationIdFilter (X-Correlation-Id → MDC); Names — the ONE
            normalizer used by every writer, lookup, and the AI resolution path. clean() is the
