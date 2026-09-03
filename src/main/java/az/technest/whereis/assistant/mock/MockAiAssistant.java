@@ -76,8 +76,13 @@ public class MockAiAssistant implements AiAssistant {
             "placed", "leave", "left", "store", "stored", "find", "me", "of", "in", "to", "what",
             "which", "do", "you", "know", "can", "please", "things", "stuff", "all");
 
+    /**
+     * The known-space hint is deliberately ignored: this provider is the deterministic offline
+     * fallback, its space vocabulary is a fixed English phrase table, and matching a foreign
+     * word to an existing space is exactly the job it cannot do. Use a real provider for that.
+     */
     @Override
-    public PlacementInterpretation interpretPlacement(String message) {
+    public PlacementInterpretation interpretPlacement(String message, List<String> knownSpaceNames) {
         String normalized = message == null ? "" : message.trim().replaceAll("\\s+", " ");
         Matcher matcher = PLACEMENT.matcher(stripTrailingPunctuation(normalized));
         if (!matcher.find()) {

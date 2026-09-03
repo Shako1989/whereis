@@ -60,7 +60,14 @@ removed"* — it deliberately does not claim the session has ended everywhere. T
 endpoint slots in ahead of the local wipe, best-effort and failure-tolerant, when it exists.
 
 
-## BR-2 — `NEEDS_CONFIRMATION` has no confirmation channel
+## BR-2 — `NEEDS_CONFIRMATION` has no confirmation channel — **IMPLEMENTED 2026-09-03**
+
+**Status:** shipped. `POST /api/v1/assistant/remember` now takes an optional `spaceId`; the client
+resends the same `message` with the id it picked from `candidateSpaces` and the space is settled
+without consulting the AI. Ownership is enforced the usual way — another user's id is a 404.
+Covered by `AssistantServiceTest`. Alongside it, the provider now receives the user's own space
+names, so `"evdə"` resolves to a space called `Home` and most confirmations never happen at all
+(`ClaudeLiveApiTest#aForeignLanguageSpaceMentionResolvesToAnExistingSpace`). Original report below.
 
 **Raised by:** Android client, `feature/assistant` (Remember flow).
 **Severity:** correctness — the workaround is lossy and can strand a capture.
@@ -156,6 +163,25 @@ suffixes, so this regex shape cannot be extended to cover it.
 Azerbaijani characters pass validation. Verified — `"I put my çantamı in the qonaq otağı şkafı"` was
 stored as `Çantamı` in `Ev > Qonaq Otağı Şkafı`.
 
-**Asked for:** nothing structural; `AI_PROVIDER=openai` handles it. Recorded so it is not
+**Asked for:** nothing structural; a real provider handles it. Recorded so it is not
 rediscovered as a client bug. The mock's English stopword list limits `assistant/search` the same
 way, so both modes start working together.
+
+**Status (2026-09-02):** two providers now answer this — `AI_PROVIDER=openai` and
+`AI_PROVIDER=claude`. The Claude provider's prompts instruct the model to keep the user's own
+words and script and never translate, and the charset boundary was already permissive
+(`\p{L}`). Left open until an Azerbaijani sentence has been run against `claude` on a live key:
+whether Haiku 4.5 segments a verb-final, case-marking sentence into the right containment chain
+is model behaviour, not something the offline suite can prove. **The check now exists** —
+`ClaudeLiveApiTest` asserts both the segmentation and that the user's own script survives
+untranslated; run it with `AI_CLAUDE_API_KEY=... ./gradlew liveAiTest`.
+
+**Verified 2026-09-02 — BR-4 is answered for the placement path.** Haiku 4.5 segments a verb-final,
+case-marking sentence correctly and never translates: `"çantamı qonaq otağındakı şkafa qoydum"` →
+`Çanta @ Qonaq otağı(ROOM) > Şkaf(FURNITURE)`; a three-level sentence resolves to `Yataq otağı >
+Şkaf > Yuxarı siyirtmə`. Two follow-ups remain open, both new:
+- ~~Case suffixes are kept in names~~ — **fixed 2026-09-03.** The prompts now require the base
+  dictionary form, and `ClaudeLiveApiTest#theSameDrawerGetsTheSameNameFromTwoDifferentSentences`
+  pins it: two phrasings of one drawer must produce one name, or the tree grows a duplicate.
+- ~~Search keywords unreliable in Azerbaijani~~ — **fixed 2026-09-03.** The search prompt lists
+  Azerbaijani question words and forbids returning a whole sentence as a keyword.

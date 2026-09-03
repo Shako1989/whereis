@@ -11,6 +11,7 @@ import az.technest.whereis.assistant.openai.OpenAiAssistant;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
@@ -49,7 +50,7 @@ class OpenAiAssistantTest {
                 .andExpect(jsonPath("$.response_format.type").value("json_object"))
                 .andRespond(withSuccess(chatResponse(content), MediaType.APPLICATION_JSON));
 
-        PlacementInterpretation result = assistant.interpretPlacement("I put my passport in the bedroom");
+        PlacementInterpretation result = assistant.interpretPlacement("I put my passport in the bedroom", List.of());
 
         assertThat(result.itemName()).isEqualTo("Passport");
         assertThat(result.spaceName()).isEqualTo("Home");
@@ -72,7 +73,7 @@ class OpenAiAssistantTest {
         server.expect(requestTo("https://ai.example/v1/chat/completions"))
                 .andRespond(withSuccess(chatResponse("this is not json at all"), MediaType.APPLICATION_JSON));
 
-        assertThatThrownBy(() -> assistant.interpretPlacement("whatever"))
+        assertThatThrownBy(() -> assistant.interpretPlacement("whatever", List.of()))
                 .isInstanceOf(AiAssistantException.class);
     }
 

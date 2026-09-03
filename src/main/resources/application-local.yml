@@ -1,9 +1,20 @@
-# Local development against `docker compose up postgres minio`.
+# Local development against `docker compose up -d postgres minio`.
+#
+# The containers read their credentials from `.env` (compose does that automatically), so this
+# profile imports the SAME file — otherwise `./gradlew bootRun` would quietly fall back to the
+# defaults below while the containers ran on the .env values, and MinIO would answer 403
+# AccessDenied. The import is optional: with no `.env` present every value below still resolves,
+# and those defaults are exactly the ones docker-compose.yml falls back to.
+#
+# Keys in `.env` are consumed as ${NAME} placeholders, which is how this project reads them
+# everywhere; the file is git-ignored, so real secrets never leave the machine.
 spring:
+  config:
+    import: optional:file:./.env[.properties]
   datasource:
-    url: jdbc:postgresql://localhost:${POSTGRES_PORT:5432}/whereis
-    username: whereis
-    password: whereis
+    url: jdbc:postgresql://localhost:${POSTGRES_PORT:5432}/${POSTGRES_DB:whereis}
+    username: ${DB_USERNAME:whereis}
+    password: ${DB_PASSWORD:whereis}
 
 security:
   jwt:
@@ -13,6 +24,7 @@ minio:
   endpoint: http://localhost:${MINIO_PORT:9000}
   access-key: ${MINIO_ACCESS_KEY:minioadmin}
   secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  bucket: ${MINIO_BUCKET:item-images}
 
 logging:
   level:

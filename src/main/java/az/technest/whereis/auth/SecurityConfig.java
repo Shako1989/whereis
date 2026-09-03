@@ -5,6 +5,7 @@ import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -29,7 +30,38 @@ import java.util.List;
 @EnableWebSecurity
 public class SecurityConfig {
 
+    /**
+     * The auth endpoints run WITHOUT the resource-server filter, and this chain is ordered first
+     * so it wins the match.
+     *
+     * <p>The reason is concrete rather than stylistic. A mobile client attaches its access token
+     * to every request; when that token expires the client calls {@code /auth/refresh} — with the
+     * expired token still on the request. In a single chain the JWT decoder runs before
+     * authorization is ever consulted, so it answers 401 and the one endpoint whose entire job is
+     * to replace an expired access token becomes unreachable exactly when it is needed. Marking
+     * the path {@code permitAll} does not help: that governs authorization, not decoding. Keeping
+     * the decoder off the path is the only fix. The same trap makes {@code /auth/login} fail for
+     * anyone holding a stale token, which is what a Swagger "Authorize" session does.
+     *
+     * <p>Nothing here needs an authenticated principal today. An endpoint that does — a logout
+     * that revokes the caller's own family, say — must not simply be added under this path; it
+     * would arrive anonymous.
+     */
     @Bean
+    @Order(1)
+    public SecurityFilterChain authFilterChain(HttpSecurity http,
+            CorsConfigurationSource corsConfigurationSource) throws Exception {
+        http
+                .securityMatcher("/api/v1/auth/**")
+                .csrf(AbstractHttpConfigurer::disable)
+                .cors(cors -> cors.configurationSource(corsConfigurationSource))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     public SecurityFilterChain filterChain(HttpSecurity http, CorsConfigurationSource corsConfigurationSource,
             @Value("${springdoc.api-docs.enabled:true}") boolean apiDocsEnabled)
             throws Exception {

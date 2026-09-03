@@ -36,6 +36,7 @@ dependencies {
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.13'
     implementation 'org.mapstruct:mapstruct:1.6.3'
     implementation 'net.logstash.logback:logstash-logback-encoder:8.1'
+    implementation 'com.anthropic:anthropic-java:2.34.0'
 
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
@@ -64,10 +65,12 @@ tasks.withType(JavaCompile).configureEach {
     ]
 }
 
-// Unit tests: always runnable, no Docker required.
+// Unit tests: always runnable, no Docker required, and no network. 'live-ai' is excluded here
+// as well as 'integration' — otherwise `./gradlew build` would start calling the real Anthropic
+// API (and spending money) on any machine that happens to have AI_CLAUDE_API_KEY exported.
 tasks.named('test') {
     useJUnitPlatform {
-        excludeTags 'integration'
+        excludeTags 'integration', 'live-ai'
     }
     jvmArgs '-XX:+EnableDynamicAgentLoading'
 }
@@ -87,6 +90,33 @@ tasks.register('integrationTest', Test) {
         if (System.getProperty(prop) != null) {
             systemProperty prop, System.getProperty(prop)
         }
+    }
+    shouldRunAfter tasks.named('test')
+}
+
+// Live AI tests: real calls to the real Anthropic API. Deliberately NOT wired into `check` or
+// `build` — they need a key and cost money (~2 cents for a full run on Haiku 4.5). Without
+// AI_CLAUDE_API_KEY every test in the tag is skipped rather than failed.
+tasks.register('liveAiTest', Test) {
+    description = 'Runs the Claude provider against the real Anthropic API (requires AI_CLAUDE_API_KEY).'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'live-ai'
+    }
+    jvmArgs '-XX:+EnableDynamicAgentLoading'
+    // Forwarded explicitly: the Gradle daemon may have been started before the key was exported.
+    ['AI_CLAUDE_API_KEY', 'AI_CLAUDE_MODEL', 'AI_CLAUDE_BASE_URL', 'AI_CLAUDE_TEMPERATURE'].each { name ->
+        if (System.getenv(name) != null) {
+            environment name, System.getenv(name)
+        }
+    }
+    // A model's answer is not a build input, so caching a green run would be misleading.
+    outputs.upToDateWhen { false }
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        showStandardStreams = false
     }
     shouldRunAfter tasks.named('test')
 }

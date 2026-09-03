@@ -56,6 +56,20 @@ services:
       AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-0.0}
+      AI_TIMEOUT: ${AI_TIMEOUT:-30s}
+      AI_MAX_OUTPUT_TOKENS: ${AI_MAX_OUTPUT_TOKENS:-800}
+      # Only read when AI_PROVIDER=claude; the app fails to start if the key is then missing.
+      AI_CLAUDE_API_KEY: ${AI_CLAUDE_API_KEY:-}
+      AI_CLAUDE_MODEL: ${AI_CLAUDE_MODEL:-claude-haiku-4-5}
+      # No colon in the default: `:-` would replace a deliberately blank value with 0.0, and
+      # blank is exactly how temperature is omitted for models that reject sampling.
+      AI_CLAUDE_TEMPERATURE: ${AI_CLAUDE_TEMPERATURE-0.0}
+      AI_CLAUDE_BASE_URL: ${AI_CLAUDE_BASE_URL:-}
+      AI_CLAUDE_WORKSPACE_ID: ${AI_CLAUDE_WORKSPACE_ID:-}
+      AI_CLAUDE_TIMEOUT: ${AI_CLAUDE_TIMEOUT:-15s}
+      AI_CLAUDE_MAX_OUTPUT_TOKENS: ${AI_CLAUDE_MAX_OUTPUT_TOKENS:-4096}
+      AI_CLAUDE_MAX_RETRIES: ${AI_CLAUDE_MAX_RETRIES:-1}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     ports:
       - "8080:8080"

@@ -32,7 +32,7 @@ class MvpJourneyIT extends AbstractIntegrationTest {
 
         // 2. Natural-language registration: interpretation -> validation -> resolution -> creation.
         ResponseEntity<RememberResponse> remembered = post(token, "/api/v1/assistant/remember",
-                new RememberRequest("I put my passport in the bedroom wardrobe top drawer"),
+                new RememberRequest("I put my passport in the bedroom wardrobe top drawer", null),
                 RememberResponse.class);
         assertThat(remembered.getStatusCode()).isEqualTo(HttpStatus.OK);
         RememberResponse remember = remembered.getBody();
@@ -55,7 +55,7 @@ class MvpJourneyIT extends AbstractIntegrationTest {
         // 4. A second space appears; the assistant now refuses to guess between spaces.
         SpaceResponse office = createSpace(token, "Office", SpaceType.OFFICE);
         RememberResponse ambiguous = post(token, "/api/v1/assistant/remember",
-                new RememberRequest("I put my charger in the desk drawer"), RememberResponse.class).getBody();
+                new RememberRequest("I put my charger in the desk drawer", null), RememberResponse.class).getBody();
         assertThat(ambiguous.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         assertThat(ambiguous.candidateSpaces()).hasSize(2);
 
@@ -98,7 +98,7 @@ class MvpJourneyIT extends AbstractIntegrationTest {
         // The mock reports space "Home"? No — "at the warehouse" resolves to a space
         // the user does NOT have. The assistant must ask, not create.
         RememberResponse response = post(token, "/api/v1/assistant/remember",
-                new RememberRequest("I put my drill in the box at the warehouse"),
+                new RememberRequest("I put my drill in the box at the warehouse", null),
                 RememberResponse.class).getBody();
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);

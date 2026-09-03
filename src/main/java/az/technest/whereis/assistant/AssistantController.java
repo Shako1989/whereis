@@ -25,7 +25,7 @@ public class AssistantController {
 
     @PostMapping("/remember")
     public RememberResponse remember(@Valid @RequestBody RememberRequest request) {
-        return assistantService.remember(CurrentUser.id(), request.message());
+        return assistantService.remember(CurrentUser.id(), request.message(), request.spaceId());
     }
 
     @PostMapping("/search")

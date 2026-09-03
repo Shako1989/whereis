@@ -53,7 +53,7 @@ public class OpenAiAssistant implements AiAssistant {
     }
 
     @Override
-    public PlacementInterpretation interpretPlacement(String message) {
+    public PlacementInterpretation interpretPlacement(String message, List<String> knownSpaceNames) {
         return chat(PLACEMENT_PROMPT, message, PlacementInterpretation.class);
     }
 

@@ -227,7 +227,7 @@ formatter so the UI looks uniform.
 
 | Method | Path | Request | Success |
 |---|---|---|---|
-| POST | `/assistant/remember` | `{message}` (≤ 1000) | 200 `RememberResponse` |
+| POST | `/assistant/remember` | `{message}` (≤ 1000), optional `spaceId` | 200 `RememberResponse` |
 | POST | `/assistant/search` | `{query}` (≤ 500) | 200 `{answer, items:SearchResult[]}` |
 | POST | `/assistant/images/analyze` | multipart, part `file` | 200 `{suggestions:[{name,category}], note}` |
 
@@ -243,14 +243,17 @@ formatter so the UI looks uniform.
 - `CREATED` — item stored. Show it, show `createdLocations` as "I also created: …", offer Undo
   (Undo = `DELETE /items/{id}`; the auto-created locations stay, which is acceptable).
 - `NEEDS_CONFIRMATION` — the message was understood but the target space was ambiguous.
+  **Answer it by resending the same `message` with `spaceId` set to the chosen `candidateSpaces[].id`.**
+  The id settles the space outright; the assistant does not ask again. A space that is not yours
+  is a 404 like every other ownership miss.
   **Zero writes happened.** Show `candidateSpaces` as a picker (see §7.1 for the required workaround).
 - `NOT_UNDERSTOOD` — show `message` and fall back to the manual add-item form, pre-filled with
   whatever the user typed as the item name.
 - `search.answer` is composed from database rows only, never free-form AI text. Render it as the
   headline, `items` as the result list.
 - `images/analyze` returns **suggestions only** — nothing is persisted. The user must confirm each
-  suggestion, which creates items via the normal `POST /items` path. Against the `openai` provider
-  this endpoint currently returns **501 `AI_NOT_IMPLEMENTED`** — handle that as a graceful
+  suggestion, which creates items via the normal `POST /items` path. Against both real providers
+  (`openai` and `claude`) this endpoint currently returns **501 `AI_NOT_IMPLEMENTED`** — handle that as a graceful
   "not available yet" state, not a crash.
 
 ### 3.7 Errors — one shape everywhere
@@ -456,7 +459,18 @@ retry affordance. Empty states teach the next action ("Create your first space")
 
 Log each of these in `docs/BACKEND_REQUESTS.md` as you go.
 
-### 7.1 `NEEDS_CONFIRMATION` has no confirmation channel
+### 7.1 `NEEDS_CONFIRMATION` confirmation channel — RESOLVED
+
+**Resolved 2026-09-03.** `POST /assistant/remember` now accepts an optional `spaceId`; resend the
+same message with the picked id. The workaround described below is no longer necessary — kept for
+history. Two further server-side improvements landed with it: the provider is given the user's own
+space names, so a mention in another language (`"evdə"`) matches an existing space (`Home`) without
+any confirmation round-trip at all; and location names now come back in base dictionary form, so
+two phrasings of the same shelf no longer create two locations.
+
+### 7.1a Original report (historical)
+
+### `NEEDS_CONFIRMATION` had no confirmation channel
 
 `POST /assistant/remember` accepts **only** `{message}`. When the response is `NEEDS_CONFIRMATION`
 with `candidateSpaces`, there is no `spaceId` field to send back.
@@ -479,7 +493,8 @@ space preselected. Never loop more than once.
   omitted. Do not N+1 the API to compute them; prefer omitting them in v1.
 - **`primaryImageUrl` only appears in search results**, not in `GET /items` or `GET /items/{id}`.
   For the item list and detail, fetch `GET /items/{id}/files` and presign as needed.
-- **Assistant image analysis returns 501 on the `openai` provider.** Feature-flag the UI.
+- **Assistant image analysis returns 501 on both real providers (`openai`, `claude`).** Feature-flag
+  the UI. Only `ai.provider=mock` answers it, with canned suggestions.
 
 ---
 

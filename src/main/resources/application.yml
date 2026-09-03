@@ -67,6 +67,9 @@ storage:
     delay: ${STORAGE_JANITOR_DELAY:PT60S}
 
 ai:
+  # mock (default, no key, no network) | openai (any OpenAI-compatible endpoint) | claude
+  # (Anthropic Messages API). The keys below belong to the openai provider; claude reads
+  # ai.claude.* instead, so switching providers never means reinterpreting the other's values.
   provider: ${AI_PROVIDER:mock}
   base-url: ${AI_BASE_URL:https://api.openai.com/v1}
   api-key: ${AI_API_KEY:}
@@ -74,3 +77,20 @@ ai:
   temperature: ${AI_TEMPERATURE:0.0}
   timeout: ${AI_TIMEOUT:30s}
   max-output-tokens: ${AI_MAX_OUTPUT_TOKENS:800}
+  claude:
+    # Required when ai.provider=claude; the app refuses to start without it.
+    api-key: ${AI_CLAUDE_API_KEY:}
+    # Blank means the SDK's own https://api.anthropic.com.
+    base-url: ${AI_CLAUDE_BASE_URL:}
+    # Required ONLY for an identity-linked API key, which the API rejects with a 400 unless the
+    # request names the workspace it acts in. Leave blank for a workspace-scoped key.
+    workspace-id: ${AI_CLAUDE_WORKSPACE_ID:}
+    model: ${AI_CLAUDE_MODEL:claude-haiku-4-5}
+    # Deterministic extraction, and legal on Haiku 4.5. Set this to blank to omit the
+    # parameter from the request entirely: Opus 4.7 and later (4.7, 4.8, Opus 5), Sonnet 5 and
+    # the Fable family reject sampling parameters with a 400. Opus 4.6 and Sonnet 4.6 accept them.
+    temperature: ${AI_CLAUDE_TEMPERATURE:0.0}
+    timeout: ${AI_CLAUDE_TIMEOUT:15s}
+    max-output-tokens: ${AI_CLAUDE_MAX_OUTPUT_TOKENS:4096}
+    # One retry, not the SDK default of two: /assistant/remember is synchronous.
+    max-retries: ${AI_CLAUDE_MAX_RETRIES:1}

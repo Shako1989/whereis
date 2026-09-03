@@ -29,7 +29,28 @@ class NamesTest {
         // Must not depend on the default locale (Azerbaijani/Turkish dotted-i trap):
         // result must be identical regardless of platform locale.
         assertThat(Names.normalize("WARDROBE")).isEqualTo("wardrobe");
-        assertThat(Names.normalize("İ")).isEqualTo("İ".toLowerCase(java.util.Locale.ROOT));
+        // Azerbaijani dotted-İ lower-cases to i + combining dot regardless of platform locale;
+        // the key folds that to a plain "i".
+        assertThat(Names.normalize("İ")).isEqualTo("i");
+    }
+
+    @Test
+    void normalizeFoldsAzerbaijaniDiacriticsSoOneSpellingEqualsAnother() {
+        // The dedup key must not care how the diacritics were typed — otherwise "Şkaf" and "skaf"
+        // become two locations for one physical wardrobe.
+        assertThat(Names.normalize("Şkaf")).isEqualTo("skaf");
+        assertThat(Names.normalize("skaf")).isEqualTo("skaf");
+        assertThat(Names.normalize("1ci siyirmə")).isEqualTo(Names.normalize("1ci siyirme"));
+        assertThat(Names.normalize("Bağ")).isEqualTo("bag");
+        assertThat(Names.normalize("çanta")).isEqualTo("canta");
+        assertThat(Names.normalize("Qonaq otağı")).isEqualTo("qonaq otagi");
+    }
+
+    @Test
+    void cleanKeepsTheOriginalDiacriticsForDisplay() {
+        // Only the KEY is folded; what the user sees is untouched.
+        assertThat(Names.clean("Şkaf")).isEqualTo("Şkaf");
+        assertThat(Names.clean("1ci siyirmə")).isEqualTo("1ci siyirmə");
     }
 
     @Test

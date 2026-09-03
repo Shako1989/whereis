@@ -246,6 +246,48 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 Then register a user, upload a photo, and confirm the returned presigned URL opens on a phone
 off Wi-Fi. That last check is the one that catches a wrong `WHEREIS_MEDIA_HOST`.
 
+## Step 7b — Optional: switch the assistant to Claude
+
+The default `WHEREIS_AI_PROVIDER=mock` needs no key and is fully functional in English. To use a
+real model instead:
+
+1. Create an API key at <https://console.anthropic.com> and **set a spend limit on it**. The app
+   has no per-user AI quota, so any authenticated user can loop `/api/v1/assistant/remember`; the
+   spend limit is the only ceiling. Haiku 4.5 costs roughly $0.0015 per remember call and about
+   a third of that per search, at $1/$5 per MTok.
+2. In `deploy/.env`:
+
+   ```sh
+   WHEREIS_AI_PROVIDER=claude
+   WHEREIS_AI_CLAUDE_API_KEY=sk-ant-...
+   ```
+
+3. `docker compose -f docker-compose.prod.yml up -d --force-recreate whereis-api`
+
+If the key is **identity-linked** (the Console may issue this kind), every call comes back
+`400 anthropic-workspace-id is required when authenticating with an identity-linked API key`,
+surfacing as `502 AI_UNAVAILABLE`. Either set `WHEREIS_AI_CLAUDE_WORKSPACE_ID` to the workspace's
+id (Console → Settings → Workspaces; it looks like `wrkspc_...`), or issue a workspace-scoped key
+instead and leave that variable blank.
+
+A blank key with `provider=claude` is a **loud** failure, not a silent one: startup aborts with
+`IllegalStateException: ai.claude.api-key (AI_CLAUDE_API_KEY) must be configured when
+ai.provider=claude`, so check `docker logs whereis-api` if the container will not come up.
+
+Verify the provider is actually the one answering — a sentence the mock also parses proves
+nothing, because both would return `CREATED`. Use one the mock cannot handle:
+
+```sh
+TOKEN=...   # accessToken from POST /api/v1/auth/login
+curl -s -X POST https://$WHEREIS_API_HOST/api/v1/assistant/remember \
+     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"message":"the spare house keys ended up inside the blue box on the garage shelf"}'
+```
+
+That phrasing matches none of the mock's verb patterns, so `"status":"CREATED"` with a sensible
+`locationPath` means Claude answered. `NOT_UNDERSTOOD` means the provider is still `mock`;
+`502 AI_UNAVAILABLE` means the key or network is wrong.
+
 ## Step 8 — Backups
 
 Postgres is the only source of truth and photo binaries are unrecoverable without their

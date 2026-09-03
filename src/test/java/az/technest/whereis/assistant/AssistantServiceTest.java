@@ -1,8 +1,10 @@
 package az.technest.whereis.assistant;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -62,9 +64,9 @@ class AssistantServiceTest {
 
     @Test
     void lowConfidenceInterpretationNeverMutatesAnything() {
-        when(aiAssistant.interpretPlacement(anyString())).thenReturn(interpretation(null, 0.1));
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.1));
 
-        RememberResponse response = service.remember(userId, "gibberish");
+        RememberResponse response = service.remember(userId, "gibberish", null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NOT_UNDERSTOOD);
         verify(executor, never()).place(any(), any(), any(), any());
@@ -73,11 +75,11 @@ class AssistantServiceTest {
     @Test
     void hallucinatedSpaceNameIsNotTrusted() {
         // The AI names a space the user does not have — nothing may be created.
-        when(aiAssistant.interpretPlacement(anyString())).thenReturn(interpretation("Moon Base", 0.95));
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Moon Base", 0.95));
         when(spaceRepository.findByUserIdAndNormalizedName(userId, "moon base")).thenReturn(Optional.empty());
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of(space("Home")));
 
-        RememberResponse response = service.remember(userId, "I put my passport in the moon base drawer");
+        RememberResponse response = service.remember(userId, "I put my passport in the moon base drawer", null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         assertThat(response.candidateSpaces()).hasSize(1);
@@ -86,11 +88,11 @@ class AssistantServiceTest {
 
     @Test
     void multipleSpacesWithoutExplicitNameNeedConfirmation() {
-        when(aiAssistant.interpretPlacement(anyString())).thenReturn(interpretation(null, 0.9));
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.9));
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId))
                 .thenReturn(List.of(space("Home"), space("Office")));
 
-        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer");
+        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         assertThat(response.candidateSpaces()).hasSize(2);
@@ -99,10 +101,10 @@ class AssistantServiceTest {
 
     @Test
     void zeroSpacesNeedsConfirmationWithGuidance() {
-        when(aiAssistant.interpretPlacement(anyString())).thenReturn(interpretation(null, 0.9));
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.9));
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
 
-        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer");
+        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         assertThat(response.candidateSpaces()).isEmpty();
@@ -112,14 +114,14 @@ class AssistantServiceTest {
     @Test
     void singleSpaceResolvesAutomaticallyAndPlaces() {
         Space home = space("Home");
-        when(aiAssistant.interpretPlacement(anyString())).thenReturn(interpretation(null, 0.9));
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.9));
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of(home));
         ItemResponse item = new ItemResponse(UUID.randomUUID(), "Passport", null, null, UUID.randomUUID(),
                 List.of("Home", "Bedroom", "Top Drawer"), false, Instant.now(), Instant.now());
         when(executor.place(eq(userId), eq(home.getId()), any(), anyString()))
                 .thenReturn(new PlacementExecutor.ExecutionResult(item, List.of("Bedroom", "Top Drawer")));
 
-        RememberResponse response = service.remember(userId, "I put my passport in the bedroom top drawer");
+        RememberResponse response = service.remember(userId, "I put my passport in the bedroom top drawer", null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.CREATED);
         assertThat(response.item().name()).isEqualTo("Passport");
@@ -129,14 +131,14 @@ class AssistantServiceTest {
     @Test
     void explicitSpaceNameResolvesAgainstTheDatabase() {
         Space home = space("Home");
-        when(aiAssistant.interpretPlacement(anyString())).thenReturn(interpretation("Home", 0.9));
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Home", 0.9));
         when(spaceRepository.findByUserIdAndNormalizedName(userId, "home")).thenReturn(Optional.of(home));
         ItemResponse item = new ItemResponse(UUID.randomUUID(), "Passport", null, null, UUID.randomUUID(),
                 List.of("Home", "Bedroom", "Top Drawer"), false, Instant.now(), Instant.now());
         when(executor.place(eq(userId), eq(home.getId()), any(), anyString()))
                 .thenReturn(new PlacementExecutor.ExecutionResult(item, List.of()));
 
-        assertThat(service.remember(userId, "I put my passport in the bedroom drawer at home").status())
+        assertThat(service.remember(userId, "I put my passport in the bedroom drawer at home", null).status())
                 .isEqualTo(RememberResponse.Status.CREATED);
     }
 
@@ -164,5 +166,60 @@ class AssistantServiceTest {
         assertThat(response.answer())
                 .isEqualTo("Your Passport is in Home > Bedroom > Wardrobe > Top Drawer.");
         assertThat(response.items()).hasSize(1);
+    }
+
+    // ------------------------------------------------- BR-2: an explicitly chosen space
+
+    @Test
+    void anExplicitSpaceIdSettlesTheSpaceEvenWhenTwoWouldBeAmbiguous() {
+        // The answer to a previous NEEDS_CONFIRMATION. Two spaces exist and the message names
+        // none, so without the id this would ask again instead of writing.
+        Space chosen = space("Home");
+        when(aiAssistant.interpretPlacement(anyString(), anyList()))
+                .thenReturn(interpretation(null, 0.9));
+        when(spaceRepository.findAllByUserIdOrderByNameAsc(userId))
+                .thenReturn(List.of(space("Garden"), chosen));
+        when(spaceRepository.findByIdAndUserId(chosen.getId(), userId)).thenReturn(Optional.of(chosen));
+        when(executor.place(eq(userId), eq(chosen.getId()), any(), anyString()))
+                .thenReturn(new PlacementExecutor.ExecutionResult(
+                        new ItemResponse(UUID.randomUUID(), "Passport", null, null, UUID.randomUUID(),
+                                List.of("Home", "Bedroom", "Top Drawer"), false,
+                                Instant.now(), Instant.now()),
+                        List.of("Bedroom", "Top Drawer")));
+
+        RememberResponse response =
+                service.remember(userId, "I put my passport in the bedroom drawer", chosen.getId());
+
+        assertThat(response.status()).isEqualTo(RememberResponse.Status.CREATED);
+        verify(executor).place(eq(userId), eq(chosen.getId()), any(), anyString());
+    }
+
+    @Test
+    void aSpaceIdThatIsNotThisUsersIsANotFound() {
+        // Ownership misses are 404 everywhere in this codebase, never 403: an id must not be
+        // probeable for existence.
+        UUID someoneElses = UUID.randomUUID();
+        when(aiAssistant.interpretPlacement(anyString(), anyList()))
+                .thenReturn(interpretation(null, 0.9));
+        when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of(space("Home")));
+        when(spaceRepository.findByIdAndUserId(someoneElses, userId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() ->
+                service.remember(userId, "I put my passport in the bedroom drawer", someoneElses))
+                .isInstanceOf(az.technest.whereis.common.error.NotFoundException.class);
+        verify(executor, never()).place(any(), any(), any(), anyString());
+    }
+
+    @Test
+    void theUsersOwnSpaceNamesAreHandedToTheProvider() {
+        // Names only, never ids, and never anything the provider could act on directly.
+        when(aiAssistant.interpretPlacement(anyString(), anyList()))
+                .thenReturn(interpretation(null, 0.1));
+        when(spaceRepository.findAllByUserIdOrderByNameAsc(userId))
+                .thenReturn(List.of(space("Garden"), space("Home")));
+
+        service.remember(userId, "gibberish", null);
+
+        verify(aiAssistant).interpretPlacement("gibberish", List.of("Garden", "Home"));
     }
 }

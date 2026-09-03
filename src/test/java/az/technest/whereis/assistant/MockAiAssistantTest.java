@@ -13,7 +13,7 @@ class MockAiAssistantTest {
     @Test
     void parsesTheMvpJourneySentence() {
         PlacementInterpretation result =
-                assistant.interpretPlacement("I put my passport in the bedroom wardrobe top drawer");
+                assistant.interpretPlacement("I put my passport in the bedroom wardrobe top drawer", List.of());
 
         assertThat(result.itemName()).isEqualTo("Passport");
         assertThat(result.spaceName()).isNull();
@@ -27,7 +27,7 @@ class MockAiAssistantTest {
     @Test
     void detectsExplicitSpacePhrase() {
         PlacementInterpretation result =
-                assistant.interpretPlacement("I put the keys in the kitchen drawer at home");
+                assistant.interpretPlacement("I put the keys in the kitchen drawer at home", List.of());
 
         assertThat(result.itemName()).isEqualTo("Keys");
         assertThat(result.spaceName()).isEqualTo("Home");
@@ -38,7 +38,7 @@ class MockAiAssistantTest {
     @Test
     void parsesMovedSentence() {
         PlacementInterpretation result =
-                assistant.interpretPlacement("I moved my passport to my office desk drawer");
+                assistant.interpretPlacement("I moved my passport to my office desk drawer", List.of());
 
         assertThat(result.itemName()).isEqualTo("Passport");
         assertThat(result.locations()).extracting(LocationSegment::name)
@@ -48,7 +48,7 @@ class MockAiAssistantTest {
     @Test
     void unknownTrailingWordsBecomeAnOtherSegment() {
         PlacementInterpretation result =
-                assistant.interpretPlacement("I put my charger in the garage toolchest");
+                assistant.interpretPlacement("I put my charger in the garage toolchest", List.of());
 
         assertThat(result.locations()).extracting(LocationSegment::name)
                 .containsExactly("Garage", "Toolchest");
@@ -57,7 +57,7 @@ class MockAiAssistantTest {
 
     @Test
     void unparseableMessageHasZeroConfidence() {
-        PlacementInterpretation result = assistant.interpretPlacement("hello there, nice weather");
+        PlacementInterpretation result = assistant.interpretPlacement("hello there, nice weather", List.of());
 
         assertThat(result.confidence()).isZero();
         assertThat(result.locations()).isEmpty();

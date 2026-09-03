@@ -7,6 +7,7 @@ import az.technest.whereis.assistant.dto.RememberResponse;
 import az.technest.whereis.assistant.dto.RememberResponse.SpaceOption;
 import az.technest.whereis.common.error.BadRequestException;
 import az.technest.whereis.common.error.ErrorCode;
+import az.technest.whereis.common.error.NotFoundException;
 import az.technest.whereis.common.util.Names;
 import az.technest.whereis.search.SearchService;
 import az.technest.whereis.search.dto.ItemSearchResult;
@@ -40,9 +41,16 @@ public class AssistantService {
     private final PlacementExecutor executor;
     private final SearchService searchService;
 
-    public RememberResponse remember(UUID userId, String message) {
+    public RememberResponse remember(UUID userId, String message, UUID chosenSpaceId) {
         String sanitized = sanitize(message, 1000);
-        PlacementInterpretation interpretation = aiAssistant.interpretPlacement(sanitized);
+        // Read first, then call the provider: the user's own space names let it map a mention in
+        // any language ("evdə") onto a space that already exists ("Home"). Names only — never ids,
+        // and never another user's rows. Deliberately outside any transaction: no AI call may sit
+        // inside one.
+        List<Space> spaces = spaceRepository.findAllByUserIdOrderByNameAsc(userId);
+        List<String> knownSpaceNames = spaces.stream().map(Space::getName).toList();
+        PlacementInterpretation interpretation =
+                aiAssistant.interpretPlacement(sanitized, knownSpaceNames);
         Optional<ValidatedPlacement> validated = validator.validatePlacement(interpretation);
         if (validated.isEmpty()) {
             return RememberResponse.notUnderstood(
@@ -50,9 +58,11 @@ public class AssistantService {
                             + "\"I put my passport in the bedroom wardrobe top drawer\".");
         }
         ValidatedPlacement placement = validated.get();
-        Optional<Space> space = resolveSpace(userId, placement.spaceName());
+        Optional<Space> space = chosenSpaceId != null
+                ? Optional.of(requireOwnSpace(userId, chosenSpaceId))
+                : resolveSpace(userId, spaces, placement.spaceName());
         if (space.isEmpty()) {
-            List<SpaceOption> candidates = spaceRepository.findAllByUserIdOrderByNameAsc(userId).stream()
+            List<SpaceOption> candidates = spaces.stream()
                     .map(s -> new SpaceOption(s.getId(), s.getName()))
                     .toList();
             String hint = candidates.isEmpty()
@@ -120,11 +130,20 @@ public class AssistantService {
         return answer;
     }
 
-    private Optional<Space> resolveSpace(UUID userId, String spaceName) {
+    /**
+     * An explicitly chosen space still has to be this user's. A miss is a 404 rather than a 403 —
+     * the same rule as everywhere else, so an id cannot be probed for existence.
+     */
+    private Space requireOwnSpace(UUID userId, UUID spaceId) {
+        return spaceRepository.findByIdAndUserId(spaceId, userId)
+                .orElseThrow(() -> new NotFoundException(ErrorCode.SPACE_NOT_FOUND, "Space not found"));
+    }
+
+    /** Resolves against the rows already read for this request; the AI never supplies an id. */
+    private Optional<Space> resolveSpace(UUID userId, List<Space> spaces, String spaceName) {
         if (spaceName != null) {
             return spaceRepository.findByUserIdAndNormalizedName(userId, Names.normalize(spaceName));
         }
-        List<Space> spaces = spaceRepository.findAllByUserIdOrderByNameAsc(userId);
         // Only when the intent is unambiguous: exactly one space to choose from.
         return spaces.size() == 1 ? Optional.of(spaces.getFirst()) : Optional.empty();
     }
