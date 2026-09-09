@@ -107,7 +107,11 @@ tasks.register('liveAiTest', Test) {
     }
     jvmArgs '-XX:+EnableDynamicAgentLoading'
     // Forwarded explicitly: the Gradle daemon may have been started before the key was exported.
-    ['AI_CLAUDE_API_KEY', 'AI_CLAUDE_MODEL', 'AI_CLAUDE_BASE_URL', 'AI_CLAUDE_TEMPERATURE'].each { name ->
+    // AI_CLAUDE_WORKSPACE_ID is forwarded too: an identity-linked key is rejected with a 400
+    // ("anthropic-workspace-id is required") when the header is absent, which reads as a test
+    // failure rather than a configuration gap.
+    ['AI_CLAUDE_API_KEY', 'AI_CLAUDE_MODEL', 'AI_CLAUDE_BASE_URL', 'AI_CLAUDE_TEMPERATURE',
+     'AI_CLAUDE_WORKSPACE_ID'].each { name ->
         if (System.getenv(name) != null) {
             environment name, System.getenv(name)
         }

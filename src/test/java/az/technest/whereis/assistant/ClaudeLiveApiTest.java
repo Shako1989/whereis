@@ -210,6 +210,106 @@ class ClaudeLiveApiTest {
 
     // ---------------------------------------------------------------- helpers
 
+    @Test
+    void anAzerbaijaniGenitiveCompoundIsKeptWholeAsTheItemName() {
+        // "bağın açarını" names WHICH key. Dropping the possessor leaves "Açar"/"Açarı", and the
+        // user can no longer tell the garden key from the car key — reported from the field.
+        ValidatedPlacement result = validate(
+                "Bağın açarını evdə yataq otağında pəncərənin qabağına qoydum", List.of("Ev"))
+                .orElseThrow();
+
+        assertThat(result.itemName().toLowerCase(Locale.ROOT))
+                .as("both nouns of the compound must survive: got %s", result.itemName())
+                .contains("bağ")
+                .contains("açar");
+    }
+
+    @Test
+    void anAzerbaijaniRelationalSpotBecomesABareCompound() {
+        // A window cannot hold anything, so the spot in front of it is the place. It must come
+        // back without the genitive ending, or "pəncərənin qabağı" and "pəncərə qabağı" would
+        // dedupe to two different rows for one physical spot.
+        ValidatedPlacement result = validate(
+                "Bağın açarını evdə yataq otağında pəncərənin qabağına qoydum", List.of("Ev"))
+                .orElseThrow();
+
+        assertThat(chain(result))
+                .as("the spot is kept, in bare compound form: got %s", chain(result))
+                .contains("pəncərə qabağı")
+                .doesNotContain("pəncərənin");
+    }
+
+    @Test
+    void anAzerbaijaniPlaceWordNeverLeaksIntoAnEnglishOrRussianName() {
+        // The relational-compound rule is exemplified only in Azerbaijani. Without an explicit
+        // guard the model copies the literal token across languages and emits "Window qabağı"
+        // or "Окно qabağı" — observed before this rule was added.
+        String english = chain(validate(
+                "I put the garden key in front of the window in the bedroom at home",
+                List.of("Home")).orElseThrow());
+        String russian = chain(validate(
+                "Я положил ключ от сада перед окном в спальне дома",
+                List.of("Home")).orElseThrow());
+
+        assertThat(english)
+                .as("an English chain must hold no Azerbaijani place word: got %s", english)
+                .doesNotContain("qabağı")
+                .doesNotContain("arxası");
+        assertThat(russian)
+                .as("a Russian chain must hold no Azerbaijani place word: got %s", russian)
+                .doesNotContain("qabağı")
+                .doesNotContain("arxası");
+    }
+
+    @Test
+    void theSpaceIsNotRepeatedAsTheFirstLocation() {
+        // When the space is the only container named, the model used to emit it twice — space
+        // "Garage" plus a location "Garage" inside it. The rule lives on the locations field
+        // rather than in the space block, which is attention-saturated.
+        String english = chain(validate(
+                "I left the spare keys in the garage on the shelf", List.of("Garage")).orElseThrow());
+        String russian = chain(validate(
+                "Отвертка в гараже на полке", List.of("Garage")).orElseThrow());
+
+        assertThat(english)
+                .as("the chain must start inside the space, not repeat it: got %s", english)
+                .doesNotContain("garage");
+        assertThat(russian)
+                .as("same in Russian: got %s", russian)
+                .doesNotContain("гараж");
+    }
+
+    @Test
+    void anIdentifyingAdjectiveStaysInTheItemName() {
+        // "spare keys" -> "Keys" loses which keys, exactly as dropping a genitive possessor does.
+        ValidatedPlacement result = validate(
+                "I left the spare keys in the garage on the shelf", List.of("Garage")).orElseThrow();
+
+        assertThat(result.itemName().toLowerCase(Locale.ROOT))
+                .as("the qualifier identifies which keys, so it belongs in the name: got %s",
+                        result.itemName())
+                .contains("spare");
+    }
+
+    @Test
+    void aRussianPlacementIsUnderstoodWithoutRussianExamplesInThePrompt() {
+        // The prompt carries almost no Russian. This pins the behaviour that was measured to
+        // work anyway: prepositional cases resolved to base forms, and a genitive compound kept.
+        ValidatedPlacement result = validate(
+                "Я оставил ключи от машины на кухонном столе дома", List.of("Home")).orElseThrow();
+
+        assertThat(result.spaceName())
+                .as("\"дома\" must match the listed Home")
+                .containsIgnoringCase("home");
+        assertThat(result.itemName().toLowerCase(Locale.ROOT))
+                .as("the genitive compound names which keys: got %s", result.itemName())
+                .contains("ключи")
+                .contains("машин");
+        assertThat(chain(result))
+                .as("case suffixes must resolve to base forms: got %s", chain(result))
+                .contains("стол");
+    }
+
     private static Optional<ValidatedPlacement> validate(String message) {
         return validate(message, List.of());
     }

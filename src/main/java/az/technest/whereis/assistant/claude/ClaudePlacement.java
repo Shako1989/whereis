@@ -41,7 +41,11 @@ record ClaudePlacement(
         @JsonPropertyDescription("""
                 The containment chain, ordered outermost first and innermost last: the room, \
                 then the piece of furniture, then the compartment inside it. At most 6 entries. \
-                Empty list when the message is not about putting an item somewhere.""")
+                Empty list when the message is not about putting an item somewhere. \
+                This chain NEVER opens with the place reported in the space field, even when that \
+                place is the only container the message names: "in the garage on the shelf" with \
+                space "Garage" gives [Shelf], not [Garage, Shelf]; "в гараже на полке" gives \
+                [Полка]; "maşında torpedoda" with space "Car" gives [Torpedo].""")
         List<ClaudeSegment> locations,
 
         @JsonPropertyDescription("""
