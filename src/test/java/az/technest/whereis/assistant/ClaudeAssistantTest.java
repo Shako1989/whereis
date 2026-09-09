@@ -330,4 +330,55 @@ class ClaudeAssistantTest {
         assertThat(JsonPath.<String>read(requests.getFirst(), "$.system[0].text"))
                 .contains("The user has no spaces yet");
     }
+
+    /**
+     * Free counterpart to the live regression tests. Those verify that the model actually obeys
+     * these rules and cost real tokens; this one only verifies the rules are still IN the prompt,
+     * so deleting one is caught by `./gradlew build` rather than by a user reporting bad data.
+     */
+    @Test
+    void theNamingRulesThatFixedFieldReportsAreStillInTheSystemPrompt() {
+        respond(200, message("end_turn", """
+                {"itemName":"","itemDescription":"","spaceName":"","locations":[],"confidence":0.05}"""));
+
+        assistant.interpretPlacement("hello", List.of());
+        String system = JsonPath.read(requests.getFirst(), "$.system[0].text");
+
+        // "bağın açarını" stored as "Açarı" lost which key it was.
+        assertThat(system)
+                .as("the compound-name rule must survive")
+                .contains("A COMPOUND NAME STAYS WHOLE")
+                .contains("Bağın açarı");
+        // "pəncərənin qabağına" stored as "Pəncərə" lost where in the room it sat, and the
+        // genitive form would dedupe one physical spot into two rows.
+        assertThat(system)
+                .as("the relational-spot rule and its canonical bare form must survive")
+                .contains("RELATIONAL PLACE WORDS")
+                .contains("Pəncərə qabağı");
+        // Without this the model emitted "Window qabağı" and "Окно qabağı".
+        assertThat(system)
+                .as("the same-language rule must survive, or Azerbaijani words leak into EN/RU")
+                .contains("wholly in the language of the message");
+    }
+
+    /**
+     * The space-is-not-a-location rule lives on the locations FIELD rather than in the system
+     * prompt: putting it in the space block broke space detection twice. Pinned here so it is
+     * not "tidied" back into the prompt, where it regresses.
+     */
+    @Test
+    void theSpaceIsNotALocationRuleTravelsOnTheLocationsSchemaNotThePrompt() {
+        respond(200, message("end_turn", """
+                {"itemName":"","itemDescription":"","spaceName":"","locations":[],"confidence":0.05}"""));
+
+        assistant.interpretPlacement("hello", List.of());
+        String body = requests.getFirst();
+
+        assertThat(body)
+                .as("the derived schema must carry the rule on the locations property")
+                .contains("This chain NEVER opens with the place reported in the space field");
+        assertThat(JsonPath.<String>read(body, "$.system[0].text"))
+                .as("and it must NOT be in the space block, which is attention-saturated")
+                .doesNotContain("This chain NEVER opens");
+    }
 }
