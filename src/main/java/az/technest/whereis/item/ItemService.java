@@ -10,6 +10,7 @@ import az.technest.whereis.location.Location;
 import az.technest.whereis.location.LocationService;
 import az.technest.whereis.location.LocationTreeDao;
 import az.technest.whereis.storage.FileStorageService;
+import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -70,13 +71,14 @@ public class ItemService {
                 .note(note)
                 .placedAt(Instant.now())
                 .build());
-        return mapper.toResponse(item, path);
+        // A brand-new item cannot have a cover photo yet, so no lookup is issued here.
+        return mapper.toResponse(item, path, null);
     }
 
     @Transactional(readOnly = true)
     public ItemResponse get(UUID userId, UUID itemId) {
         Item item = requireOwned(userId, itemId);
-        return mapper.toResponse(item, pathOf(item.getCurrentLocationId()));
+        return mapper.toResponse(item, pathOf(item.getCurrentLocationId()), coverOf(item.getId()));
     }
 
     @Transactional(readOnly = true)
@@ -85,10 +87,17 @@ public class ItemService {
         Page<Item> items = includeArchived
                 ? itemRepository.findAllByUserId(userId, pageable)
                 : itemRepository.findAllByUserIdAndArchivedFalse(userId, pageable);
-        // One batch query resolves the location paths for the whole page — no per-row lookups.
+        // Two batch queries resolve the location paths and the cover photos for the whole page —
+        // no per-row lookups, so the query count does not grow with page size. The presigning
+        // inside primaryImages() is a local HMAC computation, not a MinIO call, which is why it
+        // is allowed inside this read-only transaction.
         Map<UUID, List<String>> paths = treeDao.resolvePaths(
                 items.getContent().stream().map(Item::getCurrentLocationId).distinct().toList());
-        return items.map(item -> mapper.toResponse(item, paths.getOrDefault(item.getCurrentLocationId(), List.of())));
+        Map<UUID, ItemPrimaryImage> covers = fileStorageService.primaryImages(
+                items.getContent().stream().map(Item::getId).toList());
+        return items.map(item -> mapper.toResponse(item,
+                paths.getOrDefault(item.getCurrentLocationId(), List.of()),
+                covers.get(item.getId())));
     }
 
     @Transactional
@@ -102,7 +111,7 @@ public class ItemService {
         if (request.archived() != null) {
             item.setArchived(request.archived());
         }
-        return mapper.toResponse(item, pathOf(item.getCurrentLocationId()));
+        return mapper.toResponse(item, pathOf(item.getCurrentLocationId()), coverOf(item.getId()));
     }
 
     /**
@@ -127,7 +136,7 @@ public class ItemService {
         // Explicit save: belt-and-braces against detachment by bulk updates in this
         // transaction — dirty checking alone must not be the only path to this UPDATE.
         Item saved = itemRepository.save(item);
-        return mapper.toResponse(saved, path);
+        return mapper.toResponse(saved, path, coverOf(saved.getId()));
     }
 
     @Transactional(readOnly = true)
@@ -150,6 +159,11 @@ public class ItemService {
 
     Item requireOwned(UUID userId, UUID itemId) {
         return itemRepository.findByIdAndUserId(itemId, userId).orElseThrow(ItemNotFoundException::new);
+    }
+
+    /** One item's cover, or null. Single-item lookup — not an N+1, unlike calling this per row. */
+    private ItemPrimaryImage coverOf(UUID itemId) {
+        return fileStorageService.primaryImages(List.of(itemId)).get(itemId);
     }
 
     private List<String> pathOf(UUID locationId) {

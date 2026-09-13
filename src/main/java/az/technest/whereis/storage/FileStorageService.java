@@ -6,12 +6,16 @@ import az.technest.whereis.common.util.Names;
 import az.technest.whereis.item.ItemNotFoundException;
 import az.technest.whereis.item.ItemRepository;
 import az.technest.whereis.storage.dto.ItemFileResponse;
+import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import az.technest.whereis.storage.dto.PresignedUrlResponse;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -116,12 +120,40 @@ public class FileStorageService {
         sweepAfterCommit(entries);
     }
 
+    /**
+     * Cover photo (stable file id + presigned URL) for every given item that has one; items
+     * without a primary photo are simply absent from the map. ONE query for the whole batch —
+     * this is the only supported way to resolve covers for a page of items, never per row.
+     *
+     * <p>Ownership is the caller's responsibility: the ids must already have been produced by a
+     * userId-scoped finder, exactly like {@code LocationTreeDao}'s batch path resolution.
+     *
+     * <p>Safe to call inside a read-only transaction: presigning is a local HMAC computation over
+     * the object key, NOT a request to MinIO, so the "no MinIO call inside a DB transaction" rule
+     * is not in play here.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, ItemPrimaryImage> primaryImages(Collection<UUID> itemIds) {
+        if (itemIds.isEmpty()) {
+            return Map.of();
+        }
+        // At most one primary row per item is possible (partial unique index on item_files),
+        // so collecting into a map by item id cannot collide.
+        return itemFileRepository.findAllByItemIdInAndIsPrimaryTrue(itemIds).stream()
+                .collect(Collectors.toMap(ItemFile::getItemId, this::toPrimaryImage));
+    }
+
     @Transactional(readOnly = true)
     public PresignedUrlResponse presign(UUID userId, UUID itemId, UUID fileId) {
         requireOwnedItem(userId, itemId);
         ItemFile file = requireFile(itemId, fileId);
         String url = adapter.presignGet(file.getObjectKey(), properties.presignTtl());
         return new PresignedUrlResponse(url, Instant.now().plus(properties.presignTtl()));
+    }
+
+    private ItemPrimaryImage toPrimaryImage(ItemFile file) {
+        return new ItemPrimaryImage(file.getId(),
+                adapter.presignGet(file.getObjectKey(), properties.presignTtl()));
     }
 
     private void sweepAfterCommit(List<StorageDeletionQueueEntry> entries) {

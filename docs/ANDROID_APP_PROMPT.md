@@ -164,6 +164,8 @@ Errors: **409 `LOCATION_NOT_EMPTY`** (has children or items), **400 `CYCLE_DETEC
 { "id":"uuid", "name":"Passport", "description":null, "category":"documents",
   "currentLocationId":"uuid",
   "locationPath":["Bedroom","Wardrobe","Top drawer"],   // ARRAY of segments
+  "primaryFileId":"uuid|null",                          // stable — cache key for the cover photo
+  "primaryImageUrl":"https://…presigned…|null",         // rotates every ~10 min
   "archived":false, "createdAt":"…Z", "updatedAt":"…Z" }
 
 // SearchResult
@@ -493,8 +495,10 @@ space preselected. Never loop more than once.
   team as a security follow-up before public release.
 - **No item-count aggregates.** Space and location item counts must be derived client-side or
   omitted. Do not N+1 the API to compute them; prefer omitting them in v1.
-- **`primaryImageUrl` only appears in search results**, not in `GET /items` or `GET /items/{id}`.
-  For the item list and detail, fetch `GET /items/{id}/files` and presign as needed.
+- **~~`primaryImageUrl` only appears in search results~~ — fixed (BR-3, 2026-09-13).** `ItemResponse`
+  now carries `primaryFileId` + `primaryImageUrl`, resolved in one batch query per page, so the
+  list and detail screens need no `GET /items/{id}/files` call to show a cover photo. Key image
+  caches on `primaryFileId`; the URL expires in ~10 minutes.
 - **Assistant image analysis returns 501 on both real providers (`openai`, `claude`).** Feature-flag
   the UI. Only `ai.provider=mock` answers it, with canned suggestions.
 

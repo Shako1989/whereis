@@ -11,6 +11,8 @@ public record ItemResponse(
         String category,
         UUID currentLocationId,
         List<String> locationPath,
+        UUID primaryFileId,
+        String primaryImageUrl,
         boolean archived,
         Instant createdAt,
         Instant updatedAt

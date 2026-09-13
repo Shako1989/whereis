@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import az.technest.whereis.item.dto.ItemResponse;
@@ -13,6 +15,7 @@ import az.technest.whereis.location.LocationService;
 import az.technest.whereis.location.LocationTreeDao;
 import az.technest.whereis.location.LocationType;
 import az.technest.whereis.storage.FileStorageService;
+import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -141,6 +144,51 @@ class ItemServiceTest {
         assertThat(page.getContent()).allSatisfy(r ->
                 assertThat(r.locationPath()).containsExactly("Home", "Hallway"));
         verify(treeDao).resolvePaths(List.of(locationId));
+    }
+
+    @Test
+    void listResolvesCoverPhotosInOneBatchForTheWholePage() {
+        UUID locationId = UUID.randomUUID();
+        UUID withPhoto = UUID.randomUUID();
+        UUID withoutPhoto = UUID.randomUUID();
+        UUID fileId = UUID.randomUUID();
+        Item first = Item.builder().id(withPhoto).userId(userId).currentLocationId(locationId)
+                .name("Keys").normalizedName("keys").archived(false).build();
+        Item second = Item.builder().id(withoutPhoto).userId(userId).currentLocationId(locationId)
+                .name("Passport").normalizedName("passport").archived(false).build();
+        when(itemRepository.findAllByUserIdAndArchivedFalse(eq(userId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(first, second)));
+        when(treeDao.resolvePaths(List.of(locationId))).thenReturn(Map.of(locationId, List.of("Home")));
+        when(fileStorageService.primaryImages(List.of(withPhoto, withoutPhoto)))
+                .thenReturn(Map.of(withPhoto, new ItemPrimaryImage(fileId, "https://minio/presigned")));
+
+        List<ItemResponse> content = itemService.list(userId, 0, 20, null, false).getContent();
+
+        assertThat(content.get(0).primaryFileId()).isEqualTo(fileId);
+        assertThat(content.get(0).primaryImageUrl()).isEqualTo("https://minio/presigned");
+        assertThat(content.get(1).primaryFileId()).isNull();
+        assertThat(content.get(1).primaryImageUrl()).isNull();
+        // Exactly one cover lookup for the page: the whole point of BR-3 is killing the N+1.
+        verify(fileStorageService).primaryImages(List.of(withPhoto, withoutPhoto));
+        verifyNoMoreInteractions(fileStorageService);
+    }
+
+    @Test
+    void createDoesNotLookUpACoverPhotoForABrandNewItem() {
+        UUID locationId = UUID.randomUUID();
+        when(locationService.requireOwned(userId, locationId)).thenReturn(location(locationId, "Top Drawer"));
+        when(itemRepository.save(any(Item.class))).thenAnswer(inv -> {
+            Item saved = inv.getArgument(0);
+            saved.setId(UUID.randomUUID());
+            return saved;
+        });
+        when(treeDao.resolvePaths(List.of(locationId))).thenReturn(Map.of(locationId, List.of("Home")));
+
+        ItemResponse response = itemService.createAt(userId, locationId, "Passport", null, null, null);
+
+        assertThat(response.primaryFileId()).isNull();
+        assertThat(response.primaryImageUrl()).isNull();
+        verifyNoInteractions(fileStorageService);
     }
 
     @Test

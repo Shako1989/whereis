@@ -2,7 +2,6 @@ package az.technest.whereis.search;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -13,11 +12,8 @@ import az.technest.whereis.common.error.BadRequestException;
 import az.technest.whereis.location.LocationTreeDao;
 import az.technest.whereis.search.SearchDao.SearchRow;
 import az.technest.whereis.search.dto.ItemSearchResult;
-import az.technest.whereis.storage.ItemFile;
-import az.technest.whereis.storage.ItemFileRepository;
-import az.technest.whereis.storage.MinioAdapter;
-import az.technest.whereis.storage.MinioProperties;
-import java.time.Duration;
+import az.technest.whereis.storage.FileStorageService;
+import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -36,9 +32,7 @@ class PostgresSearchServiceTest {
     @Mock
     private LocationTreeDao treeDao;
     @Mock
-    private ItemFileRepository itemFileRepository;
-    @Mock
-    private MinioAdapter minioAdapter;
+    private FileStorageService fileStorageService;
 
     private PostgresSearchService service;
 
@@ -46,9 +40,7 @@ class PostgresSearchServiceTest {
 
     @BeforeEach
     void setUp() {
-        MinioProperties properties = new MinioProperties(
-                "http://localhost:9000", null, "key", "secret", "item-images", Duration.ofMinutes(10));
-        service = new PostgresSearchService(searchDao, treeDao, itemFileRepository, minioAdapter, properties);
+        service = new PostgresSearchService(searchDao, treeDao, fileStorageService);
     }
 
     @Test
@@ -59,10 +51,8 @@ class PostgresSearchServiceTest {
                 .thenReturn(List.of(new SearchRow(itemId, "Passport", locationId, Instant.now())));
         when(treeDao.resolvePaths(List.of(locationId)))
                 .thenReturn(Map.of(locationId, List.of("Home", "Bedroom", "Top Drawer")));
-        when(itemFileRepository.findAllByItemIdInAndIsPrimaryTrue(List.of(itemId)))
-                .thenReturn(List.of(ItemFile.builder().itemId(itemId).objectKey("k").bucket("b")
-                        .originalFileName("f.jpg").contentType("image/jpeg").fileSize(1).build()));
-        when(minioAdapter.presignGet(eq("k"), any())).thenReturn("https://minio/presigned");
+        when(fileStorageService.primaryImages(List.of(itemId)))
+                .thenReturn(Map.of(itemId, new ItemPrimaryImage(UUID.randomUUID(), "https://minio/presigned")));
 
         List<ItemSearchResult> results = service.search(userId, "  Passport ", 20);
 
@@ -78,7 +68,7 @@ class PostgresSearchServiceTest {
         when(searchDao.search(eq(userId), anyString(), anyInt()))
                 .thenReturn(List.of(new SearchRow(itemId, "Keys", locationId, Instant.now())));
         when(treeDao.resolvePaths(List.of(locationId))).thenReturn(Map.of(locationId, List.of("Home")));
-        when(itemFileRepository.findAllByItemIdInAndIsPrimaryTrue(List.of(itemId))).thenReturn(List.of());
+        when(fileStorageService.primaryImages(List.of(itemId))).thenReturn(Map.of());
 
         assertThat(service.search(userId, "keys", 20).getFirst().primaryImageUrl()).isNull();
     }

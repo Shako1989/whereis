@@ -1,8 +1,8 @@
 # Backend change requests — from the mobile clients
 
 Gaps found while building the Android client against the frozen backend. Each entry states the
-endpoint, the shape the client needs, why, and the workaround shipped in the meantime. Nothing here
-has been implemented on the server; the apps work around all of it.
+endpoint, the shape the client needs, why, and the workaround shipped in the meantime. Entries that
+have since been implemented say so in their heading; the apps work around the rest.
 
 Append new entries at the end. One `##` heading per request.
 
@@ -131,12 +131,42 @@ navigation contract for the assistant screen currently passes only a prefill *na
 form, so the picked space is dropped at that hand-off; that is a client-side limitation to close
 alongside this request, not a backend one.
 
-## BR-3 — `primaryImageUrl` missing from `ItemResponse` (N+1 in the items list)
+## BR-3 — `primaryImageUrl` missing from `ItemResponse` (N+1 in the items list) — **IMPLEMENTED 2026-09-13**
+
+**Status:** shipped. `ItemResponse` now carries **two** nullable cover-photo fields:
+
+```jsonc
+"primaryFileId":  "uuid|null",                   // stable
+"primaryImageUrl":"https://…presigned…|null"     // ~10 min TTL
+```
+
+Both are populated on `GET /items`, `GET /items/{id}`, `PUT /items/{id}` and
+`POST /items/{id}/move`, and are null for an item without a cover photo. `POST /items` returns
+nulls without issuing any lookup — a just-created item cannot have a photo yet.
+
+**Why the file id and not just the URL, as asked.** The presigned URL rotates every
+`minio.presign-ttl` (~10 minutes), so it is useless as a cache key: the client keys its Coil disk
+cache on `fileId` (`ItemPhotoFetcher` / `StableImageModel`), and a URL-only response would force it
+to parse the object key back out of a signed URL, while any client-side cached list would hold dead
+URLs. Returning the stable id alongside keeps the existing client-side cache working unchanged.
+
+**How it is resolved.** `FileStorageService.primaryImages(Collection<UUID>)` returns
+`Map<UUID, ItemPrimaryImage>` (`fileId` + presigned `url`) for the items that have a cover, in **one
+query for the whole page** — the same `ItemFileRepository.findAllByItemIdInAndIsPrimaryTrue` lookup
+search already used, now the single shared implementation: `PostgresSearchService` was refactored
+onto it and no longer touches `ItemFileRepository`/`MinioAdapter` itself. The `item` module crosses
+the module boundary through that public service only. Presigning is a local HMAC computation, not a
+MinIO round-trip, which is why it is allowed inside `list()`'s read-only transaction. No migration,
+no new index, no new query. `ItemListCoverPhotoIT` pins the behaviour and asserts that the JDBC
+statement count for a page does not grow with page size (verified to fail when a per-row lookup is
+reintroduced).
+
+**Original report below.**
 
 **Raised:** 2026-08-30, from the Android items list.
 
-**Today:** `primaryImageUrl` exists only on `ItemSearchResult` (`GET /items/search`). Neither
-`GET /items` nor `GET /items/{itemId}` carries a thumbnail.
+**Today (before the fix):** `primaryImageUrl` exists only on `ItemSearchResult`
+(`GET /items/search`). Neither `GET /items` nor `GET /items/{itemId}` carries a thumbnail.
 
 **Why it matters:** the items list shows each item's cover photo. With no thumbnail in the page
 payload, the only way to learn whether an item has one is `GET /items/{id}/files` — **one extra call
@@ -148,7 +178,7 @@ batch lookup `PostgresSearchService` performs today — one query per page, not 
 
 **Client workaround shipped:** `ItemThumbnails` resolves the cover per visible row and caches it —
 found photos indefinitely (a `fileId` is stable), misses for 30s. Only rows actually scrolled past
-cost a call.
+cost a call. It can now be retired in favour of the fields on `ItemResponse`.
 
 ## BR-4 — Non-English sentences are not understood by the `mock` provider
 

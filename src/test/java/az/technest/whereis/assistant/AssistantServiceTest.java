@@ -117,7 +117,7 @@ class AssistantServiceTest {
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.9));
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of(home));
         ItemResponse item = new ItemResponse(UUID.randomUUID(), "Passport", null, null, UUID.randomUUID(),
-                List.of("Home", "Bedroom", "Top Drawer"), false, Instant.now(), Instant.now());
+                List.of("Home", "Bedroom", "Top Drawer"), null, null, false, Instant.now(), Instant.now());
         when(executor.place(eq(userId), eq(home.getId()), any(), anyString()))
                 .thenReturn(new PlacementExecutor.ExecutionResult(item, List.of("Bedroom", "Top Drawer")));
 
@@ -134,7 +134,7 @@ class AssistantServiceTest {
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Home", 0.9));
         when(spaceRepository.findByUserIdAndNormalizedName(userId, "home")).thenReturn(Optional.of(home));
         ItemResponse item = new ItemResponse(UUID.randomUUID(), "Passport", null, null, UUID.randomUUID(),
-                List.of("Home", "Bedroom", "Top Drawer"), false, Instant.now(), Instant.now());
+                List.of("Home", "Bedroom", "Top Drawer"), null, null, false, Instant.now(), Instant.now());
         when(executor.place(eq(userId), eq(home.getId()), any(), anyString()))
                 .thenReturn(new PlacementExecutor.ExecutionResult(item, List.of()));
 
@@ -183,7 +183,7 @@ class AssistantServiceTest {
         when(executor.place(eq(userId), eq(chosen.getId()), any(), anyString()))
                 .thenReturn(new PlacementExecutor.ExecutionResult(
                         new ItemResponse(UUID.randomUUID(), "Passport", null, null, UUID.randomUUID(),
-                                List.of("Home", "Bedroom", "Top Drawer"), false,
+                                List.of("Home", "Bedroom", "Top Drawer"), null, null, false,
                                 Instant.now(), Instant.now()),
                         List.of("Bedroom", "Top Drawer")));
 

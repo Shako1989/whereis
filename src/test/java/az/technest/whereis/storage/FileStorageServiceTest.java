@@ -59,7 +59,8 @@ class FileStorageServiceTest {
                 "http://localhost:9000", null, "key", "secret", "item-images", Duration.ofMinutes(10));
         service = new FileStorageService(itemRepository, itemFileRepository, queueRepository,
                 adapter, properties, persister, cleanup);
-        when(itemRepository.findByIdAndUserId(itemId, userId)).thenReturn(Optional.of(
+        // Lenient: the batch cover lookup is ownership-agnostic by contract and never calls this.
+        org.mockito.Mockito.lenient().when(itemRepository.findByIdAndUserId(itemId, userId)).thenReturn(Optional.of(
                 Item.builder().id(itemId).userId(userId).currentLocationId(UUID.randomUUID())
                         .name("Keys").normalizedName("keys").archived(false).build()));
     }
@@ -139,6 +140,32 @@ class FileStorageServiceTest {
 
         verify(adapter).put(org.mockito.ArgumentMatchers.matches(
                 "u/" + userId + "/i/" + itemId + "/[0-9a-f-]{36}"), any(), anyLong(), anyString());
+    }
+
+    @Test
+    void primaryImagesReturnsFileIdAndPresignedUrlPerItemInOneQuery() {
+        UUID otherItemId = UUID.randomUUID();
+        UUID fileId = UUID.randomUUID();
+        ItemFile primary = ItemFile.builder().id(fileId).itemId(itemId).bucket("item-images")
+                .objectKey("u/x/i/y/z").originalFileName("a.jpg").contentType("image/jpeg").fileSize(3).build();
+        when(itemFileRepository.findAllByItemIdInAndIsPrimaryTrue(List.of(itemId, otherItemId)))
+                .thenReturn(List.of(primary));
+        when(adapter.presignGet(eq("u/x/i/y/z"), any())).thenReturn("https://minio/presigned");
+
+        var covers = service.primaryImages(List.of(itemId, otherItemId));
+
+        assertThat(covers).containsOnlyKeys(itemId);
+        assertThat(covers.get(itemId).fileId()).isEqualTo(fileId);
+        assertThat(covers.get(itemId).url()).isEqualTo("https://minio/presigned");
+        // One query for the batch — never one per item.
+        verify(itemFileRepository).findAllByItemIdInAndIsPrimaryTrue(List.of(itemId, otherItemId));
+    }
+
+    @Test
+    void primaryImagesSkipsTheQueryForAnEmptyBatch() {
+        assertThat(service.primaryImages(List.of())).isEmpty();
+
+        verify(itemFileRepository, org.mockito.Mockito.never()).findAllByItemIdInAndIsPrimaryTrue(any());
     }
 
     @Test

@@ -6,15 +6,11 @@ import az.technest.whereis.common.util.Names;
 import az.technest.whereis.location.LocationTreeDao;
 import az.technest.whereis.search.SearchDao.SearchRow;
 import az.technest.whereis.search.dto.ItemSearchResult;
-import az.technest.whereis.storage.ItemFile;
-import az.technest.whereis.storage.ItemFileRepository;
-import az.technest.whereis.storage.MinioAdapter;
-import az.technest.whereis.storage.MinioProperties;
+import az.technest.whereis.storage.FileStorageService;
+import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,9 +23,7 @@ public class PostgresSearchService implements SearchService {
 
     private final SearchDao searchDao;
     private final LocationTreeDao treeDao;
-    private final ItemFileRepository itemFileRepository;
-    private final MinioAdapter minioAdapter;
-    private final MinioProperties minioProperties;
+    private final FileStorageService fileStorageService;
 
     @Override
     @Transactional(readOnly = true)
@@ -48,24 +42,23 @@ public class PostgresSearchService implements SearchService {
             return List.of();
         }
         // Two batch queries + local presigning for the whole result set — no per-row lookups.
+        // primaryImages() presigns with a local HMAC computation, not a MinIO call, so it is
+        // safe inside this read-only transaction.
         Map<UUID, List<String>> paths = treeDao.resolvePaths(
                 rows.stream().map(SearchRow::currentLocationId).distinct().toList());
-        Map<UUID, ItemFile> primaryByItem = itemFileRepository
-                .findAllByItemIdInAndIsPrimaryTrue(rows.stream().map(SearchRow::id).toList())
-                .stream()
-                .collect(Collectors.toMap(ItemFile::getItemId, Function.identity()));
+        Map<UUID, ItemPrimaryImage> covers = fileStorageService.primaryImages(
+                rows.stream().map(SearchRow::id).toList());
         return rows.stream()
                 .map(row -> new ItemSearchResult(
                         row.id(),
                         row.name(),
                         paths.getOrDefault(row.currentLocationId(), List.of()),
-                        presignOrNull(primaryByItem.get(row.id())),
+                        urlOrNull(covers.get(row.id())),
                         row.updatedAt()))
                 .toList();
     }
 
-    private String presignOrNull(ItemFile file) {
-        // Presigning is a local HMAC computation, not a network call — cheap per row.
-        return file == null ? null : minioAdapter.presignGet(file.getObjectKey(), minioProperties.presignTtl());
+    private static String urlOrNull(ItemPrimaryImage image) {
+        return image == null ? null : image.url();
     }
 }
