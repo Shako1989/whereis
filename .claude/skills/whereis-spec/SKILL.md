@@ -153,7 +153,7 @@ POST /assistant/remember {message, spaceId?}, /assistant/search {query}, /assist
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 111 unit tests — must stay green without Docker OR network
+./gradlew build              # compile + 131 unit tests — must stay green without Docker OR network
 ./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO) — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
@@ -246,6 +246,26 @@ Two real defects the run exposed, both still OPEN:
 2. **Search keyword extraction is inconsistent in Azerbaijani.** `"çantam haradadır?"` correctly
    yields `[çanta]`, but `"pasportum hardadir"` returns the entire sentence as one keyword, which
    matches nothing. The English path is unaffected.
+
+**2026-09-13 — cover photos in the item read path, and the two open defects closed.**
+BR-3 is implemented (`b80692b`): `ItemResponse` carries `primaryFileId` + `primaryImageUrl`,
+resolved by `FileStorageService.primaryImages(Collection<UUID>)` in **one batch query per page**
+(`item` crosses into `storage` only through that public service; `PostgresSearchService` was
+refactored onto the same method). The Android client retired its per-row `ItemThumbnails`
+workaround; measured on the emulator, opening the list issues zero `/files` and zero `/url` calls.
+Cover semantics (`ef616dd`): **primary photo, else the oldest photo, else none** — legacy photos were
+uploaded non-primary, so a primary-only rule left real photos invisible in the list while the detail
+screen (which lists all files) showed them. Selection is one ordered query
+(`is_primary DESC, created_at ASC, id ASC`) with a first-wins fold; JSON field names are unchanged
+because the deployed client depends on them. `ItemListCoverPhotoIT#theQueryCountOfAPageDoesNotGrowWithPageSize`
+compares Hibernate statement counts across page sizes and is mutation-checked (a per-row rewrite
+fails it). The two defects listed above as OPEN are now covered by live tests that pass: base-form
+names (`namesComeBackInBaseFormWithoutCaseSuffixes`, plus the compound-name and relational-spot
+rules from `f7e1f01`, e.g. "bağın açarını" → `Bağın açarı`, "pəncərənin qabağına" → `Pəncərə qabağı`)
+and Azerbaijani search keywords (`anAzerbaijaniQuestionYieldsTheObjectNotTheWholeSentence`).
+Suites on this date: **unit 131**, **integration 22 across 7 classes** (`ItemListCoverPhotoIT` added),
+**liveAiTest 21** — all green. Still open: no user-deletion endpoint (a Play Store requirement),
+and the VM's cold-start latency (first request after idle 20–50 s).
 
 ## 9. Future extension points (design for, do not build)
 

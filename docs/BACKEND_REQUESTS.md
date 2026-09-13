@@ -152,12 +152,14 @@ URLs. Returning the stable id alongside keeps the existing client-side cache wor
 
 **How it is resolved.** `FileStorageService.primaryImages(Collection<UUID>)` returns
 `Map<UUID, ItemPrimaryImage>` (`fileId` + presigned `url`) for the items that have a cover, in **one
-query for the whole page** — the same `ItemFileRepository.findAllByItemIdInAndIsPrimaryTrue` lookup
-search already used, now the single shared implementation: `PostgresSearchService` was refactored
+query for the whole page** — originally the same `ItemFileRepository.findAllByItemIdInAndIsPrimaryTrue`
+lookup search already used (since replaced, see the semantics note below), now the single shared
+implementation: `PostgresSearchService` was refactored
 onto it and no longer touches `ItemFileRepository`/`MinioAdapter` itself. The `item` module crosses
 the module boundary through that public service only. Presigning is a local HMAC computation, not a
 MinIO round-trip, which is why it is allowed inside `list()`'s read-only transaction. No migration,
-no new index, no new query. `ItemListCoverPhotoIT` pins the behaviour and asserts that the JDBC
+no new index; the cover lookup is still exactly one query per page (its shape changed with the
+semantics note below). `ItemListCoverPhotoIT` pins the behaviour and asserts that the JDBC
 statement count for a page does not grow with page size (verified to fail when a per-row lookup is
 reintroduced).
 
