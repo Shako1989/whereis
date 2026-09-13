@@ -27,8 +27,9 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
 /**
- * BR-3: the items list carries each item's cover photo, resolved in one batch query per page
- * instead of one {@code GET /items/{id}/files} per row.
+ * BR-3: the items list carries each item's cover photo — the primary photo, else the oldest
+ * upload — resolved in one batch query per page instead of one {@code GET /items/{id}/files}
+ * per row.
  */
 class ItemListCoverPhotoIT extends AbstractIntegrationTest {
 
@@ -44,6 +45,10 @@ class ItemListCoverPhotoIT extends AbstractIntegrationTest {
     }
 
     private UUID uploadPrimaryPhoto(String token, UUID itemId) {
+        return uploadPhoto(token, itemId, true);
+    }
+
+    private UUID uploadPhoto(String token, UUID itemId, boolean primary) {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         HttpHeaders partHeaders = new HttpHeaders();
         partHeaders.setContentType(MediaType.IMAGE_JPEG);
@@ -56,7 +61,7 @@ class ItemListCoverPhotoIT extends AbstractIntegrationTest {
         HttpHeaders headers = bearer(token);
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
         ResponseEntity<ItemFileResponse> uploaded = rest.exchange(
-                "/api/v1/items/" + itemId + "/files?primary=true", HttpMethod.POST,
+                "/api/v1/items/" + itemId + "/files?primary=" + primary, HttpMethod.POST,
                 new HttpEntity<>(body, headers), ItemFileResponse.class);
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         return uploaded.getBody().id();
@@ -94,6 +99,59 @@ class ItemListCoverPhotoIT extends AbstractIntegrationTest {
         ItemResponse single = get(token, "/api/v1/items/" + withPhoto, ItemResponse.class).getBody();
         assertThat(single.primaryFileId()).isEqualTo(fileId);
         assertThat(single.primaryImageUrl()).startsWith("http");
+    }
+
+    @Test
+    void anItemWhoseOnlyPhotosAreNonPrimaryUsesItsOldestOneAsCover() {
+        String token = registerAndGetToken();
+        SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
+        LocationResponse drawer = createLocation(token, home.id(), "Drawer", LocationType.DRAWER, null);
+        UUID termos = createItem(token, drawer.id(), "Termos");
+        // Legacy shape: the old Android client uploaded with primary=false by default, so most
+        // real items have photos and no primary. The retired client showed the FIRST photo.
+        UUID firstUploaded = uploadPhoto(token, termos, false);
+        UUID secondUploaded = uploadPhoto(token, termos, false);
+
+        JsonNode page = get(token, "/api/v1/items?size=20", JsonNode.class).getBody();
+
+        JsonNode row = itemNamed(page, "Termos");
+        assertThat(row.get("primaryFileId").asText()).isEqualTo(firstUploaded.toString());
+        assertThat(row.get("primaryFileId").asText()).isNotEqualTo(secondUploaded.toString());
+        assertThat(row.get("primaryImageUrl").asText()).startsWith("http");
+        ItemResponse single = get(token, "/api/v1/items/" + termos, ItemResponse.class).getBody();
+        assertThat(single.primaryFileId()).isEqualTo(firstUploaded);
+    }
+
+    @Test
+    void aPrimaryPhotoBeatsAnOlderNonPrimaryOne() {
+        String token = registerAndGetToken();
+        SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
+        LocationResponse drawer = createLocation(token, home.id(), "Drawer", LocationType.DRAWER, null);
+        UUID passport = createItem(token, drawer.id(), "Passport");
+        UUID olderPlain = uploadPhoto(token, passport, false);
+        UUID newerPrimary = uploadPhoto(token, passport, true);
+
+        JsonNode page = get(token, "/api/v1/items?size=20", JsonNode.class).getBody();
+
+        JsonNode row = itemNamed(page, "Passport");
+        // An explicit choice always wins over the age-based fallback.
+        assertThat(row.get("primaryFileId").asText()).isEqualTo(newerPrimary.toString());
+        assertThat(row.get("primaryFileId").asText()).isNotEqualTo(olderPlain.toString());
+    }
+
+    @Test
+    void anItemWithoutPhotosHasNullCoverFields() {
+        String token = registerAndGetToken();
+        SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
+        LocationResponse drawer = createLocation(token, home.id(), "Drawer", LocationType.DRAWER, null);
+        UUID keys = createItem(token, drawer.id(), "Keys");
+
+        JsonNode row = itemNamed(get(token, "/api/v1/items?size=20", JsonNode.class).getBody(), "Keys");
+        assertThat(row.get("primaryFileId").isNull()).isTrue();
+        assertThat(row.get("primaryImageUrl").isNull()).isTrue();
+        ItemResponse single = get(token, "/api/v1/items/" + keys, ItemResponse.class).getBody();
+        assertThat(single.primaryFileId()).isNull();
+        assertThat(single.primaryImageUrl()).isNull();
     }
 
     @Test

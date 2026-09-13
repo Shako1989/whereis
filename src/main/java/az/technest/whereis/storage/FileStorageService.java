@@ -12,10 +12,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -121,9 +121,12 @@ public class FileStorageService {
     }
 
     /**
-     * Cover photo (stable file id + presigned URL) for every given item that has one; items
-     * without a primary photo are simply absent from the map. ONE query for the whole batch —
-     * this is the only supported way to resolve covers for a page of items, never per row.
+     * Cover photo (stable file id + presigned URL) for every given item that has at least one
+     * photo: the photo flagged primary if there is one, otherwise the OLDEST upload. Items with
+     * no photos at all are simply absent from the map. Most legacy photos were uploaded with
+     * {@code primary=false}, so "primary only" would leave them coverless; this matches what the
+     * retired Android workaround did. ONE query for the whole batch — this is the only supported
+     * way to resolve covers for a page of items, never per row.
      *
      * <p>Ownership is the caller's responsibility: the ids must already have been produced by a
      * userId-scoped finder, exactly like {@code LocationTreeDao}'s batch path resolution.
@@ -137,10 +140,19 @@ public class FileStorageService {
         if (itemIds.isEmpty()) {
             return Map.of();
         }
-        // At most one primary row per item is possible (partial unique index on item_files),
-        // so collecting into a map by item id cannot collide.
-        return itemFileRepository.findAllByItemIdInAndIsPrimaryTrue(itemIds).stream()
-                .collect(Collectors.toMap(ItemFile::getItemId, this::toPrimaryImage));
+        // This fetches EVERY file of the page's items, not just the primaries: the fallback to
+        // the oldest photo cannot be expressed as a row filter, and it must not become a second
+        // query. Acceptable because an item carries a handful of photos, it is still one round
+        // trip per page, and the client code this replaces made one call PER ROW.
+        //
+        // The finder orders rows winner-first per item (primary, then oldest, then lowest id),
+        // so a first-wins fold over that list picks the cover. The decision is taken from the
+        // ORDER BY, never from map iteration order; only winners are presigned.
+        Map<UUID, ItemPrimaryImage> covers = new HashMap<>();
+        for (ItemFile file : itemFileRepository.findAllByItemIdInOrderByIsPrimaryDescCreatedAtAscIdAsc(itemIds)) {
+            covers.computeIfAbsent(file.getItemId(), itemId -> toPrimaryImage(file));
+        }
+        return Map.copyOf(covers);
     }
 
     @Transactional(readOnly = true)

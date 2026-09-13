@@ -161,6 +161,17 @@ no new index, no new query. `ItemListCoverPhotoIT` pins the behaviour and assert
 statement count for a page does not grow with page size (verified to fail when a per-row lookup is
 reintroduced).
 
+**Cover semantics changed 2026-09-13: primary, else oldest.** The first cut returned only files
+with `is_primary = true`, but most photos in production were uploaded with `primary=false` (the
+Android `PhotoCaptureViewModel` defaulted `useAsCover=false` until recently), so items such as
+"Passport" and "Termos" showed a placeholder in the list while the detail screen — which lists
+every file — still showed the photo. `primaryImages()` now returns the primary photo if the item
+has one, otherwise its OLDEST photo, otherwise nothing — exactly what the retired `ItemThumbnails`
+workaround did, so every existing item regains its cover without a data migration. Still one
+query per page: `findAllByItemIdInOrderByIsPrimaryDescCreatedAtAscIdAsc` fetches the items'
+files winner-first (primary, then oldest, then lowest id as the tie-break) and the service keeps
+the first row per item. The JSON field names are unchanged.
+
 **Original report below.**
 
 **Raised:** 2026-08-30, from the Android items list.
@@ -179,6 +190,11 @@ batch lookup `PostgresSearchService` performs today — one query per page, not 
 **Client workaround shipped:** `ItemThumbnails` resolves the cover per visible row and caches it —
 found photos indefinitely (a `fileId` is stable), misses for 30s. Only rows actually scrolled past
 cost a call. It can now be retired in favour of the fields on `ItemResponse`.
+
+**Client: retired 2026-09-13.** `ItemThumbnails` and its Hilt entry point are deleted. The items
+list builds its row image model from `primaryFileId` (memory and disk cache key) plus
+`primaryImageUrl` (first download attempt, no API call); a URL that storage rejects as expired falls
+back to `GET …/files/{fileId}/url` exactly once through the existing `ItemPhotoFetcher` retry.
 
 ## BR-4 — Non-English sentences are not understood by the `mock` provider
 

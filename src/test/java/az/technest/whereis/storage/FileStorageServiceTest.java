@@ -14,6 +14,7 @@ import az.technest.whereis.common.error.ApiException;
 import az.technest.whereis.item.Item;
 import az.technest.whereis.item.ItemRepository;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -142,30 +143,98 @@ class FileStorageServiceTest {
                 "u/" + userId + "/i/" + itemId + "/[0-9a-f-]{36}"), any(), anyLong(), anyString());
     }
 
+    private static ItemFile photo(UUID id, UUID itemId, boolean primary, Instant createdAt) {
+        return ItemFile.builder().id(id).itemId(itemId).bucket("item-images")
+                .objectKey("u/x/i/" + itemId + "/" + id).originalFileName("a.jpg")
+                .contentType("image/jpeg").fileSize(3).isPrimary(primary).createdAt(createdAt).build();
+    }
+
+    /** Stubs the cover finder with rows in the order the ORDER BY would deliver them. */
+    private void coverRows(List<UUID> itemIds, ItemFile... rowsInFinderOrder) {
+        when(itemFileRepository.findAllByItemIdInOrderByIsPrimaryDescCreatedAtAscIdAsc(itemIds))
+                .thenReturn(List.of(rowsInFinderOrder));
+        when(adapter.presignGet(anyString(), any()))
+                .thenAnswer(inv -> "https://minio/" + inv.getArgument(0));
+    }
+
     @Test
     void primaryImagesReturnsFileIdAndPresignedUrlPerItemInOneQuery() {
         UUID otherItemId = UUID.randomUUID();
         UUID fileId = UUID.randomUUID();
-        ItemFile primary = ItemFile.builder().id(fileId).itemId(itemId).bucket("item-images")
-                .objectKey("u/x/i/y/z").originalFileName("a.jpg").contentType("image/jpeg").fileSize(3).build();
-        when(itemFileRepository.findAllByItemIdInAndIsPrimaryTrue(List.of(itemId, otherItemId)))
-                .thenReturn(List.of(primary));
-        when(adapter.presignGet(eq("u/x/i/y/z"), any())).thenReturn("https://minio/presigned");
+        coverRows(List.of(itemId, otherItemId), photo(fileId, itemId, true, Instant.now()));
 
         var covers = service.primaryImages(List.of(itemId, otherItemId));
 
         assertThat(covers).containsOnlyKeys(itemId);
         assertThat(covers.get(itemId).fileId()).isEqualTo(fileId);
-        assertThat(covers.get(itemId).url()).isEqualTo("https://minio/presigned");
+        assertThat(covers.get(itemId).url()).isEqualTo("https://minio/u/x/i/" + itemId + "/" + fileId);
         // One query for the batch — never one per item.
-        verify(itemFileRepository).findAllByItemIdInAndIsPrimaryTrue(List.of(itemId, otherItemId));
+        verify(itemFileRepository).findAllByItemIdInOrderByIsPrimaryDescCreatedAtAscIdAsc(List.of(itemId, otherItemId));
     }
 
     @Test
     void primaryImagesSkipsTheQueryForAnEmptyBatch() {
         assertThat(service.primaryImages(List.of())).isEmpty();
 
-        verify(itemFileRepository, org.mockito.Mockito.never()).findAllByItemIdInAndIsPrimaryTrue(any());
+        verify(itemFileRepository, org.mockito.Mockito.never())
+                .findAllByItemIdInOrderByIsPrimaryDescCreatedAtAscIdAsc(any());
+    }
+
+    @Test
+    void primaryImagesPrefersThePrimaryOverAnOlderNonPrimaryPhoto() {
+        UUID otherItemId = UUID.randomUUID();
+        Instant t0 = Instant.parse("2026-01-01T00:00:00Z");
+        UUID newerPrimary = UUID.randomUUID();
+        UUID olderPlain = UUID.randomUUID();
+        UUID otherOldest = UUID.randomUUID();
+        UUID otherNewer = UUID.randomUUID();
+        // Finder order is global, not grouped by item: all primaries first, then everything
+        // else oldest-first — so rows of different items interleave.
+        coverRows(List.of(itemId, otherItemId),
+                photo(newerPrimary, itemId, true, t0.plusSeconds(60)),
+                photo(otherOldest, otherItemId, false, t0),
+                photo(olderPlain, itemId, false, t0.plusSeconds(1)),
+                photo(otherNewer, otherItemId, false, t0.plusSeconds(30)));
+
+        var covers = service.primaryImages(List.of(itemId, otherItemId));
+
+        assertThat(covers).containsOnlyKeys(itemId, otherItemId);
+        assertThat(covers.get(itemId).fileId()).isEqualTo(newerPrimary);
+        assertThat(covers.get(otherItemId).fileId()).isEqualTo(otherOldest);
+        // Only the two winners are presigned, not every row of the page.
+        verify(adapter, org.mockito.Mockito.times(2)).presignGet(anyString(), any());
+    }
+
+    @Test
+    void primaryImagesFallsBackToTheOldestPhotoWhenNoneIsPrimary() {
+        Instant t0 = Instant.parse("2026-01-01T00:00:00Z");
+        UUID oldest = UUID.randomUUID();
+        UUID middle = UUID.randomUUID();
+        UUID newest = UUID.randomUUID();
+        coverRows(List.of(itemId),
+                photo(oldest, itemId, false, t0),
+                photo(middle, itemId, false, t0.plusSeconds(5)),
+                photo(newest, itemId, false, t0.plusSeconds(10)));
+
+        var covers = service.primaryImages(List.of(itemId));
+
+        assertThat(covers.get(itemId).fileId()).isEqualTo(oldest);
+    }
+
+    @Test
+    void primaryImagesIsFirstWinsWhenTimestampsTieSoTheIdTieBreakDecides() {
+        Instant sameInstant = Instant.parse("2026-01-01T00:00:00Z");
+        UUID lowerId = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        UUID higherId = UUID.fromString("00000000-0000-0000-0000-000000000002");
+        // Equal created_at: the finder's trailing "id ASC" puts the lower id first and the
+        // service must keep that row rather than re-deciding on its own.
+        coverRows(List.of(itemId),
+                photo(lowerId, itemId, false, sameInstant),
+                photo(higherId, itemId, false, sameInstant));
+
+        var covers = service.primaryImages(List.of(itemId));
+
+        assertThat(covers.get(itemId).fileId()).isEqualTo(lowerId);
     }
 
     @Test
