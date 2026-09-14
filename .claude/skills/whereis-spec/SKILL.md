@@ -62,7 +62,9 @@ A vendor SDK is not Spring AI: still no Spring AI, no events/queues, no microser
 ```
 auth/      register/login/refresh; rotating opaque refresh tokens stored SHA-256-hashed;
            reuse ⇒ revoke family via RefreshTokenRevoker (REQUIRES_NEW — survives the 401 rollback)
-user/      User entity + repository
+user/      User entity + repository; PasswordVerifier — the ONE enumeration-safe BCrypt comparison
+           (login and account deletion both go through it); AccountDeletionService — the
+           single-transaction hard-delete cascade behind DELETE /users/me (order below in §4/§6)
 space/     CRUD; unique normalized name per user; delete guarded + advisory-locked
 location/  recursive tree; LocationTreeDao owns the recursive CTEs (batch path resolution,
            ancestor/cycle walk) and pg_advisory_xact_lock(space) serializing structural changes;
@@ -123,6 +125,12 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
 - `item_files`: `object_key` unique; partial unique `(item_id) WHERE is_primary`.
 - `storage_deletion_queue`: the MinIO deletion outbox (bucket stored per entry and used by consumers).
 - Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java enums.
+- **Account deletion order is items → locations → spaces → user, with the storage_deletion_queue rows
+  enqueued BEFORE the item cascade** (`item_files` cascades from `items`, which erases the object keys).
+  Items must go first because `items.current_location_id` is RESTRICT (checked immediately); the whole
+  location forest then goes in ONE statement because the self-FK `fk_locations_parent_same_space` is
+  NO ACTION (checked at end of statement); spaces go after their locations; `refresh_tokens` cascade
+  from `users`. A plain `DELETE FROM users` cannot work — PostgreSQL gives no control over cascade order.
 - New schema changes = new `V<n>__*.sql` migration; never edit applied migrations, never ddl-auto.
 
 ## 5. API surface (`/api/v1`)
@@ -133,7 +141,11 @@ GET /locations/{id}/children · items: CRUD, POST /items/{id}/move {locationId,n
 GET /items/{id}/history, GET /items?page&size&sort, GET /items/search?q= (returns
 {id,name,locationPath[],primaryImageUrl,updatedAt}) · files: POST(multipart)/GET
 /items/{id}/files, DELETE /{fileId}, GET /{fileId}/url (presigned) · assistant:
-POST /assistant/remember {message, spaceId?}, /assistant/search {query}, /assistant/images/analyze.
+POST /assistant/remember {message, spaceId?}, /assistant/search {query}, /assistant/images/analyze ·
+account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
+401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
+Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
+the Play Store data-deletion and privacy URLs).
 
 ## 6. Guardrails (review-confirmed; do not regress)
 
@@ -149,11 +161,16 @@ POST /assistant/remember {message, spaceId?}, /assistant/search {query}, /assist
   NaN-proof (`x >= min && x <= max`, never `!(x < min)`).
 - Batch, never per-row: location paths and primary images resolve in one query per page.
 - Never log credentials, tokens, or user messages above DEBUG.
+- Account deletion: outbox rows before the item cascade; items → locations → spaces → user; per-space
+  advisory locks taken first in ascending id order; zero MinIO calls and no afterCommit sweep in the
+  request path (the janitor drains the outbox); `RefreshTokenRevoker` is NOT called (REQUIRES_NEW would
+  survive a rollback — the users→refresh_tokens cascade is the revocation). Pinned by
+  `AccountDeletionServiceTest` (InOrder) and `AccountDeletionIT`.
 
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 131 unit tests — must stay green without Docker OR network
+./gradlew build              # compile + 142 unit tests — must stay green without Docker OR network
 ./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO) — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
@@ -198,7 +215,7 @@ a JDK `HttpServer` on loopback, because `MockRestServiceServer` cannot intercept
 which is what allows the model to be raised to one that rejects sampling parameters (Opus 4.7 and
 later, Sonnet 5, Fable — Opus 4.6, Sonnet 4.6 and Haiku 4.5 still accept them). Both compose files
 forward `AI_CLAUDE_TEMPERATURE` with a colon-less default so a deliberately blank value survives.
-Remaining accepted MVP gaps: no user-deletion endpoint/cascade; no per-user AI cost or rate cap
+Remaining accepted MVP gaps: ~~no user-deletion endpoint/cascade~~ (closed 2026-09-14, see below); no per-user AI cost or rate cap
 (an Anthropic Console spend limit is the only ceiling — documented in `deploy/README.md` Step 7b);
 `openai` AND `claude` analyzeImage return 501 (mock returns canned suggestions); and the `claude`
 provider's confidence calibration and non-English coverage are unverified against a live key —
@@ -264,8 +281,26 @@ names (`namesComeBackInBaseFormWithoutCaseSuffixes`, plus the compound-name and 
 rules from `f7e1f01`, e.g. "bağın açarını" → `Bağın açarı`, "pəncərənin qabağına" → `Pəncərə qabağı`)
 and Azerbaijani search keywords (`anAzerbaijaniQuestionYieldsTheObjectNotTheWholeSentence`).
 Suites on this date: **unit 131**, **integration 22 across 7 classes** (`ItemListCoverPhotoIT` added),
-**liveAiTest 21** — all green. Still open: no user-deletion endpoint (a Play Store requirement),
-and the VM's cold-start latency (first request after idle 20–50 s).
+**liveAiTest 21** — all green. Still open: ~~no user-deletion endpoint (a Play Store requirement)~~
+(closed 2026-09-14), and the VM's cold-start latency (first request after idle 20–50 s).
+
+**2026-09-14 — account deletion (the last Play Store blocker).** `DELETE /api/v1/users/me` with
+`{"password"}` re-authenticates through the new `user/PasswordVerifier` (the timing-equalizer BCrypt
+compare moved out of `AuthService.login`, whose tests pass unchanged) and runs `AccountDeletionService`:
+one `@Transactional`, per-space `pg_advisory_xact_lock`s ascending → `SELECT … FOR UPDATE` on the
+user's items → one `INSERT … SELECT` into `storage_deletion_queue` → bulk delete items → ONE
+statement for the whole location forest → bulk delete spaces → `userRepository.delete(user)`
+(refresh_tokens cascade). No migration; every step is expressible with V1–V7. No MinIO call in the
+request path — `StorageJanitor` removes the binaries shortly after. `/legal/delete-account` and
+`/legal/privacy` are bilingual static pages (permitAll GET) with `{{SUPPORT_EMAIL}}`, `{{LEGAL_ENTITY}}`,
+`{{LEGAL_ADDRESS}}`, `{{EFFECTIVE_DATE}}`, `{{BACKUP_RETENTION_DAYS}}` placeholders that MUST be replaced
+before submission (`grep -R "{{" src/main/resources/static` must be empty — deploy/README.md Step 9).
+Known, accepted: a still-valid access token is not killed (reads return empty, writes 409 on the users
+FK — pinned by `AccountDeletionIT#deletedAccountRefreshTokenCannotResurrectTheSession`); a concurrent
+`POST /items` from a second device can abort the delete with a full rollback (item creation takes no
+space lock — deferred); janitor drains 50 objects per sweep, so photo-heavy accounts take minutes to
+leave MinIO. Suites: **unit 142**, **integration 33 across 9 classes** (`AccountDeletionIT`,
+`LegalPagesIT` added).
 
 ## 9. Future extension points (design for, do not build)
 

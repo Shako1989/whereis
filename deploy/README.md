@@ -302,6 +302,48 @@ metadata rows, so both must be captured together. Add to root's crontab:
 Copy `/var/backups` and the `minio-data` volume off the box — a backup that only lives on the
 VM does not survive losing the VM.
 
+## Step 9 — Google Play: account-deletion and privacy URLs
+
+Play requires every app with account creation to offer deletion in-app **and** via a public web
+page. The backend serves both pages itself, unauthenticated, from the API vhost — no Caddy change,
+the whole `{$WHEREIS_API_HOST}` vhost already proxies to `whereis-api:8080`:
+
+```
+Data deletion URL : https://$WHEREIS_API_HOST/legal/delete-account
+Privacy policy URL: https://$WHEREIS_API_HOST/legal/privacy
+```
+
+Both pages ship with **placeholders that must be replaced before a submission** — a page showing a
+literal `{{SUPPORT_EMAIL}}` will fail review. Edit the two files under
+`src/main/resources/static/legal/`, then gate the build on the grep being empty:
+
+| Placeholder | Meaning |
+|---|---|
+| `{{SUPPORT_EMAIL}}` | mailbox that receives e-mail deletion requests (identity is verified before anything is removed) |
+| `{{LEGAL_ENTITY}}` | the legal name of the data controller |
+| `{{LEGAL_ADDRESS}}` | its postal address |
+| `{{EFFECTIVE_DATE}}` | the date the notice takes effect |
+| `{{BACKUP_RETENTION_DAYS}}` | how long a deleted account can persist in backups — Step 8 rotates dumps after **14** days; confirm the real box before writing the number |
+
+```sh
+grep -R "{{" src/main/resources/static && echo "PLACEHOLDERS LEFT — do not submit" || echo "ok"
+```
+
+Verify after deploy (no token on any of these):
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://$WHEREIS_API_HOST/legal/delete-account   # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://$WHEREIS_API_HOST/legal/privacy          # 200
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE https://$WHEREIS_API_HOST/api/v1/users/me  # 401
+```
+
+The endpoint the app calls is `DELETE /api/v1/users/me` with `{"password": "..."}`; wrong password
+→ 401 and nothing deleted. Photo binaries are removed by the janitor from `storage_deletion_queue`
+within minutes (50 objects per 60 s sweep) — `select count(*) from storage_deletion_queue;` should
+trend to zero after a deletion. Note for whoever signs the privacy statement: a deleted account
+genuinely persists in the Step 8 dumps until they rotate out; there is no process that scrubs a
+user from an existing dump.
+
 ## Redeploy and rollback
 
 ```sh

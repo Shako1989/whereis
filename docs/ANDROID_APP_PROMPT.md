@@ -98,6 +98,33 @@ Constraints: `email` ≤ 320 and RFC-valid; `password` 8–72 chars; `firstName`
 
 Every other endpoint requires `Authorization: Bearer {accessToken}`.
 
+#### 3.1a Account — `/users/me`
+
+| Method | Path | Auth | Body | Success |
+|---|---|---|---|---|
+| DELETE | `/users/me` | bearer | `{password}` | **204** (empty) |
+
+- Re-authentication is mandatory: the body carries the user's **current password**. A wrong, blank or
+  missing password — and a token whose account no longer exists — all return **401
+  `INVALID_CREDENTIALS`** with the standard error shape and **nothing is deleted**. Map it to "wrong
+  password"; never tell the user which of those it was.
+- The deletion is a **hard delete in one transaction, no grace period**: account, spaces, location
+  tree, items, history, photo metadata and every refresh token (all devices are signed out
+  server-side). Photo binaries are removed from storage asynchronously shortly after.
+- The user id comes from the JWT subject; there is no id in the path or the body (§4.2).
+- Retrofit requires `@HTTP(method = "DELETE", path = "users/me", hasBody = true)` — a plain `@DELETE`
+  cannot carry a body.
+- The still-valid access token is **not** revoked (stateless JWT). After a 204 the client wipes its
+  token store and local database and returns to Login — exactly the sign-out path — and must NOT call
+  `/auth/refresh` (it would 401 `TOKEN_INVALID`).
+- A **409 `CONFLICT`** is possible only if another device of the same user wrote data during the
+  delete; nothing was deleted, so "try again" is the right copy.
+- Give this one call a generous timeout and a blocking progress state: the cascade is a few seconds
+  for a large account and the production cold start can sit in front of it.
+
+The public pages Play links to are served by the same host, unauthenticated:
+`/legal/delete-account` and `/legal/privacy` (bilingual AZ/EN). Settings may deep-link to them.
+
 ### 3.2 Spaces — `/spaces`
 
 | Method | Path | Body | Success |
@@ -452,7 +479,11 @@ server-side normalized-name uniqueness makes naive replay produce `DUPLICATE_NAM
     → suggestion chips the user confirms individually into items. Degrade gracefully on
     `AI_NOT_IMPLEMENTED`.
 15. **Settings** — account (email from the JWT `email` claim), language, theme, logout (wipes tokens
-    **and** the local database), debug host field, about/version.
+    **and** the local database), **Delete account** (§3.1a: a destructive-styled entry that explains
+    what is deleted and that it is irreversible, asks for the password, requires one explicit
+    confirmation, calls `DELETE /users/me`, and on 204 runs the same wipe as logout and returns to
+    Login; 401 → "wrong password", stay signed in), links to the privacy notice and the deletion page,
+    debug host field, about/version.
 
 Cross-cutting states: every list has explicit **loading / empty / error / offline** states with a
 retry affordance. Empty states teach the next action ("Create your first space").
@@ -490,9 +521,10 @@ space preselected. Never loop more than once.
 
 - **No user profile endpoint.** `firstName`/`lastName` are accepted at registration but never
   returned. Show the `email` claim from the JWT; keep the display name locally.
-- **No account deletion / logout endpoint.** Client-side logout = wipe tokens + wipe the local
-  database. The refresh token remains valid server-side until it expires — flag this to the backend
-  team as a security follow-up before public release.
+- **~~No account deletion~~ — fixed (BR-5, 2026-09-14):** `DELETE /users/me` with the password
+  (§3.1a) deletes the account and revokes every refresh token. **No logout endpoint** remains open
+  (BR-1): client-side logout = wipe tokens + wipe the local database, and the refresh token stays
+  valid server-side until it expires.
 - **No item-count aggregates.** Space and location item counts must be derived client-side or
   omitted. Do not N+1 the API to compute them; prefer omitting them in v1.
 - **~~`primaryImageUrl` only appears in search results~~ — fixed (BR-3, 2026-09-13).** `ItemResponse`

@@ -3,6 +3,7 @@ package az.technest.whereis.item;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
@@ -202,5 +204,25 @@ class ItemServiceTest {
 
         verify(fileStorageService).enqueueAllForItem(itemId);
         verify(itemRepository).delete(item);
+    }
+
+    @Test
+    void deleteAllForUserLocksThenEnqueuesThenDeletesAndReportsBothCounts() {
+        when(itemRepository.lockAllForUser(userId)).thenReturn(List.of(UUID.randomUUID(), UUID.randomUUID()));
+        when(fileStorageService.enqueueAllForUser(userId)).thenReturn(5);
+        when(itemRepository.deleteAllByUserId(userId)).thenReturn(2);
+
+        ItemDeletionSummary summary = itemService.deleteAllForUser(userId);
+
+        // The order IS the invariant: item_files cascades from items, so the outbox snapshot must
+        // precede the delete or the MinIO objects are orphaned; the lock must precede the snapshot
+        // or a concurrent upload can slip its metadata in between. Swapping any two fails this.
+        InOrder order = inOrder(itemRepository, fileStorageService);
+        order.verify(itemRepository).lockAllForUser(userId);
+        order.verify(fileStorageService).enqueueAllForUser(userId);
+        order.verify(itemRepository).deleteAllByUserId(userId);
+        assertThat(summary.items()).isEqualTo(2);
+        assertThat(summary.filesEnqueued()).isEqualTo(5);
+        verifyNoMoreInteractions(fileStorageService);
     }
 }

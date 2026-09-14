@@ -8,18 +8,28 @@ import az.technest.whereis.location.dto.LocationResponse;
 import az.technest.whereis.space.SpaceType;
 import az.technest.whereis.space.dto.CreateSpaceRequest;
 import az.technest.whereis.space.dto.SpaceResponse;
+import az.technest.whereis.storage.dto.ItemFileResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.Base64;
 import java.util.UUID;
 import org.junit.jupiter.api.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.testcontainers.containers.MinIOContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -59,17 +69,41 @@ public abstract class AbstractIntegrationTest {
         registry.add("minio.secret-key", MINIO::getPassword);
     }
 
+    /** The password every {@link #register()} call uses — needed by tests that re-authenticate. */
+    protected static final String PASSWORD = "password123";
+
+    /** Smallest byte sequence that passes the JPEG magic-byte check. */
+    protected static final byte[] JPEG_BYTES =
+            {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 10, 20, 30, 40, 50, 60, 70, 80};
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     @Autowired
     protected TestRestTemplate rest;
 
-    protected String registerAndGetToken() {
+    /** Registers a fresh user with a random e-mail and returns the whole token pair. */
+    protected TokenPairResponse register() {
         String email = "user-" + UUID.randomUUID() + "@example.com";
         ResponseEntity<TokenPairResponse> response = rest.postForEntity("/api/v1/auth/register",
-                new RegisterRequest(email, "password123", "Test", "User"), TokenPairResponse.class);
+                new RegisterRequest(email, PASSWORD, "Test", "User"), TokenPairResponse.class);
         if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
             throw new IllegalStateException("Registration failed: " + response.getStatusCode());
         }
-        return response.getBody().accessToken();
+        return response.getBody();
+    }
+
+    protected String registerAndGetToken() {
+        return register().accessToken();
+    }
+
+    /** The JWT subject, i.e. the user id the backend derives ownership from. Signature is not checked here. */
+    protected UUID subjectOf(String accessToken) {
+        String payload = accessToken.split("\\.")[1];
+        try {
+            return UUID.fromString(JSON.readTree(Base64.getUrlDecoder().decode(payload)).get("sub").asText());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     protected HttpHeaders bearer(String token) {
@@ -87,6 +121,33 @@ public abstract class AbstractIntegrationTest {
     protected <T> ResponseEntity<T> post(String token, String url, Object body, Class<T> type) {
         return rest.exchange(url, org.springframework.http.HttpMethod.POST,
                 new HttpEntity<>(body, bearer(token)), type);
+    }
+
+    /** DELETE with a JSON body; {@code body == null} sends no body at all. */
+    protected <T> ResponseEntity<T> deleteWithBody(String token, String url, Object body, Class<T> type) {
+        return rest.exchange(url, HttpMethod.DELETE, new HttpEntity<>(body, bearer(token)), type);
+    }
+
+    /** Uploads a minimal valid JPEG to the item and returns the file id. */
+    protected UUID uploadJpeg(String token, UUID itemId, boolean primary) {
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        HttpHeaders partHeaders = new HttpHeaders();
+        partHeaders.setContentType(MediaType.IMAGE_JPEG);
+        body.add("file", new HttpEntity<>(new ByteArrayResource(JPEG_BYTES) {
+            @Override
+            public String getFilename() {
+                return "photo.jpg";
+            }
+        }, partHeaders));
+        HttpHeaders headers = bearer(token);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ResponseEntity<ItemFileResponse> uploaded = rest.exchange(
+                "/api/v1/items/" + itemId + "/files?primary=" + primary, HttpMethod.POST,
+                new HttpEntity<>(body, headers), ItemFileResponse.class);
+        if (uploaded.getStatusCode() != HttpStatus.CREATED || uploaded.getBody() == null) {
+            throw new IllegalStateException("Upload failed: " + uploaded.getStatusCode());
+        }
+        return uploaded.getBody().id();
     }
 
     protected SpaceResponse createSpace(String token, String name, SpaceType type) {

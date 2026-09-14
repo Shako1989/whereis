@@ -15,6 +15,7 @@ import az.technest.whereis.auth.dto.TokenPairResponse;
 import az.technest.whereis.common.error.ApiException;
 import az.technest.whereis.common.error.ConflictException;
 import az.technest.whereis.common.error.ErrorCode;
+import az.technest.whereis.user.PasswordVerifier;
 import az.technest.whereis.user.User;
 import az.technest.whereis.user.UserRepository;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
@@ -55,7 +56,7 @@ class AuthServiceTest {
         JwtService jwtService =
                 new JwtService(new NimbusJwtEncoder(new ImmutableSecret<>(properties.secretBytes())), properties);
         authService = new AuthService(userRepository, refreshTokenRepository, refreshTokenRevoker,
-                encoder, jwtService, properties);
+                encoder, new PasswordVerifier(encoder), jwtService, properties);
     }
 
     private User user(UUID id) {

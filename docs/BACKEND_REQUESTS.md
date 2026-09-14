@@ -233,3 +233,44 @@ case-marking sentence correctly and never translates: `"çantamı qonaq otağın
   pins it: two phrasings of one drawer must produce one name, or the tree grows a duplicate.
 - ~~Search keywords unreliable in Azerbaijani~~ — **fixed 2026-09-03.** The search prompt lists
   Azerbaijani question words and forbids returning a whole sentence as a keyword.
+
+## BR-5 — Account deletion (Google Play requirement) — **IMPLEMENTED 2026-09-14**
+
+**Status:** shipped. Play requires an in-app deletion path AND a web URL; both exist now.
+
+```
+DELETE /api/v1/users/me
+Authorization: Bearer {accessToken}
+Content-Type: application/json
+{ "password": "the user's current password" }
+
+204 No Content   — account and EVERYTHING under it are gone, irreversibly, in one transaction
+401 INVALID_CREDENTIALS — wrong, blank or missing password, or the account no longer exists;
+                          NOTHING is deleted. Same uniform body as a failed login.
+401 (resource-server) — no/expired access token: refresh first, then retry
+409 CONFLICT     — only under a concurrent write from another device; nothing deleted, safe to retry
+```
+
+**Semantics.** Hard delete, no grace period: user row, all spaces, the whole location tree, all
+items, the complete movement history, all photo metadata and every refresh token (all devices are
+signed out server-side — this also closes the BR-1 "sign-out is only local" concern for the deletion
+case). Photo binaries leave object storage **asynchronously shortly after** (outbox + janitor); the
+delete itself never talks to MinIO, so storage being down cannot block it. The user id is the JWT
+subject — there is no id in the path and none in the body.
+
+**What the client must do.**
+- Settings → **Delete account**: explain what is deleted and that it is irreversible, ask for the
+  password, one explicit confirmation, then call the endpoint. Show a blocking progress state — a
+  large account is a few seconds, and the production VM's cold start (20–50 s after idle) can be in
+  front of it; set a generous timeout for this one call.
+- On **204**: wipe the encrypted token store and the local database exactly as sign-out does, and
+  return to the login screen. Do NOT call `/auth/refresh` afterwards — it will 401 `TOKEN_INVALID`.
+- On **401 INVALID_CREDENTIALS**: show "wrong password", keep the user signed in, let them retry.
+  (Do not distinguish "account already gone" — the server deliberately does not.)
+- Retrofit: a DELETE with a body needs `@HTTP(method = "DELETE", path = "users/me", hasBody = true)`.
+- The still-valid access token is NOT revoked (stateless JWT, 15-minute TTL); the wipe above is what
+  ends the session on the device.
+
+**Web routes for the Play Console** (served by the API host, no auth):
+`https://{WHEREIS_API_HOST}/legal/delete-account` (data-deletion URL) and
+`https://{WHEREIS_API_HOST}/legal/privacy` (privacy policy URL). Both are bilingual AZ/EN.

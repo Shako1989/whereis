@@ -121,6 +121,25 @@ public class FileStorageService {
     }
 
     /**
+     * Called inside the account-deletion transaction, BEFORE the items are deleted: one
+     * {@code INSERT … SELECT} puts every object of every item of the user into the outbox.
+     *
+     * <p>Deliberately registers NO {@code afterCommit} sweep, unlike {@link #delete} and
+     * {@link #enqueueAllForItem}. The sweep removes objects one by one on the request thread; for
+     * an account with thousands of photos that would put thousands of MinIO round trips between
+     * the commit and the 204. The bulk insert also hands back no entities to sweep. The outbox
+     * already guarantees eventual removal and {@code StorageJanitor} is its single consumer — so
+     * there is no MinIO call anywhere in the account-deletion request path, and MinIO being down
+     * cannot block the delete.
+     *
+     * @return the number of outbox rows written (one per {@code item_files} row)
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int enqueueAllForUser(UUID userId) {
+        return queueRepository.enqueueAllFilesOfUser(userId);
+    }
+
+    /**
      * Cover photo (stable file id + presigned URL) for every given item that has at least one
      * photo: the photo flagged primary if there is one, otherwise the OLDEST upload. Items with
      * no photos at all are simply absent from the map. Most legacy photos were uploaded with

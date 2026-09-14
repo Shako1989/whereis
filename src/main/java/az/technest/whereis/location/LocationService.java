@@ -20,6 +20,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -130,6 +131,17 @@ public class LocationService {
             throw new LocationNotEmptyException("Items are still stored in this location");
         }
         locationRepository.delete(location);
+    }
+
+    /**
+     * Account deletion: the user's whole location forest in ONE statement. Works for arbitrary
+     * depth because the parent FK is NO ACTION (checked at end of statement), so no
+     * children-first ordering is needed. MANDATORY: the caller must already have deleted the
+     * user's items (RESTRICT on {@code items.current_location_id}) and hold the space locks.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int deleteAllForUser(UUID userId) {
+        return locationRepository.deleteAllByUserId(userId);
     }
 
     /**

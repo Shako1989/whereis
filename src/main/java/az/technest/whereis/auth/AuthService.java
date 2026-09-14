@@ -7,6 +7,7 @@ import az.technest.whereis.common.error.ApiException;
 import az.technest.whereis.common.error.ConflictException;
 import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.common.util.Names;
+import az.technest.whereis.user.PasswordVerifier;
 import az.technest.whereis.user.User;
 import az.technest.whereis.user.UserRepository;
 import java.nio.charset.StandardCharsets;
@@ -30,23 +31,24 @@ public class AuthService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final RefreshTokenRevoker refreshTokenRevoker;
     private final PasswordEncoder passwordEncoder;
+    private final PasswordVerifier passwordVerifier;
     private final JwtService jwtService;
     private final JwtProperties jwtProperties;
-    private final String timingEqualizerHash;
 
     public AuthService(UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository,
                        RefreshTokenRevoker refreshTokenRevoker,
                        PasswordEncoder passwordEncoder,
+                       PasswordVerifier passwordVerifier,
                        JwtService jwtService,
                        JwtProperties jwtProperties) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.refreshTokenRevoker = refreshTokenRevoker;
         this.passwordEncoder = passwordEncoder;
+        this.passwordVerifier = passwordVerifier;
         this.jwtService = jwtService;
         this.jwtProperties = jwtProperties;
-        this.timingEqualizerHash = passwordEncoder.encode("timing-equalizer-" + RANDOM.nextLong());
     }
 
     @Transactional
@@ -69,14 +71,9 @@ public class AuthService {
     public TokenPairResponse login(LoginRequest request) {
         String email = Names.normalize(request.email());
         User user = userRepository.findByEmail(email).orElse(null);
-        if (user == null) {
-            // Equalize timing so login latency does not reveal whether the email exists.
-            passwordEncoder.matches(request.password(), timingEqualizerHash);
-            throw invalidCredentials();
-        }
-        if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
-            throw invalidCredentials();
-        }
+        // Enumeration-safe: an unknown email and a wrong password take the same time and produce
+        // the same 401 — the verifier owns that guarantee for login and account deletion alike.
+        passwordVerifier.requireMatch(user, request.password());
         return issuePair(user);
     }
 
@@ -124,10 +121,6 @@ public class AuthService {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
-    }
-
-    private static ApiException invalidCredentials() {
-        return new ApiException(HttpStatus.UNAUTHORIZED, ErrorCode.INVALID_CREDENTIALS, "Invalid credentials");
     }
 
     private static ApiException unauthorized(ErrorCode code, String message) {

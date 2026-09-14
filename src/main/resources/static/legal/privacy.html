@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="az">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Məxfilik bildirişi · Privacy notice — whereis</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+           line-height: 1.55; max-width: 44rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+    h2 { font-size: 1.25rem; margin-top: 2.25rem; padding-top: 1rem; border-top: 1px solid rgba(128,128,128,.4); }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; }
+    .lang-switch { font-size: .95rem; margin-bottom: 1.5rem; }
+    .muted { opacity: .75; font-size: .9rem; }
+    ul { padding-left: 1.4rem; }
+    li { margin: .3rem 0; }
+    table { border-collapse: collapse; width: 100%; margin: .75rem 0; font-size: .95rem; }
+    th, td { text-align: left; vertical-align: top; padding: .4rem .5rem; border-bottom: 1px solid rgba(128,128,128,.35); }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .95em; }
+    footer { margin-top: 3rem; font-size: .85rem; opacity: .7; }
+  </style>
+</head>
+<body>
+
+<nav class="lang-switch">
+  <a href="#az">Azərbaycanca</a> · <a href="#en">English</a> · <a href="/legal/delete-account">Hesabı sil / Delete account</a>
+</nav>
+
+<!-- ===================================================================== -->
+<!-- AZ                                                                    -->
+<!-- ===================================================================== -->
+<section id="az" lang="az">
+  <h1>whereis — Məxfilik bildirişi</h1>
+  <p class="muted">Məsul şəxs (nəzarətçi): <strong>{{LEGAL_ENTITY}}</strong>, {{LEGAL_ADDRESS}} ·
+    Əlaqə: <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a> · Qüvvəyə minmə tarixi: {{EFFECTIVE_DATE}}</p>
+
+  <p>whereis bir suala cavab verir: «Bu əşyanı hara qoymuşam?» Bunun üçün yalnız həmin məqsədə lazım olan
+    məlumatlar toplanır. Bu bildiriş nəyi, nə üçün və nə qədər saxladığımızı izah edir.</p>
+
+  <h3>Hansı məlumatlar toplanır və nə üçün</h3>
+  <table>
+    <tr><th>Məlumat</th><th>Məqsəd</th></tr>
+    <tr><td>E-poçt ünvanı və şifrənin heş dəyəri (BCrypt; şifrənin özü heç vaxt saxlanmır)</td>
+        <td>Hesabın yaradılması və girişin təsdiqi</td></tr>
+    <tr><td>Ad və soyad (istəyə bağlı)</td><td>Yalnız hesab məlumatı olaraq; heç yerdə göstərilmir</td></tr>
+    <tr><td>Məkanlar, yerləşmələr, əşyalar, əşya hərəkət tarixçəsi</td>
+        <td>Sizin daxil etdiyiniz məzmun — xidmətin özü</td></tr>
+    <tr><td>Əşya fotoları</td>
+        <td>Özəl (qapalı) obyekt yaddaşında saxlanır; yalnız 10 dəqiqə etibarlı, imzalanmış linklərlə,
+          yalnız sizə açılır</td></tr>
+    <tr><td>Sorğu jurnalı: vaxt, yol, status kodu və <code>X-Correlation-Id</code></td>
+        <td>Nasazlıqların araşdırılması. Şifrə, token və köməkçiyə yazdığınız mətn jurnala yazılmır</td></tr>
+  </table>
+  <p>Reklam identifikatoru, dəqiq məkan (GPS), kontaktlar və ya cihaz məlumatları toplanmır. Analitika və
+    izləmə SDK-ları istifadə edilmir.</p>
+
+  <h3>Süni intellekt köməkçisi və üçüncü tərəf emalçılar</h3>
+  <p>Köməkçi funksiyası aktiv olduqda, köməkçiyə yazdığınız mətn (məsələn, «pasportu yataq otağındakı
+    şkafın yuxarı siyirməsinə qoydum») və məkanlarınızın adları cümləni başa düşmək üçün model
+    provayderinə göndərilir. Konfiqurasiyadan asılı olaraq bu, <strong>Anthropic</strong> (Claude modelləri)
+    və ya OpenAI ilə uyğun API təqdim edən başqa provayder ola bilər. Göndərilən mətn yalnız həmin sorğuya
+    cavab vermək üçün istifadə olunur. Modelin cavabı etibarsız sayılır və yoxlamadan keçməyincə heç nəyə
+    təsir etmir; model heç vaxt verilənlər bazasına birbaşa yazmır — bütün yazılar yalnız serverimiz
+    tərəfindən, sizin öz məlumatlarınız əsasında aparılır. Provayder söndürülübsə, mətn cihazınızdan
+    yalnız bizim serverə gedir.</p>
+  <p>Köməkçiyə yazdığınız mətnlər istehsal mühitində jurnala yazılmır.</p>
+
+  <h3>Saxlanma müddəti</h3>
+  <p>Bütün məlumatlar hesabınızı silənə qədər saxlanılır. Hesab silindikdə hesab, məkanlar, yerləşmələr,
+    əşyalar, tarixçə, foto metadata və sessiyalar dərhal silinir; fotoların özləri obyekt yaddaşından qısa
+    müddət sonra asinxron silinir. Şifrələnmiş ehtiyat nüsxələr silinmiş məlumatları ən çox
+    {{BACKUP_RETENTION_DAYS}} gün saxlaya bilər və sonra rotasiya ilə silinir.</p>
+
+  <h3>Hüquqlarınız</h3>
+  <ul>
+    <li><strong>Baxış:</strong> bütün məlumatlarınız tətbiqin içində sizə görünür.</li>
+    <li><strong>Düzəliş:</strong> hər hansı məkanı, yerləşməni və əşyanı tətbiqdə redaktə edə bilərsiniz.</li>
+    <li><strong>Silinmə:</strong> <a href="/legal/delete-account">/legal/delete-account</a> — tətbiqdə
+      «Parametrlər → Hesabı sil» və ya e-poçt ilə.</li>
+  </ul>
+  <p>Digər sorğular üçün <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a> ünvanına yazın.</p>
+
+  <h3>Uşaqlar</h3>
+  <p>whereis 13 yaşından kiçik uşaqlar üçün nəzərdə tutulmayıb və bilərəkdən onlardan məlumat toplamır.
+    Belə bir hesabdan xəbər tutsaq, onu silirik.</p>
+
+  <h3>Bu bildirişdə dəyişikliklər</h3>
+  <p>Dəyişikliklər bu səhifədə, yenilənmiş qüvvəyə minmə tarixi ilə yerləşdirilir.</p>
+</section>
+
+<!-- ===================================================================== -->
+<!-- EN                                                                    -->
+<!-- ===================================================================== -->
+<section id="en" lang="en">
+  <h2>whereis — Privacy notice</h2>
+  <p class="muted">Data controller: <strong>{{LEGAL_ENTITY}}</strong>, {{LEGAL_ADDRESS}} ·
+    Contact: <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a> · Effective: {{EFFECTIVE_DATE}}</p>
+
+  <p>whereis answers one question: "Where did I put this item?" It collects only what that purpose
+    needs. This notice explains what we store, why, and for how long.</p>
+
+  <h3>What is collected and why</h3>
+  <table>
+    <tr><th>Data</th><th>Purpose</th></tr>
+    <tr><td>E-mail address and a BCrypt password hash (the password itself is never stored)</td>
+        <td>Creating the account and verifying sign-in</td></tr>
+    <tr><td>First and last name (optional)</td><td>Account record only; not displayed anywhere</td></tr>
+    <tr><td>Spaces, locations, items and item movement history</td>
+        <td>The content you enter — the service itself</td></tr>
+    <tr><td>Item photos</td>
+        <td>Stored in a private object-storage bucket; served only through signed links valid for
+          10 minutes, only to you</td></tr>
+    <tr><td>Request log: time, path, status code and <code>X-Correlation-Id</code></td>
+        <td>Troubleshooting. Passwords, tokens and the text you type into the assistant are never logged</td></tr>
+  </table>
+  <p>No advertising identifiers, precise location (GPS), contacts or device inventories are collected.
+    No analytics or tracking SDKs are used.</p>
+
+  <h3>AI assistant and third-party processors</h3>
+  <p>When the assistant feature is enabled, the text you type into it (for example "I put my passport in
+    the bedroom wardrobe top drawer") together with the names of your spaces is sent to the model provider
+    so the sentence can be understood. Depending on configuration this is <strong>Anthropic</strong>
+    (Claude models) or another provider exposing an OpenAI-compatible API. The text is used only to
+    answer that request. The model's answer is treated as untrusted and has no effect until it passes
+    validation; the model never writes to the database directly — every write is performed by our server
+    against your own data only. If the provider is disabled, the text leaves your device only to reach
+    our server.</p>
+  <p>Assistant messages are never written to production logs.</p>
+
+  <h3>Retention</h3>
+  <p>Everything is kept until you delete your account. On deletion the account, spaces, locations, items,
+    history, photo metadata and sessions are removed immediately; the photo files are removed from object
+    storage asynchronously shortly after. Encrypted backups may hold deleted data for up to
+    {{BACKUP_RETENTION_DAYS}} days before rotating out.</p>
+
+  <h3>Your rights</h3>
+  <ul>
+    <li><strong>Access:</strong> all your data is visible to you inside the app.</li>
+    <li><strong>Correction:</strong> every space, location and item can be edited in the app.</li>
+    <li><strong>Deletion:</strong> <a href="/legal/delete-account">/legal/delete-account</a> — in the app via
+      "Settings → Delete account", or by e-mail.</li>
+  </ul>
+  <p>For anything else, write to <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>.</p>
+
+  <h3>Children</h3>
+  <p>whereis is not directed at children under 13 and does not knowingly collect data from them. If we
+    learn of such an account, we delete it.</p>
+
+  <h3>Changes to this notice</h3>
+  <p>Changes are posted on this page with an updated effective date.</p>
+</section>
+
+<footer>© {{LEGAL_ENTITY}}</footer>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="az">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Hesabın silinməsi · Delete account — whereis</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+           line-height: 1.55; max-width: 44rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+    h2 { font-size: 1.25rem; margin-top: 2.25rem; padding-top: 1rem; border-top: 1px solid rgba(128,128,128,.4); }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; }
+    .lang-switch { font-size: .95rem; margin-bottom: 1.5rem; }
+    .muted { opacity: .75; font-size: .9rem; }
+    ol, ul { padding-left: 1.4rem; }
+    li { margin: .3rem 0; }
+    .warn { border-left: 4px solid #c0392b; padding: .6rem .9rem; margin: 1rem 0; background: rgba(192,57,43,.08); }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .95em; }
+    footer { margin-top: 3rem; font-size: .85rem; opacity: .7; }
+  </style>
+</head>
+<body>
+
+<nav class="lang-switch">
+  <a href="#az">Azərbaycanca</a> · <a href="#en">English</a> · <a href="/legal/privacy">Məxfilik / Privacy</a>
+</nav>
+
+<!-- ===================================================================== -->
+<!-- AZ                                                                    -->
+<!-- ===================================================================== -->
+<section id="az" lang="az">
+  <h1>whereis — Hesabın silinməsi</h1>
+  <p class="muted">Tətbiq: <strong>whereis</strong> · Məsul şəxs: <strong>{{LEGAL_ENTITY}}</strong> ·
+    Qüvvəyə minmə tarixi: {{EFFECTIVE_DATE}}</p>
+
+  <p>Bu səhifə whereis hesabınızı və onunla bağlı bütün məlumatları necə silə biləcəyinizi izah edir.
+    Silinmə <strong>dərhal</strong> və <strong>geri qaytarılmaz</strong> şəkildə həyata keçirilir.</p>
+
+  <h3>1-ci yol — tətbiqin içindən (tövsiyə olunur)</h3>
+  <ol>
+    <li>whereis tətbiqini açın və hesabınıza daxil olun.</li>
+    <li><strong>Parametrlər → Hesabı sil</strong> bölməsinə keçin.</li>
+    <li>Təsdiq üçün <strong>şifrənizi yenidən daxil edin</strong>.</li>
+    <li>Bir dəfə təsdiqləyin. Hesab və məlumatlar həmin an silinir və siz giriş ekranına qaytarılırsınız.</li>
+  </ol>
+  <p class="muted">Şifrə yanlış olarsa heç nə silinmir; yenidən cəhd edə bilərsiniz.</p>
+
+  <h3>2-ci yol — e-poçt ilə (hesabınıza daxil ola bilmirsinizsə)</h3>
+  <p>Hesabınızda qeydiyyatdan keçdiyiniz e-poçt ünvanından
+    <a href="mailto:{{SUPPORT_EMAIL}}?subject=Account%20deletion%20request">{{SUPPORT_EMAIL}}</a>
+    ünvanına «Hesabın silinməsi» mövzusu ilə məktub göndərin. Sorğunun həqiqətən hesab sahibindən
+    gəldiyini yoxlamadan heç bir məlumat silinmir; buna görə məktubu mütləq qeydiyyatdakı ünvandan
+    göndərin. Yoxlamadan sonra hesabınız tətbiqdəki yol ilə eyni qaydada silinir.</p>
+
+  <h3>Nə silinir</h3>
+  <ul>
+    <li>Hesabınız və e-poçt ünvanınız (şifrənin heş dəyəri də daxil olmaqla);</li>
+    <li>bütün <em>məkanlarınız</em> (ev, ofis, avtomobil və s.);</li>
+    <li>həmin məkanlardakı bütün yerləşmə ağacı (otaqlar, mebel, siyirmələr, qutular…);</li>
+    <li>bütün <em>əşyalarınız</em>;</li>
+    <li>əşyaların tam hərəkət tarixçəsi;</li>
+    <li>bütün əşya fotolarının məlumatları (metadata);</li>
+    <li>bütün aktiv sessiyalar və yeniləmə tokenləri — bütün cihazlardan çıxış edilir.</li>
+  </ul>
+  <p>Fotoların özləri obyekt yaddaşından <strong>asinxron şəkildə, hesab silindikdən qısa müddət sonra</strong>
+    silinir. Hesab silinən andan etibarən onlara heç bir yeni giriş linki yaradıla bilməz.</p>
+
+  <div class="warn">
+    <strong>Geri qaytarılmaz.</strong> Gözləmə müddəti yoxdur, bərpa imkanı yoxdur. Silinmədən sonra
+    eyni e-poçt ilə yenidən qeydiyyatdan keçə bilərsiniz, lakin bu tamamilə boş, yeni hesab olacaq.
+  </div>
+
+  <h3>Saxlanma müddəti</h3>
+  <p>Şifrələnmiş verilənlər bazası ehtiyat nüsxələri məlumatlarınızı silinmədən sonra ən çox
+    <strong>{{BACKUP_RETENTION_DAYS}} gün</strong> ərzində saxlaya bilər; bu müddətdən sonra nüsxələr
+    avtomatik olaraq rotasiya ilə silinir. Ehtiyat nüsxələr yalnız fəlakət halında bərpa üçün istifadə
+    olunur və silinmiş hesabı geri qaytarmaq üçün istifadə edilmir. Heç bir məlumat marketinq və ya
+    profilləşdirmə məqsədi ilə saxlanılmır.</p>
+
+  <p>Suallarınız üçün: <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>.
+    Məxfilik bildirişi: <a href="/legal/privacy">/legal/privacy</a>.</p>
+</section>
+
+<!-- ===================================================================== -->
+<!-- EN                                                                    -->
+<!-- ===================================================================== -->
+<section id="en" lang="en">
+  <h2>whereis — Delete account</h2>
+  <p class="muted">App: <strong>whereis</strong> · Data controller: <strong>{{LEGAL_ENTITY}}</strong> ·
+    Effective: {{EFFECTIVE_DATE}}</p>
+
+  <p>This page explains how to delete your whereis account and all data associated with it.
+    Deletion is <strong>immediate</strong> and <strong>irreversible</strong>.</p>
+
+  <h3>Option 1 — in the app (recommended)</h3>
+  <ol>
+    <li>Open the whereis app and sign in.</li>
+    <li>Go to <strong>Settings → Delete account</strong>.</li>
+    <li><strong>Re-enter your password</strong> to confirm it is you.</li>
+    <li>Confirm once. The account and its data are removed at that moment and you are returned to the
+      sign-in screen.</li>
+  </ol>
+  <p class="muted">If the password is wrong, nothing is deleted and you can try again.</p>
+
+  <h3>Option 2 — by e-mail (if you can no longer sign in)</h3>
+  <p>From the e-mail address registered on your account, write to
+    <a href="mailto:{{SUPPORT_EMAIL}}?subject=Account%20deletion%20request">{{SUPPORT_EMAIL}}</a>
+    with the subject "Account deletion request". Nothing is removed until we have verified that the
+    request really comes from the account holder, which is why it must be sent from the registered
+    address. After verification your account is deleted exactly as via the in-app path.</p>
+
+  <h3>What is deleted</h3>
+  <ul>
+    <li>Your account and e-mail address (including the password hash);</li>
+    <li>all your <em>spaces</em> (home, office, car, …);</li>
+    <li>the entire location tree within them (rooms, furniture, drawers, boxes, …);</li>
+    <li>all your <em>items</em>;</li>
+    <li>the complete movement history of every item;</li>
+    <li>all photo metadata;</li>
+    <li>every active session and refresh token — you are signed out on all devices.</li>
+  </ul>
+  <p>The photo files themselves are removed from object storage <strong>asynchronously, shortly after
+    the account is deleted</strong>. From the moment of deletion no new access link to them can be issued.</p>
+
+  <div class="warn">
+    <strong>Irreversible.</strong> There is no grace period and no recovery. You may register again with
+    the same e-mail afterwards, but that will be a completely empty, new account.
+  </div>
+
+  <h3>Retention</h3>
+  <p>Encrypted database backups may still contain your data for up to
+    <strong>{{BACKUP_RETENTION_DAYS}} days</strong> after deletion, after which they rotate out
+    automatically. Backups are used only for disaster recovery and are never used to restore a deleted
+    account. Nothing is retained for marketing or profiling.</p>
+
+  <p>Questions: <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>.
+    Privacy notice: <a href="/legal/privacy">/legal/privacy</a>.</p>
+</section>
+
+<footer>© {{LEGAL_ENTITY}}</footer>
+</body>
+</html>

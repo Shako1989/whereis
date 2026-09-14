@@ -3,6 +3,7 @@ package az.technest.whereis.space;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -12,10 +13,12 @@ import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.location.LocationRepository;
 import az.technest.whereis.space.dto.CreateSpaceRequest;
 import az.technest.whereis.space.dto.SpaceResponse;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -81,5 +84,20 @@ class SpaceServiceTest {
                 .isInstanceOf(ConflictException.class)
                 .satisfies(e -> assertThat(((ConflictException) e).code()).isEqualTo(ErrorCode.SPACE_NOT_EMPTY));
         verify(spaceRepository, never()).delete(any(Space.class));
+    }
+
+    @Test
+    void lockAllSpacesOfUserTakesEveryAdvisoryLockInTheRepositorysAscendingOrder() {
+        UUID lower = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        UUID higher = UUID.fromString("00000000-0000-0000-0000-000000000002");
+        when(spaceRepository.findAllIdsByUserIdOrderByIdAsc(userId)).thenReturn(List.of(lower, higher));
+
+        List<UUID> locked = spaceService.lockAllSpacesOfUser(userId);
+
+        // Deterministic order is the deadlock guard: this is the only path holding several space locks.
+        InOrder order = inOrder(treeDao);
+        order.verify(treeDao).lockSpace(lower);
+        order.verify(treeDao).lockSpace(higher);
+        assertThat(locked).containsExactly(lower, higher);
     }
 }

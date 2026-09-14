@@ -22,6 +22,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -155,6 +156,23 @@ public class ItemService {
         // Enqueue MinIO deletions before the cascade removes the metadata rows.
         fileStorageService.enqueueAllForItem(itemId);
         itemRepository.delete(item);
+    }
+
+    /**
+     * Account deletion: every item of the user in three statements, none per row.
+     * Same invariant as {@link #delete} — the outbox rows go in BEFORE the cascade erases the
+     * {@code item_files} metadata, otherwise the MinIO objects are orphaned with nothing left to
+     * find them by. The row lock first closes the race with a concurrent photo upload committing
+     * metadata between the outbox snapshot and the cascade. MANDATORY: this only makes sense
+     * inside the caller's single transaction, and the caller must delete locations after it
+     * ({@code items.current_location_id} is ON DELETE RESTRICT).
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public ItemDeletionSummary deleteAllForUser(UUID userId) {
+        itemRepository.lockAllForUser(userId);
+        int filesEnqueued = fileStorageService.enqueueAllForUser(userId);
+        int items = itemRepository.deleteAllByUserId(userId);
+        return new ItemDeletionSummary(items, filesEnqueued);
     }
 
     Item requireOwned(UUID userId, UUID itemId) {
