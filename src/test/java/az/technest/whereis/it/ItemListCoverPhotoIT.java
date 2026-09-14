@@ -172,13 +172,15 @@ class ItemListCoverPhotoIT extends AbstractIntegrationTest {
         Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
         statistics.setStatisticsEnabled(true);
 
-        statistics.clear();
+        // Statistics are SessionFactory-wide, and StorageJanitor polls the outbox on this same
+        // factory every 2 s in the test profile. A tick landing inside one measurement window
+        // adds a statement and would fail the equality below spuriously (observed: 3 vs 4).
+        // Sampling several times and keeping the minimum removes the janitor from the picture:
+        // it cannot land in every window, while a real per-row lookup shows in every sample.
         JsonNode smallPage = get(token, "/api/v1/items?size=2", JsonNode.class).getBody();
-        long statementsForTwoRows = statistics.getPrepareStatementCount();
-
-        statistics.clear();
         JsonNode largePage = get(token, "/api/v1/items?size=6", JsonNode.class).getBody();
-        long statementsForSixRows = statistics.getPrepareStatementCount();
+        long statementsForTwoRows = minStatementsOver(5, statistics, token, "/api/v1/items?size=2");
+        long statementsForSixRows = minStatementsOver(5, statistics, token, "/api/v1/items?size=6");
 
         assertThat(smallPage.get("content")).hasSize(2);
         assertThat(largePage.get("content")).hasSize(6);
@@ -187,5 +189,16 @@ class ItemListCoverPhotoIT extends AbstractIntegrationTest {
         assertThat(statementsForSixRows).isEqualTo(statementsForTwoRows);
         assertThat(largePage.get("content")).allSatisfy(node ->
                 assertThat(node.get("primaryImageUrl").isNull()).isFalse());
+    }
+
+    /** Minimum prepared-statement count over {@code samples} identical requests — see the caller. */
+    private long minStatementsOver(int samples, Statistics statistics, String token, String path) {
+        long best = Long.MAX_VALUE;
+        for (int i = 0; i < samples; i++) {
+            statistics.clear();
+            get(token, path, JsonNode.class);
+            best = Math.min(best, statistics.getPrepareStatementCount());
+        }
+        return best;
     }
 }

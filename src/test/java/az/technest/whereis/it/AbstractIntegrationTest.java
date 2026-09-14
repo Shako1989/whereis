@@ -11,6 +11,7 @@ import az.technest.whereis.space.dto.SpaceResponse;
 import az.technest.whereis.storage.dto.ItemFileResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.time.Duration;
 import java.io.UncheckedIOException;
 import java.util.Base64;
 import java.util.UUID;
@@ -32,6 +33,7 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.testcontainers.containers.MinIOContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
 
 /**
@@ -49,9 +51,14 @@ public abstract class AbstractIntegrationTest {
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(
             DockerImageName.parse(System.getProperty("it.postgres.image", "postgres:16-alpine"))
                     .asCompatibleSubstituteFor("postgres"));
+    // Wait for READINESS, not liveness: /minio/health/live answers before the S3 API accepts
+    // requests, and on a loaded machine the first uploads of the run have failed with 502 in
+    // that gap. /minio/health/ready flips only once the object API is serving.
     static final MinIOContainer MINIO = new MinIOContainer(
             DockerImageName.parse(System.getProperty("it.minio.image", "minio/minio:RELEASE.2023-09-04T19-57-37Z"))
-                    .asCompatibleSubstituteFor("minio/minio"));
+                    .asCompatibleSubstituteFor("minio/minio"))
+            .waitingFor(Wait.forHttp("/minio/health/ready").forPort(9000)
+                    .withStartupTimeout(Duration.ofSeconds(90)));
 
     static {
         POSTGRES.start();
