@@ -1,6 +1,8 @@
 package az.technest.whereis.assistant.mock;
 
 import az.technest.whereis.assistant.AiAssistant;
+import az.technest.whereis.assistant.AiMetadata;
+import az.technest.whereis.assistant.AssistantMode;
 import az.technest.whereis.assistant.ImageAnalysis;
 import az.technest.whereis.assistant.LocationSegment;
 import az.technest.whereis.assistant.PlacementInterpretation;
@@ -71,6 +73,13 @@ public class MockAiAssistant implements AiAssistant {
 
     private static final Set<String> FILLER_WORDS = Set.of("the", "a", "an", "my", "of", "our", "his", "her");
 
+    /**
+     * The mock's "prompt" is these Java rule tables, not text, so the version is a hand-maintained
+     * literal rather than a digest: bump it when the rules change meaningfully. A literal keeps
+     * every unit test and IT assertion deterministic.
+     */
+    private static final AiMetadata METADATA = new AiMetadata("mock", "mock-rules", "mock-1");
+
     private static final Set<String> SEARCH_STOPWORDS = Set.of(
             "where", "is", "are", "was", "were", "my", "the", "a", "an", "did", "i", "put", "place",
             "placed", "leave", "left", "store", "stored", "find", "me", "of", "in", "to", "what",
@@ -119,6 +128,11 @@ public class MockAiAssistant implements AiAssistant {
             }
         }
         return new SearchInterpretation(keywords);
+    }
+
+    @Override
+    public AiMetadata metadata(AssistantMode mode) {
+        return METADATA;
     }
 
     @Override

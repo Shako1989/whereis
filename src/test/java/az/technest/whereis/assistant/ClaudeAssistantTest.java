@@ -260,6 +260,32 @@ class ClaudeAssistantTest {
     }
 
     @Test
+    void metadataIsStableAcrossSpaceListsTracksTheModelAndDiffersPerFlow() {
+        AiMetadata before = assistant.metadata(AssistantMode.REMEMBER);
+        String placement = """
+                {"itemName":"Passport","itemDescription":"","spaceName":"",
+                 "locations":[{"name":"Bedroom","type":"ROOM"}],"confidence":0.9}""";
+        respond(200, message("end_turn", placement));
+        assistant.interpretPlacement("I put my passport in the bedroom", List.of("Home", "Garden"));
+        respond(200, message("end_turn", placement));
+        assistant.interpretPlacement("I put my passport in the bedroom", List.of());
+
+        assertThat(before.provider()).isEqualTo("claude");
+        assertThat(before.model()).isEqualTo(ClaudeProperties.DEFAULT_MODEL);
+        assertThat(before.promptVersion()).matches("^sha256:[0-9a-f]{12}$");
+        // Two system prompts went out with different per-request suffixes, yet ONE version: the
+        // digest covers the constant only, or the grouping key this column exists for is destroyed.
+        assertThat(requests).hasSize(2);
+        assertThat(JsonPath.<String>read(requests.get(0), "$.system[0].text")).contains("Home, Garden");
+        assertThat(JsonPath.<String>read(requests.get(1), "$.system[0].text")).contains("no spaces yet");
+        assertThat(assistant.metadata(AssistantMode.REMEMBER)).isEqualTo(before);
+        assertThat(assistant.metadata(AssistantMode.SEARCH).promptVersion()).isNotEqualTo(before.promptVersion());
+        // The model is live configuration, reflected per instance rather than frozen at class load.
+        assertThat(assistantWith("claude-sonnet-5", null).metadata(AssistantMode.SEARCH).model())
+                .isEqualTo("claude-sonnet-5");
+    }
+
+    @Test
     void omitsTemperatureEntirelyWhenItIsUnsetSoTheModelCanBeRaised() {
         // A blank AI_CLAUDE_TEMPERATURE binds to null, and null must DROP the field rather than
         // fall back to 0.0: Opus 4.7 and later, Sonnet 5 and the Fable family reject sampling

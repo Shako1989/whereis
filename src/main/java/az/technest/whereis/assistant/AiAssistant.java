@@ -23,4 +23,13 @@ public interface AiAssistant {
     SearchInterpretation interpretSearch(String message);
 
     ImageAnalysis analyzeImage(byte[] content, String contentType);
+
+    /**
+     * Which provider, model and prompt this instance uses for the given flow, recorded on every
+     * {@code assistant_messages} row. {@code promptVersion} identifies the IMMUTABLE instruction
+     * text only — never a per-request assembly such as the appended list of the caller's space
+     * names — so stored sentences can later be grouped by the prompt that interpreted them.
+     * {@code model} is read from live configuration on each call, never frozen at class load.
+     */
+    AiMetadata metadata(AssistantMode mode);
 }

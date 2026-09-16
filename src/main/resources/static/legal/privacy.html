@@ -52,6 +52,9 @@
           yalnız sizə açılır</td></tr>
     <tr><td>Sorğu jurnalı: vaxt, yol, status kodu və <code>X-Correlation-Id</code></td>
         <td>Nasazlıqların araşdırılması. Şifrə, token və köməkçiyə yazdığınız mətn jurnala yazılmır</td></tr>
+    <tr><td>Köməkçiyə yazdığınız cümlələr və modelin onları necə şərh etdiyi</td>
+        <td>Səhvlərin araşdırılması və tətbiqin sizə əvvəl nə yazdığınızı göstərə bilməsi üçün; hesabınızla
+          birlikdə saxlanılır və onunla birlikdə silinir</td></tr>
   </table>
   <p>Reklam identifikatoru, dəqiq məkan (GPS), kontaktlar və ya cihaz məlumatları toplanmır. Analitika və
     izləmə SDK-ları istifadə edilmir.</p>
@@ -65,11 +68,13 @@
     təsir etmir; model heç vaxt verilənlər bazasına birbaşa yazmır — bütün yazılar yalnız serverimiz
     tərəfindən, sizin öz məlumatlarınız əsasında aparılır. Provayder söndürülübsə, mətn cihazınızdan
     yalnız bizim serverə gedir.</p>
-  <p>Köməkçiyə yazdığınız mətnlər istehsal mühitində jurnala yazılmır.</p>
+  <p>Köməkçiyə yazdığınız mətnlər istehsal mühitində jurnala yazılmır. Bununla belə, onlar modelin şərhi ilə
+    birlikdə verilənlər bazasında hesabınızla saxlanılır — səhvlərin araşdırılması və tətbiqin sizə əvvəl nə
+    yazdığınızı göstərə bilməsi üçün — və hesabınızı sildikdə onunla birlikdə silinir. Onları yalnız siz görürsünüz.</p>
 
   <h3>Saxlanma müddəti</h3>
   <p>Bütün məlumatlar hesabınızı silənə qədər saxlanılır. Hesab silindikdə hesab, məkanlar, yerləşmələr,
-    əşyalar, tarixçə, foto metadata və sessiyalar dərhal silinir; fotoların özləri obyekt yaddaşından qısa
+    əşyalar, tarixçə, köməkçiyə yazdığınız cümlələr, foto metadata və sessiyalar dərhal silinir; fotoların özləri obyekt yaddaşından qısa
     müddət sonra asinxron silinir. Şifrələnmiş ehtiyat nüsxələr silinmiş məlumatları ən çox
     {{BACKUP_RETENTION_DAYS}} gün saxlaya bilər və sonra rotasiya ilə silinir.</p>
 
@@ -114,6 +119,9 @@
           10 minutes, only to you</td></tr>
     <tr><td>Request log: time, path, status code and <code>X-Correlation-Id</code></td>
         <td>Troubleshooting. Passwords, tokens and the text you type into the assistant are never logged</td></tr>
+    <tr><td>The sentences you type to the assistant, with the model's interpretation of them</td>
+        <td>So mistakes can be investigated and so the app can show you what you originally said; stored with
+          your account and deleted with it</td></tr>
   </table>
   <p>No advertising identifiers, precise location (GPS), contacts or device inventories are collected.
     No analytics or tracking SDKs are used.</p>
@@ -127,11 +135,13 @@
     validation; the model never writes to the database directly — every write is performed by our server
     against your own data only. If the provider is disabled, the text leaves your device only to reach
     our server.</p>
-  <p>Assistant messages are never written to production logs.</p>
+  <p>Assistant messages are never written to production logs. They are, however, stored with your account in
+    the database together with the model's interpretation — so mistakes can be investigated and so the app can
+    show you what you originally said — and they are deleted when you delete your account. Only you can see them.</p>
 
   <h3>Retention</h3>
   <p>Everything is kept until you delete your account. On deletion the account, spaces, locations, items,
-    history, photo metadata and sessions are removed immediately; the photo files are removed from object
+    history, the sentences you typed to the assistant, photo metadata and sessions are removed immediately; the photo files are removed from object
     storage asynchronously shortly after. Encrypted backups may hold deleted data for up to
     {{BACKUP_RETENTION_DAYS}} days before rotating out.</p>
 

@@ -274,3 +274,60 @@ subject — there is no id in the path and none in the body.
 **Web routes for the Play Console** (served by the API host, no auth):
 `https://{WHEREIS_API_HOST}/legal/delete-account` (data-deletion URL) and
 `https://{WHEREIS_API_HOST}/legal/privacy` (privacy policy URL). Both are bilingual AZ/EN.
+
+## BR-6 — Assistant provenance: `sourceMessage` on item detail + `GET /assistant/messages` — **IMPLEMENTED 2026-09-16**
+
+**Status:** shipped (V8 `assistant_messages`). **Raised:** backend-side, from a real incident on
+2026-09-16 — 13 items filed through the assistant, 4 landed in the wrong space ("Work" instead of the
+listed "Xalqlar"; twice the model created "Xalqlar" as a ROOM inside Work), one physical box became four
+location rows ("Ashagi kladovka > Karobka" vs "Kladovka > Karobka" under two spaces), a bag "Chanta" was
+created twice, and one item name absorbed a fragment of the space name ("Silicon vuran xalq"). None of it
+could be diagnosed: the sentence and the model's raw interpretation were stored nowhere (and must never be
+logged above DEBUG). The user asked for the original sentence to be kept.
+
+### What the client gets
+
+```jsonc
+// GET /items/{id}, PUT /items/{id}, POST /items/{id}/move  — the DETAIL shape gains one nullable key
+{ …, "primaryImageUrl": "…|null", "sourceMessage": "I put my passport in …|null", "archived": false, … }
+// GET /items — list rows ALWAYS carry "sourceMessage": null (by design; see below)
+
+// GET /assistant/messages?page=0&size=20  — Spring Page<AssistantMessage>, newest first, own rows only
+{ "id":"uuid", "mode":"REMEMBER|SEARCH", "message":"…exactly as typed…",
+  "outcome":"CREATED|NEEDS_CONFIRMATION|NOT_UNDERSTOOD|ANSWERED|FAILED",
+  "confidence":0.9|null, "itemId":"uuid|null", "spaceId":"uuid|null", "createdAt":"…Z" }
+```
+
+- `size` is clamped to `[1,100]` exactly like `GET /items`; fixed sort `createdAt desc, id desc`, no
+  `sort` parameter. Another user gets an empty page — there is no by-id form, so nothing to 404.
+- The client may show **"You said: …"** on the item detail screen (from `sourceMessage`) and a
+  **history screen** (from `/assistant/messages`).
+
+### What the backend stores (not exposed)
+
+One row per request that reaches `AssistantService.remember/search` — including validator rejections
+(`NOT_UNDERSTOOD`, with the model's RAW answer so the mistake is inspectable), the zero-write
+`NEEDS_CONFIRMATION`, and provider failures (`FAILED`, interpretation NULL). Each row also carries the
+validated interpretation (item name, space name, typed location segments, or the search keywords) as
+`jsonb`, the provider, the live model id, and `prompt_version` — a SHA-256 prefix of the immutable
+system-prompt text, so stored sentences can be re-run against a given prompt. These diagnostics are
+**not** in the client contract on purpose: publishing a free-form `jsonb` would promise a schema that
+has to stay free to change.
+
+### Rules and decisions the client must know
+
+1. **Two rows for one confirmed placement.** A `NEEDS_CONFIRMATION` answered by resending with
+   `spaceId` yields one `NEEDS_CONFIRMATION` row and one `CREATED` row with the same `message`. That is
+   the honest record; group them or label the first — do not render one capture as two.
+2. **`FAILED` is not "no answer".** For `SEARCH`, the backend still answered from the plain-text
+   fallback; the row records that the model was unreachable.
+3. **The list is null on purpose.** `sourceMessage` is ignored by the list mapper so it can never turn
+   into a per-row lookup (the N+1 BR-3 was filed to remove). Read it from the detail endpoint.
+4. **What writes no row:** a blank/control-only message (400 before any model call — there is no
+   sentence to keep), `POST /assistant/images/analyze` (no sentence), and a `remember` whose `spaceId`
+   is not the caller's (404 — no outcome value fits; adding one is a V9).
+5. **Retention: kept for the life of the account, no purge job** (decision, 2026-09-16). Rows are
+   deleted explicitly by `DELETE /users/me` before the item cascade, and the `users` FK cascade is
+   the backstop. Both legal pages (`/legal/privacy`, `/legal/delete-account`, AZ + EN) now disclose
+   that assistant sentences are stored with the account and deleted with it.
+6. **Never log `message` above `DEBUG`** on the client either (§4.7 of the app prompt still applies).

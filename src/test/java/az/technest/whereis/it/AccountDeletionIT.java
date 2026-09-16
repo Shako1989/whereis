@@ -3,6 +3,10 @@ package az.technest.whereis.it;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import az.technest.whereis.assistant.dto.AssistantSearchRequest;
+import az.technest.whereis.assistant.dto.AssistantSearchResponse;
+import az.technest.whereis.assistant.dto.RememberRequest;
+import az.technest.whereis.assistant.dto.RememberResponse;
 import az.technest.whereis.auth.dto.RefreshRequest;
 import az.technest.whereis.auth.dto.TokenPairResponse;
 import az.technest.whereis.item.dto.CreateItemRequest;
@@ -40,11 +44,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * {@code DELETE /api/v1/users/me}: password-gated, single-transaction hard delete of the caller's
- * account — outbox rows first, then items, locations, spaces, user — with the MinIO binaries
+ * account — outbox rows first, then assistant messages, items, locations, spaces, user — with the MinIO binaries
  * removed afterwards by the janitor. Row counts are asserted straight from the database because
  * the API can no longer see a deleted account.
  */
@@ -52,8 +55,6 @@ class AccountDeletionIT extends AbstractIntegrationTest {
 
     private static final String ME = "/api/v1/users/me";
 
-    @Autowired
-    private JdbcTemplate jdbc;
     @Autowired
     private EntityManagerFactory entityManagerFactory;
     @Autowired
@@ -75,13 +76,14 @@ class AccountDeletionIT extends AbstractIntegrationTest {
     }
 
     private record Counts(int users, int refreshTokens, int spaces, int locations, int items, int history,
-                          int files, int outboxRows) {
+                          int files, int outboxRows, int assistantMessages) {
     }
 
     /** Bob's rows and API views, for the byte-identical comparison around Alice's deletion. */
     private record Snapshot(List<Map<String, Object>> spaces, List<Map<String, Object>> locations,
                             List<Map<String, Object>> items, List<Map<String, Object>> history,
-                            List<Map<String, Object>> files, JsonNode itemsPage, List<JsonNode> trees) {
+                            List<Map<String, Object>> files, List<Map<String, Object>> assistantMessages,
+                            JsonNode itemsPage, List<JsonNode> trees) {
     }
 
     // ---------------------------------------------------------------- fixtures
@@ -91,6 +93,23 @@ class AccountDeletionIT extends AbstractIntegrationTest {
                 new CreateItemRequest(name, null, null, locationId), ItemResponse.class);
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         return created.getBody().id();
+    }
+
+    private RememberResponse remember(String token, String message, UUID spaceId) {
+        ResponseEntity<RememberResponse> response = post(token, "/api/v1/assistant/remember",
+                new RememberRequest(message, spaceId), RememberResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        return response.getBody();
+    }
+
+    private void insertFailedAssistantRow(UUID userId) {
+        // FAILED cannot be produced through the API with the mock provider; this is the exact shape
+        // the openai/claude path writes (interpretation NULL, no item, no space).
+        jdbc.update("""
+                insert into assistant_messages (id, user_id, mode, message, outcome, provider, model, prompt_version)
+                values (?, ?, 'REMEMBER', 'a sentence the provider never answered', 'FAILED', 'openai', 'test',
+                        'sha256:000000000000')
+                """, UUID.randomUUID(), userId);
     }
 
     private String presign(String token, UUID itemId, UUID fileId) {
@@ -107,7 +126,8 @@ class AccountDeletionIT extends AbstractIntegrationTest {
 
     /**
      * 2 spaces, a 4-level chain (Room > Wardrobe > Shelf > Box) plus a second-space root, 3 items,
-     * 4 photos including one primary, and one move so the history holds a closed and an open row.
+     * 4 photos including one primary, one move so the history holds a closed and an open row, and one
+     * assistant message (the zero-write NEEDS_CONFIRMATION, so no item or location count moves).
      */
     private Account buildRealisticAccount() {
         TokenPairResponse tokens = register();
@@ -130,6 +150,8 @@ class AccountDeletionIT extends AbstractIntegrationTest {
         ResponseEntity<ItemResponse> moved = post(token, "/api/v1/items/" + keys + "/move",
                 new MoveItemRequest(desk.id(), "Took them to work"), ItemResponse.class);
         assertThat(moved.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(remember(token, "I put my charger in the desk drawer", null).status())
+                .isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         return new Account(tokens, userId, List.of(home.id(), office.id()), List.of(passport, keys, laptop),
                 objectKeysOf(userId), presign(token, passport, cover));
     }
@@ -187,7 +209,8 @@ class AccountDeletionIT extends AbstractIntegrationTest {
                 count("select count(*) from items where user_id = ?", a.userId()),
                 countIn("item_location_history", "item_id", a.itemIds()),
                 countIn("item_files", "item_id", a.itemIds()),
-                outboxRowsFor(a));
+                outboxRowsFor(a),
+                count("select count(*) from assistant_messages where user_id = ?", a.userId()));
     }
 
     private Snapshot snapshot(Account a) {
@@ -207,6 +230,7 @@ class AccountDeletionIT extends AbstractIntegrationTest {
                         + placeholders(a.itemIds()) + ") order by id", a.itemIds().toArray()),
                 jdbc.queryForList("select * from item_files where item_id in (" + placeholders(a.itemIds())
                         + ") order by id", a.itemIds().toArray()),
+                jdbc.queryForList("select * from assistant_messages where user_id = ? order by id", a.userId()),
                 page, trees);
     }
 
@@ -245,7 +269,7 @@ class AccountDeletionIT extends AbstractIntegrationTest {
     @Test
     void everythingOfTheUserIsGoneAndOneOutboxRowPerFileRemains() {
         Account alice = buildRealisticAccount();
-        assertThat(countsOf(alice)).isEqualTo(new Counts(1, 1, 2, 5, 3, 4, 4, 0));
+        assertThat(countsOf(alice)).isEqualTo(new Counts(1, 1, 2, 5, 3, 4, 4, 0, 1));
         awaitQuietJanitorWindow();
 
         ResponseEntity<Void> deleted = deleteAccount(alice);
@@ -258,7 +282,7 @@ class AccountDeletionIT extends AbstractIntegrationTest {
         assertThat(deleted.getBody()).isNull();
         // Every row of hers is gone in one transaction; the only trace is exactly one outbox row
         // per photo, keyed by the object keys that item_files no longer holds.
-        assertThat(after).isEqualTo(new Counts(0, 0, 0, 0, 0, 0, 0, 4));
+        assertThat(after).isEqualTo(new Counts(0, 0, 0, 0, 0, 0, 0, 4, 0));
         assertThat(queued).containsExactlyElementsOf(alice.objectKeys());
     }
 
@@ -272,7 +296,7 @@ class AccountDeletionIT extends AbstractIntegrationTest {
         assertThat(deleteAccount(alice).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
         assertThat(snapshot(bob)).isEqualTo(before);
-        assertThat(countsOf(bob)).isEqualTo(new Counts(1, 1, 2, 5, 3, 4, 4, 0));
+        assertThat(countsOf(bob)).isEqualTo(new Counts(1, 1, 2, 5, 3, 4, 4, 0, 1));
         // His binary was never touched: the URL minted before Alice's delete still serves the bytes.
         HttpResponse<byte[]> photo = fetch(bob.presignedUrl());
         assertThat(photo.statusCode()).isEqualTo(200);
@@ -367,11 +391,43 @@ class AccountDeletionIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void assistantMessagesOfEveryOutcomeGoWithTheAccount() {
+        Account alice = buildRealisticAccount();                       // already holds one NEEDS_CONFIRMATION row
+        UUID office = alice.spaceIds().get(1);
+        RememberResponse created = remember(alice.token(), "I put my charger in the desk drawer", office);
+        assertThat(created.status()).isEqualTo(RememberResponse.Status.CREATED);
+        UUID charger = created.item().id();
+        uploadJpeg(alice.token(), charger, true);
+        ResponseEntity<AssistantSearchResponse> searched = post(alice.token(), "/api/v1/assistant/search",
+                new AssistantSearchRequest("Where is my charger?"), AssistantSearchResponse.class);
+        assertThat(searched.getStatusCode()).isEqualTo(HttpStatus.OK);
+        insertFailedAssistantRow(alice.userId());
+        assertThat(count("select count(*) from assistant_messages where user_id = ?", alice.userId())).isEqualTo(4);
+        assertThat(count("select count(*) from assistant_messages where item_id = ?", charger)).isEqualTo(1);
+        assertThat(count("select count(*) from assistant_messages where space_id = ?", office)).isEqualTo(1);
+
+        assertThat(deleteAccount(alice).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        // Every outcome is gone — by user, by item and by space — together with the item the
+        // assistant created, and its photo joined the outbox with the other four.
+        assertThat(count("select count(*) from assistant_messages where user_id = ?", alice.userId())).isZero();
+        assertThat(count("select count(*) from assistant_messages where item_id = ?", charger)).isZero();
+        assertThat(count("select count(*) from assistant_messages where space_id = ?", office)).isZero();
+        assertThat(count("select count(*) from items where id = ?", charger)).isZero();
+        assertThat(countsOf(alice).users()).isZero();
+        assertThat(outboxRowsFor(alice)).isEqualTo(5);
+    }
+
+    @Test
     void aDeepTreeAndAManyFileAccountDeleteInAConstantNumberOfStatements() {
         Account small = buildAccount(1, 2, 3);
         Account large = buildAccount(2, 8, 30);
         assertThat(countIn("locations", "space_id", large.spaceIds())).isEqualTo(16);
         assertThat(large.objectKeys()).hasSize(30);
+        // The assistant rows go in ONE statement too: twenty of them must not move the count.
+        for (int i = 0; i < 20; i++) {
+            insertFailedAssistantRow(large.userId());
+        }
         Statistics statistics = statistics();
 
         long statementsForSmall = measureDeletion(small, statistics);

@@ -72,6 +72,16 @@ class MockAiAssistantTest {
     }
 
     @Test
+    void metadataIsAPinnedLiteralForBothFlows() {
+        // The mock's "prompt" is Java rule tables, so its version is a literal, not a digest —
+        // every IT assertion on provider/model/prompt_version depends on exactly this triple.
+        AiMetadata expected = new AiMetadata("mock", "mock-rules", "mock-1");
+
+        assertThat(assistant.metadata(AssistantMode.REMEMBER)).isEqualTo(expected);
+        assertThat(assistant.metadata(AssistantMode.SEARCH)).isEqualTo(expected);
+    }
+
+    @Test
     void imageAnalysisIsDeterministic() {
         List<ImageAnalysis.ItemSuggestion> first = assistant.analyzeImage(new byte[]{1}, "image/jpeg").suggestions();
         List<ImageAnalysis.ItemSuggestion> second = assistant.analyzeImage(new byte[]{2}, "image/png").suggestions();

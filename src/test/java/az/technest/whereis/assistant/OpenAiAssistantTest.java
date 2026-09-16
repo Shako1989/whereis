@@ -100,6 +100,26 @@ class OpenAiAssistantTest {
     }
 
     @Test
+    void metadataNamesTheProviderTracksTheConfiguredModelAndDiffersPerFlow() {
+        AiMetadata remember = assistant.metadata(AssistantMode.REMEMBER);
+        AiMetadata search = assistant.metadata(AssistantMode.SEARCH);
+
+        assertThat(remember.provider()).isEqualTo("openai");
+        assertThat(remember.model()).isEqualTo("test-model");
+        assertThat(remember.promptVersion()).matches("^sha256:[0-9a-f]{12}$");
+        assertThat(search.promptVersion()).matches("^sha256:[0-9a-f]{12}$").isNotEqualTo(remember.promptVersion());
+        // Stable across calls: the digest is computed once over the constant, never per request.
+        assertThat(assistant.metadata(AssistantMode.REMEMBER)).isEqualTo(remember);
+
+        // The model is an env var and must be reflected per instance, not frozen at class load.
+        AiProperties other = new AiProperties("openai", "https://ai.example/v1", "k", "other-model", 0.0,
+                Duration.ofSeconds(5), 800);
+        OpenAiAssistant reconfigured = new OpenAiAssistant(RestClient.builder().build(), other, new ObjectMapper());
+        assertThat(reconfigured.metadata(AssistantMode.REMEMBER).model()).isEqualTo("other-model");
+        assertThat(reconfigured.metadata(AssistantMode.REMEMBER).promptVersion()).isEqualTo(remember.promptVersion());
+    }
+
+    @Test
     void openAiProviderRequiresKeyModelAndBaseUrl() {
         assertThatThrownBy(() -> new AiProperties("openai", "https://ai.example/v1", "", "m", 0.0, null, 0))
                 .isInstanceOf(IllegalStateException.class);

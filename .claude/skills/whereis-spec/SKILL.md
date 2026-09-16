@@ -101,6 +101,30 @@ assistant/ fixed pipeline: read the user's spaces → AiAssistant.interpret(mess
            an id that is not the caller's is a 404. NEEDS_CONFIRMATION carries one of three
            messages: no spaces yet, a named-but-missing space ("işdə" with no Office), or genuine
            ambiguity — spaces are still never auto-created from AI output.
+           Every request past sanitize() leaves ONE `assistant_messages` row (V8): the sentence as
+           typed, mode, outcome (CREATED | NEEDS_CONFIRMATION | NOT_UNDERSTOOD | ANSWERED | FAILED),
+           the `InterpretationSnapshot` as jsonb (a typed record — a String there stores a
+           double-encoded scalar). The snapshot carries BOTH halves and the request context, because
+           each answers a different question: the validated view, the model's pre-validation answer
+           nested under `raw` (the validator degrades an unsafe spaceName to null, so a validated-only
+           row reads as "named no space" when it named an unusable one), and `offeredSpaces` — the
+           user's own space names as handed to the model, which is what tells a wrong space apart from
+           a space the model was never shown. provider/model/prompt_version (`PromptVersion` = `sha256:`
+           + 12 hex over the IMMUTABLE prompt constant AND the structured-output schema records, whose
+           @JsonPropertyDescription text and enum constants are instructions the model reads; never
+           over the per-request space-list assembly; mock pins `mock`/`mock-rules`/`mock-1`),
+           confidence, item_id, space_id. Written
+           strictly AFTER the flow finished — after the provider returned or threw, and after
+           `PlacementExecutor#place` committed (CREATED) or rolled back (FAILED). EVERY outcome goes
+           through `record()` (REQUIRES_NEW): `AssistantService` has no `@Transactional` anywhere, so
+           the plain call after the executor's proxy returns IS the after-commit point. A recorder
+           failure is swallowed at WARN in `recordQuietly` — deliberately OUTSIDE `record()`, because a
+           try/catch inside a REQUIRES_NEW method cannot undo rollback-only marking. FAILED = record
+           then rethrow (its snapshot holds only `offeredSpaces`, or is null when there was nothing to
+           offer). A sanitize() rejection and a foreign-spaceId 404 write nothing (no outcome fits).
+           WRITE-ONLY in this change: no read endpoint and nothing on `ItemResponse` — read the rows
+           from the database; a scoped history endpoint and an item-detail `sourceMessage` are a
+           deliberate follow-up, not shipped.
 common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler; CurrentUser
            (JWT subject → UUID); CorrelationIdFilter (X-Correlation-Id → MDC); Names — the ONE
            normalizer used by every writer, lookup, and the AI resolution path. clean() is the
@@ -111,7 +135,7 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
            diacritics; only the key is folded, display is untouched.
 ```
 
-## 4. Database invariants (Flyway V1–V7)
+## 4. Database invariants (Flyway V1–V8)
 
 - `users.email` unique on `lower(email)`; `refresh_tokens.token_hash` **varchar(64)** — NEVER
   char(N) anywhere: Hibernate 6.6 validate treats bpchar as a type mismatch and the app won't boot.
@@ -124,9 +148,18 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
   `location_id` ON DELETE SET NULL + NOT NULL `location_path_snapshot` (history survives tree changes).
 - `item_files`: `object_key` unique; partial unique `(item_id) WHERE is_primary`.
 - `storage_deletion_queue`: the MinIO deletion outbox (bucket stored per entry and used by consumers).
+- `assistant_messages` (V8): `mode`/`outcome` varchar + CHECK matching `AssistantMode`/`AssistantOutcome`
+  byte for byte (`AssistantOutcomeTest` parses the SQL); `message text` CHECK 1..1000 chars;
+  `interpretation jsonb` mapped as a typed record via `@JdbcTypeCode(SqlTypes.JSON)`; `confidence numeric`
+  (no precision on the entity, so validate cannot disagree) CHECK [0,1]; `item_id` → items ON DELETE SET
+  NULL and CHECK `item_id IS NULL OR outcome = 'CREATED'`; `space_id` → spaces ON DELETE SET NULL;
+  `user_id` → users ON DELETE CASCADE (backstop only — deletion deletes them explicitly first). Indexes:
+  `(user_id, created_at DESC)`, partial `(item_id)`, partial `(space_id)` (the SET NULL triggers need it).
+  Rows are kept for the life of the account; no purge job (decision, 2026-09-16).
 - Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java enums.
-- **Account deletion order is items → locations → spaces → user, with the storage_deletion_queue rows
-  enqueued BEFORE the item cascade** (`item_files` cascades from `items`, which erases the object keys).
+- **Account deletion order is assistant messages → items → locations → spaces → user, with the
+  storage_deletion_queue rows enqueued BEFORE the item cascade** (assistant messages go first so their
+  item_id/space_id SET NULL triggers never fire inside the two bulk deletes and the summary count is exact) (`item_files` cascades from `items`, which erases the object keys).
   Items must go first because `items.current_location_id` is RESTRICT (checked immediately); the whole
   location forest then goes in ONE statement because the self-FK `fk_locations_parent_same_space` is
   NO ACTION (checked at end of statement); spaces go after their locations; `refresh_tokens` cascade
@@ -141,7 +174,8 @@ GET /locations/{id}/children · items: CRUD, POST /items/{id}/move {locationId,n
 GET /items/{id}/history, GET /items?page&size&sort, GET /items/search?q= (returns
 {id,name,locationPath[],primaryImageUrl,updatedAt}) · files: POST(multipart)/GET
 /items/{id}/files, DELETE /{fileId}, GET /{fileId}/url (presigned) · assistant:
-POST /assistant/remember {message, spaceId?}, /assistant/search {query}, /assistant/images/analyze ·
+POST /assistant/remember {message, spaceId?}, /assistant/search {query}, /assistant/images/analyze
+(the `assistant_messages` rows V8 writes have NO endpoint — write-only for now) ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
 Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
@@ -152,8 +186,13 @@ the Play Store data-deletion and privacy URLs).
 - Repositories expose ONLY userId-scoped finders for owned aggregates (`findByIdAndUserId`
   style); ownership misses are 404, never 403. Enforced by `OwnershipScopingArchTest`.
 - `moveItem` must verify ownership of BOTH the item and the destination.
-- No `@Transactional` self-invocation; no MinIO or AI call inside a DB transaction;
-  any DB write from `afterCommit` needs REQUIRES_NEW.
+- No `@Transactional` self-invocation; no MinIO or AI call inside a DB transaction (direct calls from a
+  `@Transactional` method to `AiAssistant` fail `OwnershipScopingArchTest`); any DB write from
+  `afterCommit` needs REQUIRES_NEW. The `assistant_messages` row is written after the flow finished and
+  every outcome uses REQUIRES_NEW; `AssistantService` holds no transaction, so that call is the
+  after-commit point. `AssistantServiceTest` pins the propagation declaration by reflection and the
+  swallow on both the CREATED and the NEEDS_CONFIRMATION path; a runtime proof across a real
+  transaction boundary is still a gap.
 - Bulk `@Modifying` updates: think before `clearAutomatically` — it detaches managed entities
   the caller still mutates (this exact bug shipped once and was caught in review).
 - Login is enumeration-safe (dummy BCrypt verify + uniform INVALID_CREDENTIALS).
@@ -161,7 +200,8 @@ the Play Store data-deletion and privacy URLs).
   NaN-proof (`x >= min && x <= max`, never `!(x < min)`).
 - Batch, never per-row: location paths and primary images resolve in one query per page.
 - Never log credentials, tokens, or user messages above DEBUG.
-- Account deletion: outbox rows before the item cascade; items → locations → spaces → user; per-space
+- Account deletion: outbox rows before the item cascade; assistant messages → items → locations → spaces
+  → user; per-space
   advisory locks taken first in ascending id order; zero MinIO calls and no afterCommit sweep in the
   request path (the janitor drains the outbox); `RefreshTokenRevoker` is NOT called (REQUIRES_NEW would
   survive a rollback — the users→refresh_tokens cascade is the revocation). Pinned by
@@ -170,7 +210,7 @@ the Play Store data-deletion and privacy URLs).
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 142 unit tests — must stay green without Docker OR network
+./gradlew build              # compile + 175 unit tests — must stay green without Docker OR network
 ./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO) — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
@@ -301,6 +341,34 @@ FK — pinned by `AccountDeletionIT#deletedAccountRefreshTokenCannotResurrectThe
 space lock — deferred); janitor drains 50 objects per sweep, so photo-heavy accounts take minutes to
 leave MinIO. Suites: **unit 142**, **integration 33 across 9 classes** (`AccountDeletionIT`,
 `LegalPagesIT` added).
+
+**2026-09-16 — assistant provenance (V8 `assistant_messages`).** Triggered by a real incident: 13 items
+filed through the assistant on this date, 4 in the wrong space ("Work" instead of the listed "Xalqlar";
+twice "Xalqlar" became a ROOM inside Work), one physical box as 4 location rows, a bag created twice, an
+item name that absorbed part of the space name — and nothing to diagnose it with, because the sentence and
+the model's raw answer existed nowhere (§6 forbids logging them). Now every request that reaches
+`AssistantService.remember/search` past `sanitize()` leaves exactly one row (see §3 assistant/ and §4 for
+the shape and the write discipline). `AiAssistant.metadata(mode)` is new on the port: provider, live model,
+and `PromptVersion.of(<immutable prompt constant>, <structured-output schema records>)` — never the
+assembled per-request string, so the stored sentences can later be re-run against a prompt version
+("re-run these 13 against sha256:…") and editing a schema description cannot masquerade as the same
+version. Exposure: NONE — write-only. Two overlapping agent workflows produced rival designs here; the
+shipped one records outside the domain transaction and adds no read surface, and the richer one
+(`ItemResponse.sourceMessage` + `GET /assistant/messages` + a MANDATORY recorder inside the executor's
+transaction) was NOT built. Do not re-introduce it from stale notes. Account deletion deletes the rows
+explicitly before the item cascade (unit InOrder + `AccountDeletionIT`). Legal pages disclose the storage in AZ and EN; placeholders untouched. Decisions
+recorded: keep for the life of the account, no purge job; a NEEDS_CONFIRMATION + `spaceId` follow-up is
+TWO rows for one intent (documented for the client); a FAILED REMEMBER keeps only `offeredSpaces` (null
+when the user had no spaces) and a FAILED SEARCH a null interpretation, even when the fallback answered; result counts/hit ids are deliberately NOT stored (provenance, not
+analytics); a `sanitize()` rejection and a foreign-`spaceId` 404 write no row (no outcome value fits —
+adding one is a V9). Known cost: `POST /assistant/search` now writes one row per call. Suites: **unit 175**
+(33 new: `AssistantServiceTest` +10, `PlacementExecutorTest`, `PromptVersionTest`,
+`InterpretationSnapshotsTest`, `AssistantOutcomeTest`, provider metadata tests, `ItemServiceTest` +4,
+`ItemMapperTest` +2, `OwnershipScopingArchTest` +1 — the §6 AI-in-transaction rule, mutation-checked),
+**integration 40 across 11 classes** (`AssistantMessageIT` 5, `AssistantMessageFailureIT` 1 — the only IT
+that forks the context, via `@TestPropertySource` pointing the real `openai` provider at a closed port —
+and `AccountDeletionIT` +1). Every IT boots with `ddl-auto: validate`, which is what proves the
+`jsonb`/`numeric`/`text` mappings against V8.
 
 ## 9. Future extension points (design for, do not build)
 

@@ -1,5 +1,6 @@
 package az.technest.whereis.user;
 
+import az.technest.whereis.assistant.AssistantMessageService;
 import az.technest.whereis.item.ItemDeletionSummary;
 import az.technest.whereis.item.ItemService;
 import az.technest.whereis.location.LocationService;
@@ -19,7 +20,10 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>re-authenticate — nothing is locked or written before the password is accepted;</li>
  *   <li>take the per-space advisory locks every structural location writer also takes, so no
  *       concurrent re-parent, chain-create or space delete can interleave with the cascade;</li>
- *   <li>items first — {@code items.current_location_id} is ON DELETE RESTRICT, and the outbox rows
+ *   <li>assistant messages — the {@code users} cascade would remove them anyway, but going first
+ *       means their ON DELETE SET NULL triggers on {@code item_id}/{@code space_id} never fire
+ *       during the two bulk deletes below, and the summary count is exact;</li>
+ *   <li>items — {@code items.current_location_id} is ON DELETE RESTRICT, and the outbox rows
  *       for the photos are enqueued inside that step before the {@code item_files} cascade
  *       erases the object keys;</li>
  *   <li>then the whole location forest in one statement (the self-referencing FK is NO ACTION,
@@ -41,6 +45,7 @@ public class AccountDeletionService {
     private final SpaceService spaceService;
     private final LocationService locationService;
     private final ItemService itemService;
+    private final AssistantMessageService assistantMessageService;
 
     /**
      * @param userId      the JWT subject — never client input
@@ -56,12 +61,15 @@ public class AccountDeletionService {
         passwordVerifier.requireMatch(user, rawPassword);
 
         List<UUID> spaceIds = spaceService.lockAllSpacesOfUser(userId);
+        int assistantMessages = assistantMessageService.deleteAllForUser(userId);
         ItemDeletionSummary items = itemService.deleteAllForUser(userId);
         int locations = locationService.deleteAllForUser(userId);
         int spaces = spaceService.deleteAllForUser(userId);
         userRepository.delete(user);
 
-        log.info("Account {} deleted: {} spaces (locked {}), {} locations, {} items, {} photo deletions enqueued",
-                userId, spaces, spaceIds.size(), locations, items.items(), items.filesEnqueued());
+        log.info("Account {} deleted: {} spaces (locked {}), {} locations, {} items, {} assistant messages, "
+                        + "{} photo deletions enqueued",
+                userId, spaces, spaceIds.size(), locations, items.items(), assistantMessages,
+                items.filesEnqueued());
     }
 }

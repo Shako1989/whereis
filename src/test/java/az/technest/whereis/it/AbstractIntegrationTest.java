@@ -26,6 +26,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -87,6 +88,10 @@ public abstract class AbstractIntegrationTest {
 
     @Autowired
     protected TestRestTemplate rest;
+
+    /** Row-count and jsonb assertions straight from the database. Same context: no fork. */
+    @Autowired
+    protected JdbcTemplate jdbc;
 
     /** Registers a fresh user with a random e-mail and returns the whole token pair. */
     protected TokenPairResponse register() {
