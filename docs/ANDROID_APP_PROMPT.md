@@ -256,7 +256,7 @@ formatter so the UI looks uniform.
 
 | Method | Path | Request | Success |
 |---|---|---|---|
-| POST | `/assistant/remember` | `{message}` (≤ 1000), optional `spaceId` | 200 `RememberResponse` |
+| POST | `/assistant/remember` | `{message}` (≤ 1000), optional `spaceId` **or** `locationId` | 200 `RememberResponse` |
 | POST | `/assistant/search` | `{query}` (≤ 500) | 200 `{answer, items:SearchResult[]}` |
 | POST | `/assistant/images/analyze` | multipart, part `file` | 200 `{suggestions:[{name,category}], note}` |
 
@@ -266,18 +266,39 @@ formatter so the UI looks uniform.
   "message":"human-readable explanation",
   "item": { …Item… } | null,
   "createdLocations": ["Bedroom","Wardrobe","Top drawer"],   // newly auto-created, may be empty
-  "candidateSpaces": [ {"id":"uuid","name":"Home"} ] }        // only on NEEDS_CONFIRMATION
+  "candidateSpaces": [ {"id":"uuid","name":"Home"} ],         // only on NEEDS_CONFIRMATION
+  "messagePlaceIgnored": false }                              // only on the pinned path, see BR-7
 ```
 
 - `CREATED` — item stored. Show it, show `createdLocations` as "I also created: …", offer Undo
   (Undo = `DELETE /items/{id}`; the auto-created locations stay, which is acceptable).
+  A **new top-level location** was created iff `createdLocations.length == item.locationPath.length - 1`
+  — nothing can already exist under a node that did not exist, and `locationPath` opens with the
+  space name. That is the case worth a loud confirmation rather than a grey footnote: it strands the
+  item in a tree the user will not open. (`createdLocations[0] == item.locationPath[1]` looks
+  equivalent and is not — it misfires on a path that repeats a name, e.g. `Şkaf > Şkaf`.)
 - `NEEDS_CONFIRMATION` — the message was understood but the target space was ambiguous.
   **Answer it by resending the same `message` with `spaceId` set to the chosen `candidateSpaces[].id`.**
   The id settles the space outright; the assistant does not ask again. A space that is not yours
   is a 404 like every other ownership miss. The `message` distinguishes three cases: no spaces yet,
   a named space that does not exist yet ("You don't have a space for \"Office\"..."), and a
   genuinely ambiguous one — render it verbatim above the picker.
-  **Zero writes happened.** Show `candidateSpaces` as a picker (see §7.1 for the required workaround).
+  **Zero writes happened.** Show `candidateSpaces` as a picker. §7.1 is CLOSED — send `spaceId`;
+  do NOT fold the space name into the sentence and re-send it through the model.
+- **Pinned destination — `locationId` (BR-7).** Send it when the user picked the exact place
+  before speaking (the "filed here recently" chips). It settles the destination outright: no space
+  resolution, no chain resolution, and **no location can be created by the request at all** —
+  `createdLocations` is always empty, by construction. The model is still called for the item name
+  and description. Rules:
+  - **Mutually exclusive with `spaceId`** — sending both is a 400 `VALIDATION_ERROR`. A location
+    already names its space.
+  - A location that is not yours is a 404, like every other ownership miss.
+  - `messagePlaceIgnored: true` means the sentence named a place (or a space) other than the pin,
+    and **the pin won**. The pin is never overridden by the sentence — that would restore exactly
+    the model trust it exists to remove — so render this as a visible note ("the place in your
+    sentence was ignored"), which is how a stale pin becomes noticeable instead of silent.
+  - Keep the pin across consecutive saves until the user clears it. That is the point: filing ten
+    things into one box should resolve the box once, not ten times.
 - `NOT_UNDERSTOOD` — show `message` and fall back to the manual add-item form, pre-filled with
   whatever the user typed as the item name.
 - `search.answer` is composed from database rows only, never free-form AI text. Render it as the

@@ -40,7 +40,7 @@ class AssistantMessageIT extends AbstractIntegrationTest {
 
     private RememberResponse remember(String token, String message, UUID spaceId) {
         ResponseEntity<RememberResponse> response =
-                post(token, REMEMBER, new RememberRequest(message, spaceId), RememberResponse.class);
+                post(token, REMEMBER, new RememberRequest(message, spaceId, null), RememberResponse.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         return response.getBody();
     }

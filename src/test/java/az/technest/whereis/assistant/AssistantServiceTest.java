@@ -104,7 +104,7 @@ class AssistantServiceTest {
     void lowConfidenceInterpretationNeverMutatesAnything() {
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.1));
 
-        RememberResponse response = service.remember(userId, "gibberish", null);
+        RememberResponse response = service.remember(userId, "gibberish", null, null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NOT_UNDERSTOOD);
         verify(executor, never()).place(any(), any(), any(), any());
@@ -117,7 +117,7 @@ class AssistantServiceTest {
         when(spaceRepository.findByUserIdAndNormalizedName(userId, "moon base")).thenReturn(Optional.empty());
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of(space("Home")));
 
-        RememberResponse response = service.remember(userId, "I put my passport in the moon base drawer", null);
+        RememberResponse response = service.remember(userId, "I put my passport in the moon base drawer", null, null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         assertThat(response.candidateSpaces()).hasSize(1);
@@ -130,7 +130,7 @@ class AssistantServiceTest {
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId))
                 .thenReturn(List.of(space("Home"), space("Office")));
 
-        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null);
+        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null, null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         assertThat(response.candidateSpaces()).hasSize(2);
@@ -142,7 +142,7 @@ class AssistantServiceTest {
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.9));
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
 
-        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null);
+        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null, null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         assertThat(response.candidateSpaces()).isEmpty();
@@ -156,9 +156,10 @@ class AssistantServiceTest {
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of(home));
         ItemResponse item = item("Passport", List.of("Home", "Bedroom", "Top Drawer"));
         when(executor.place(eq(userId), eq(home.getId()), any(), eq(AssistantService.PLACEMENT_NOTE)))
-                .thenReturn(new PlacementExecutor.ExecutionResult(item, List.of("Bedroom", "Top Drawer")));
+                .thenReturn(new PlacementExecutor.ExecutionResult(item, List.of("Bedroom", "Top Drawer"),
+                        home.getId()));
 
-        RememberResponse response = service.remember(userId, "I put my passport in the bedroom top drawer", null);
+        RememberResponse response = service.remember(userId, "I put my passport in the bedroom top drawer", null, null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.CREATED);
         assertThat(response.item().name()).isEqualTo("Passport");
@@ -172,9 +173,9 @@ class AssistantServiceTest {
         when(spaceRepository.findByUserIdAndNormalizedName(userId, "home")).thenReturn(Optional.of(home));
         when(executor.place(eq(userId), eq(home.getId()), any(), eq(AssistantService.PLACEMENT_NOTE)))
                 .thenReturn(new PlacementExecutor.ExecutionResult(
-                        item("Passport", List.of("Home", "Bedroom", "Top Drawer")), List.of()));
+                        item("Passport", List.of("Home", "Bedroom", "Top Drawer")), List.of(), home.getId()));
 
-        assertThat(service.remember(userId, "I put my passport in the bedroom drawer at home", null).status())
+        assertThat(service.remember(userId, "I put my passport in the bedroom drawer at home", null, null).status())
                 .isEqualTo(RememberResponse.Status.CREATED);
     }
 
@@ -219,10 +220,10 @@ class AssistantServiceTest {
         when(executor.place(eq(userId), eq(chosen.getId()), any(), eq(AssistantService.PLACEMENT_NOTE)))
                 .thenReturn(new PlacementExecutor.ExecutionResult(
                         item("Passport", List.of("Home", "Bedroom", "Top Drawer")),
-                        List.of("Bedroom", "Top Drawer")));
+                        List.of("Bedroom", "Top Drawer"), chosen.getId()));
 
         RememberResponse response =
-                service.remember(userId, "I put my passport in the bedroom drawer", chosen.getId());
+                service.remember(userId, "I put my passport in the bedroom drawer", chosen.getId(), null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.CREATED);
         verify(executor).place(eq(userId), eq(chosen.getId()), any(),
@@ -240,7 +241,7 @@ class AssistantServiceTest {
         when(spaceRepository.findByIdAndUserId(someoneElses, userId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() ->
-                service.remember(userId, "I put my passport in the bedroom drawer", someoneElses))
+                service.remember(userId, "I put my passport in the bedroom drawer", someoneElses, null))
                 .isInstanceOf(NotFoundException.class);
         verify(executor, never()).place(any(), any(), any(), any());
     }
@@ -253,7 +254,7 @@ class AssistantServiceTest {
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId))
                 .thenReturn(List.of(space("Garden"), space("Home")));
 
-        service.remember(userId, "gibberish", null);
+        service.remember(userId, "gibberish", null, null);
 
         verify(aiAssistant).interpretPlacement("gibberish", List.of("Garden", "Home"));
     }
@@ -266,7 +267,7 @@ class AssistantServiceTest {
                 .thenReturn(new PlacementInterpretation("Silicon vuran xalq", null, "Xalqlar",
                         List.of(new LocationSegment("Kladovka", "SHELF-ISH")), 0.1));
 
-        service.remember(userId, "gibberish", null);
+        service.remember(userId, "gibberish", null, null);
 
         AssistantMessageDraft draft = recordedDraft(AssistantOutcome.NOT_UNDERSTOOD);
         assertThat(draft.userId()).isEqualTo(userId);
@@ -290,7 +291,7 @@ class AssistantServiceTest {
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId))
                 .thenReturn(List.of(space("Home"), space("Office")));
 
-        service.remember(userId, "I put my passport in the bedroom drawer", null);
+        service.remember(userId, "I put my passport in the bedroom drawer", null, null);
 
         AssistantMessageDraft draft = recordedDraft(AssistantOutcome.NEEDS_CONFIRMATION);
         assertThat(draft.interpretation().validated()).isTrue();
@@ -308,7 +309,7 @@ class AssistantServiceTest {
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of(space("Home")));
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenThrow(new AiAssistantException("down"));
 
-        assertThatThrownBy(() -> service.remember(userId, "I put my passport in the bedroom drawer", null))
+        assertThatThrownBy(() -> service.remember(userId, "I put my passport in the bedroom drawer", null, null))
                 .isInstanceOf(AiAssistantException.class);
 
         RecordedRow row = recordedRow(AssistantOutcome.FAILED);
@@ -337,7 +338,7 @@ class AssistantServiceTest {
         when(spaceRepository.findAllByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenThrow(new AiAssistantException("down"));
 
-        assertThatThrownBy(() -> service.remember(userId, "I put my passport in the bedroom drawer", null))
+        assertThatThrownBy(() -> service.remember(userId, "I put my passport in the bedroom drawer", null, null))
                 .isInstanceOf(AiAssistantException.class);
 
         AssistantMessageDraft draft = recordedDraft(AssistantOutcome.FAILED);
@@ -352,9 +353,9 @@ class AssistantServiceTest {
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Home", 0.93));
         when(spaceRepository.findByUserIdAndNormalizedName(userId, "home")).thenReturn(Optional.of(home));
         when(executor.place(eq(userId), eq(home.getId()), any(), eq(AssistantService.PLACEMENT_NOTE)))
-                .thenReturn(new PlacementExecutor.ExecutionResult(created, List.of()));
+                .thenReturn(new PlacementExecutor.ExecutionResult(created, List.of(), home.getId()));
 
-        service.remember(userId, "I put my passport in the bedroom drawer at home", null);
+        service.remember(userId, "I put my passport in the bedroom drawer at home", null, null);
 
         // Order is the contract: the executor's transactional proxy has committed by the time it
         // returns, so recording afterwards IS the after-commit point — and only then does an item id
@@ -389,7 +390,8 @@ class AssistantServiceTest {
         when(executor.place(eq(userId), eq(home.getId()), any(), eq(AssistantService.PLACEMENT_NOTE)))
                 .thenThrow(new NotFoundException(ErrorCode.LOCATION_NOT_FOUND, "Location not found"));
 
-        assertThatThrownBy(() -> service.remember(userId, "I put my passport in the bedroom drawer at home", null))
+        assertThatThrownBy(() ->
+                service.remember(userId, "I put my passport in the bedroom drawer at home", null, null))
                 .isInstanceOf(NotFoundException.class);
 
         RecordedRow row = recordedRow(AssistantOutcome.FAILED);
@@ -407,7 +409,7 @@ class AssistantServiceTest {
                 .thenReturn(List.of(space("Home"), space("Office")));
         doThrow(new IllegalStateException("database is away")).when(messages).record(any(), any());
 
-        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null);
+        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null, null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.NEEDS_CONFIRMATION);
         assertThat(response.candidateSpaces()).hasSize(2);
@@ -415,7 +417,7 @@ class AssistantServiceTest {
 
     @Test
     void aMessageThatFailsSanitizeRecordsNothingAndNeverReachesTheProvider() {
-        assertThatThrownBy(() -> service.remember(userId, "   ", null))
+        assertThatThrownBy(() -> service.remember(userId, "   ", null, null))
                 .isInstanceOf(BadRequestException.class);
 
         verifyNoInteractions(messages, executor);
@@ -491,10 +493,10 @@ class AssistantServiceTest {
         when(spaceRepository.findByUserIdAndNormalizedName(userId, "home")).thenReturn(Optional.of(home));
         when(executor.place(eq(userId), eq(home.getId()), any(), eq(AssistantService.PLACEMENT_NOTE)))
                 .thenReturn(new PlacementExecutor.ExecutionResult(
-                        item("Passport", List.of("Home", "Bedroom", "Top Drawer")), List.of()));
+                        item("Passport", List.of("Home", "Bedroom", "Top Drawer")), List.of(), home.getId()));
         doThrow(new IllegalStateException("insert failed")).when(messages).record(any(), any());
 
-        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null);
+        RememberResponse response = service.remember(userId, "I put my passport in the bedroom drawer", null, null);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.CREATED);
         assertThat(response.item().name()).isEqualTo("Passport");
@@ -509,7 +511,7 @@ class AssistantServiceTest {
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.93));
         when(spaceRepository.findByIdAndUserId(foreign, userId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.remember(userId, "I put my passport in the drawer", foreign))
+        assertThatThrownBy(() -> service.remember(userId, "I put my passport in the drawer", foreign, null))
                 .isInstanceOf(NotFoundException.class);
 
         verifyNoInteractions(messages);
@@ -530,5 +532,163 @@ class AssistantServiceTest {
 
         assertThat(annotation).isNotNull();
         assertThat(annotation.propagation()).isEqualTo(Propagation.REQUIRES_NEW);
+    }
+
+    // ---- BR-7: a pinned locationId ------------------------------------------------------------
+
+    /**
+     * The whole point of the pin: {@code resolveOrCreateChain} — the only auto-creation path in the
+     * system — is unreachable, so a wrong or duplicate location is not unlikely on this path, it is
+     * impossible. Pinned by asserting the space lookup never happens either: the space cannot be
+     * guessed wrong if it is never guessed.
+     */
+    @Test
+    void aPinnedLocationSettlesTheDestinationWithoutResolvingASpaceOrAChain() {
+        UUID pinned = UUID.randomUUID();
+        UUID space = UUID.randomUUID();
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Home", 0.93));
+        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+                .thenReturn(new PlacementExecutor.ExecutionResult(
+                        item("Passport", List.of("Ashagi kladovka", "Karobka")), List.of(), space));
+
+        RememberResponse response =
+                service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned);
+
+        assertThat(response.status()).isEqualTo(RememberResponse.Status.CREATED);
+        assertThat(response.createdLocations()).isEmpty();
+        verify(executor, never()).place(any(), any(), any(), any());
+        verify(spaceRepository, never()).findByUserIdAndNormalizedName(any(), any());
+        verify(spaceRepository, never()).findByIdAndUserId(any(), any());
+    }
+
+    @Test
+    void aPinnedLocationReportsThatTheSentencesOwnPlaceWasIgnored() {
+        UUID pinned = UUID.randomUUID();
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.93));
+        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+                .thenReturn(new PlacementExecutor.ExecutionResult(
+                        item("Passport", List.of("Ashagi kladovka", "Karobka")), List.of(), UUID.randomUUID()));
+
+        RememberResponse response =
+                service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned);
+
+        // Reported, not obeyed — a stale pin has to be visible without the sentence being able to
+        // move the item.
+        assertThat(response.messagePlaceIgnored()).isTrue();
+        assertThat(response.message()).contains("Ashagi kladovka > Karobka").contains("ignored");
+        assertThat(response.item().locationPath()).containsExactly("Ashagi kladovka", "Karobka");
+    }
+
+    @Test
+    void aPinnedLocationTheSentenceAlsoNamesIsNotReportedAsAnOverride() {
+        UUID pinned = UUID.randomUUID();
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.93));
+        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+                .thenReturn(new PlacementExecutor.ExecutionResult(
+                        // The model's innermost segment is "Top Drawer" — the pinned leaf itself.
+                        item("Passport", List.of("Bedroom", "Top Drawer")), List.of(), UUID.randomUUID()));
+
+        RememberResponse response =
+                service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned);
+
+        assertThat(response.messagePlaceIgnored()).isFalse();
+        assertThat(response.message()).doesNotContain("ignored");
+    }
+
+    /**
+     * The pinned path calls the provider with the same inputs as every other path on purpose: the
+     * row it leaves is the only labelled evidence of what the model WOULD have answered for a
+     * sentence whose right answer is known. Losing that would make the placement quality
+     * unmeasurable exactly where it is cheapest to measure.
+     */
+    @Test
+    void aPinnedRememberStillRecordsWhatTheModelAnsweredAndWhatItWasOffered() {
+        UUID pinned = UUID.randomUUID();
+        UUID space = UUID.randomUUID();
+        ItemResponse created = item("Passport", List.of("Ashagi kladovka", "Karobka"));
+        when(spaceRepository.findAllByUserIdOrderByNameAsc(userId))
+                .thenReturn(List.of(space("Xalqlar"), space("Work")));
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Work", 0.93));
+        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+                .thenReturn(new PlacementExecutor.ExecutionResult(created, List.of(), space));
+
+        service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned);
+
+        verify(aiAssistant).interpretPlacement("I put my passport in the bedroom top drawer",
+                List.of("Xalqlar", "Work"));
+        RecordedRow row = recordedRow(AssistantOutcome.CREATED);
+        assertThat(row.result().itemId()).isEqualTo(created.id());
+        // The space comes from the executor: on this path only the location lookup knows it.
+        assertThat(row.result().spaceId()).isEqualTo(space);
+        assertThat(row.draft().interpretation().spaceName()).isEqualTo("Work");
+        assertThat(row.draft().interpretation().offeredSpaces()).containsExactly("Xalqlar", "Work");
+    }
+
+    @Test
+    void aPinnedLocationThatIsNotThisUsersRecordsFailedWithNoSpaceAndRethrows() {
+        UUID pinned = UUID.randomUUID();
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.93));
+        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+                .thenThrow(new NotFoundException(ErrorCode.LOCATION_NOT_FOUND, "Location not found"));
+
+        assertThatThrownBy(() ->
+                service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned))
+                .isInstanceOf(NotFoundException.class);
+
+        AssistantMessageResult result = recordedRow(AssistantOutcome.FAILED).result();
+        assertThat(result.errorCode()).isEqualTo(ErrorCode.LOCATION_NOT_FOUND.name());
+        // No space link: the ownership check that would have revealed the space is what threw.
+        assertThat(result.spaceId()).isNull();
+    }
+
+    @Test
+    void aPinnedRememberTheValidatorRejectsNeverReachesTheExecutor() {
+        UUID pinned = UUID.randomUUID();
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.2));
+
+        RememberResponse response = service.remember(userId, "gibberish", null, pinned);
+
+        assertThat(response.status()).isEqualTo(RememberResponse.Status.NOT_UNDERSTOOD);
+        verify(executor, never()).placeAt(any(), any(), any(), any());
+        verify(executor, never()).place(any(), any(), any(), any());
+    }
+
+    /**
+     * A location already names its space, so the pair can only be redundant or contradictory.
+     * Rejecting it keeps precedence out of the contract — and the rejection happens before the
+     * provider is paid, which is the other reason it is a 400 rather than a documented winner.
+     */
+    @Test
+    void sendingBothASpaceIdAndALocationIdIsARejectedContradiction() {
+        assertThatThrownBy(() -> service.remember(userId, "I put my passport in the drawer",
+                UUID.randomUUID(), UUID.randomUUID()))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("not both");
+
+        verifyNoInteractions(aiAssistant, spaceRepository, executor, messages);
+    }
+
+    /**
+     * The incident this feature answers: the sentence's innermost place was right and the SPACE was
+     * wrong. {@code locationPath} carries the space as its first element, so the same membership
+     * test catches it — and the pin still wins, which is the only reason the item is in the right
+     * place at all.
+     */
+    @Test
+    void aPinnedLocationReportsASentenceThatNamedTheRightBoxInTheWrongSpace() {
+        UUID pinned = UUID.randomUUID();
+        when(aiAssistant.interpretPlacement(anyString(), anyList()))
+                .thenReturn(new PlacementInterpretation("Passport", null, "Work",
+                        List.of(new LocationSegment("Karobka", "BOX")), 0.93));
+        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+                .thenReturn(new PlacementExecutor.ExecutionResult(
+                        item("Passport", List.of("Xalqlar", "Ashagi kladovka", "Karobka")),
+                        List.of(), UUID.randomUUID()));
+
+        RememberResponse response =
+                service.remember(userId, "I put my passport in the karobka at work", null, pinned);
+
+        assertThat(response.messagePlaceIgnored()).isTrue();
+        assertThat(response.item().locationPath()).startsWith("Xalqlar");
     }
 }

@@ -97,8 +97,19 @@ assistant/ fixed pipeline: read the user's spaces → AiAssistant.interpret(mess
            and no space is ever created from AI output. Claude's prompts additionally demand base
            dictionary forms for every name — the location dedup key is the normalized name, so
            "şkafın içində" and "şkafa" must both yield "Şkaf" or the tree grows duplicates.
-           An explicit request-level spaceId (BR-2) settles the space without asking the AI at all;
-           an id that is not the caller's is a 404. NEEDS_CONFIRMATION carries one of three
+           Entity resolution has three entry points, in descending order of what is left to guess.
+           A pinned request-level locationId (BR-7) settles the DESTINATION: resolveOrCreateChain is
+           never entered, so no location can be created or guessed on that path and createdLocations
+           is empty by construction; the provider is still called (item name + description) with the
+           SAME inputs as every other path, deliberately, so the row records what the model WOULD
+           have answered for a sentence whose right answer is known — the only free labelled evidence
+           of placement quality. The sentence's own place is REPORTED, never obeyed
+           (RememberResponse.messagePlaceIgnored, compared against item.locationPath, which opens
+           with the space name): obeying it restores the model trust the pin removes, and staying
+           silent makes a stale pin invisible — the one new failure mode the pin introduces.
+           An explicit request-level spaceId (BR-2) settles only the space without asking the AI;
+           an id that is not the caller's is a 404. spaceId and locationId together are a 400
+           (a location already names its space, so the pair is redundant or contradictory). NEEDS_CONFIRMATION carries one of three
            messages: no spaces yet, a named-but-missing space ("işdə" with no Office), or genuine
            ambiguity — spaces are still never auto-created from AI output.
            Every request past sanitize() leaves ONE `assistant_messages` row (V8): the sentence as
@@ -174,7 +185,7 @@ GET /locations/{id}/children · items: CRUD, POST /items/{id}/move {locationId,n
 GET /items/{id}/history, GET /items?page&size&sort, GET /items/search?q= (returns
 {id,name,locationPath[],primaryImageUrl,updatedAt}) · files: POST(multipart)/GET
 /items/{id}/files, DELETE /{fileId}, GET /{fileId}/url (presigned) · assistant:
-POST /assistant/remember {message, spaceId?}, /assistant/search {query}, /assistant/images/analyze
+POST /assistant/remember {message, spaceId? XOR locationId?}, /assistant/search {query}, /assistant/images/analyze
 (the `assistant_messages` rows V8 writes have NO endpoint — write-only for now) ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
@@ -369,6 +380,38 @@ adding one is a V9). Known cost: `POST /assistant/search` now writes one row per
 that forks the context, via `@TestPropertySource` pointing the real `openai` provider at a closed port —
 and `AccountDeletionIT` +1). Every IT boots with `ddl-auto: validate`, which is what proves the
 `jsonb`/`numeric`/`text` mappings against V8.
+
+**2026-09-17 — BR-7: a pinned `locationId` on `/assistant/remember`.** The prevention work for the
+16 Sep incident (`docs/PREVENT_WRONG_LOCATIONS.md` — causes traced to the resolver, not the prompt)
+starts here because this is the only measure that makes a wrong location *impossible* rather than
+less likely: `PlacementExecutor.placeAt` calls `ItemService.createAt` directly, so
+`resolveOrCreateChain` is unreachable and the location tree cannot move. `ExecutionResult` gained
+`spaceId` — on the pinned path only the executor's ownership lookup knows it, and that lookup is
+also what can throw, which is why a pinned FAILED row carries a NULL `space_id` while a chain
+FAILED row keeps its space. `RememberResponse` gained `messagePlaceIgnored` (additive; the deployed
+client ignores unknown keys). No migration, no prompt change, no schema change. Suites: **unit 189**
+(+8 `AssistantServiceTest` cases), **integration 44 across 11 classes** (`AssistantPinnedLocationIT`
++5, each asserting the `locations` table is unchanged as well as the item — an item-only assertion
+would still pass if the chain had been created and then ignored).
+
+The Android client shipped the same day: `locationId` on the request DTO (with **no** `spaceId`
+field at all, so the 400 is unrepresentable rather than merely avoided), a sticky pin cleared only
+by the user or by a 404 on a pinned send, recent pins in their own DataStore file, the picker reusing
+the existing `LocationPickerSheet`, and `messagePlaceIgnored` rendered as a filled
+`tertiaryContainer` note (not `errorContainer` — the save succeeded). App suite **95 tests, 0
+failures** (+20). One API gap fell out of it and is filed as BR-8: nothing returns a location's
+space-qualified path, so a persisted chip label goes stale until the destination is pinned again.
+
+Two stale documents were found and corrected while doing this, both of the same kind — a contract
+that says one thing and code that does another:
+1. `docs/ANDROID_APP_PROMPT.md` §7.1 has said "RESOLVED, send `spaceId`" since 2026-09-03, but the
+   Android client still ships the historical workaround (`AssistantRepository.rememberInSpace` folds
+   the chosen space name into the sentence and re-sends it through the model). So an explicitly
+   picked space is still answered by another inference. NOT fixed here — it is a ~10-line client
+   change, filed as the next step.
+2. `docs/BACKEND_REQUESTS.md` BR-6 claimed `sourceMessage` + `GET /assistant/messages` were
+   IMPLEMENTED. They were not (see the 2026-09-16 entry). Re-titled PARTIALLY IMPLEMENTED with an
+   explicit warning not to build a client against it.
 
 ## 9. Future extension points (design for, do not build)
 

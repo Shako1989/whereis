@@ -97,7 +97,7 @@ class AccountDeletionIT extends AbstractIntegrationTest {
 
     private RememberResponse remember(String token, String message, UUID spaceId) {
         ResponseEntity<RememberResponse> response = post(token, "/api/v1/assistant/remember",
-                new RememberRequest(message, spaceId), RememberResponse.class);
+                new RememberRequest(message, spaceId, null), RememberResponse.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         return response.getBody();
     }

@@ -275,7 +275,14 @@ subject — there is no id in the path and none in the body.
 `https://{WHEREIS_API_HOST}/legal/delete-account` (data-deletion URL) and
 `https://{WHEREIS_API_HOST}/legal/privacy` (privacy policy URL). Both are bilingual AZ/EN.
 
-## BR-6 — Assistant provenance: `sourceMessage` on item detail + `GET /assistant/messages` — **IMPLEMENTED 2026-09-16**
+## BR-6 — Assistant provenance: `sourceMessage` on item detail + `GET /assistant/messages` — **PARTIALLY IMPLEMENTED 2026-09-16**
+
+> **Correction (2026-09-17): the client-facing half of this entry was never built.** What shipped is
+> write-only: the `assistant_messages` table (V8) and the write discipline. There is **no**
+> `GET /assistant/messages` endpoint and **no** `sourceMessage` on `ItemResponse` — two rival agent
+> designs existed and the richer one was deliberately not taken (see the skill's §8). Do not build a
+> client against the "What the client gets" section below; it describes a proposal, not an API.
+> Read the rows from the database until an endpoint exists.
 
 **Status:** shipped (V8 `assistant_messages`). **Raised:** backend-side, from a real incident on
 2026-09-16 — 13 items filed through the assistant, 4 landed in the wrong space ("Work" instead of the
@@ -331,3 +338,101 @@ has to stay free to change.
    the backstop. Both legal pages (`/legal/privacy`, `/legal/delete-account`, AZ + EN) now disclose
    that assistant sentences are stored with the account and deleted with it.
 6. **Never log `message` above `DEBUG`** on the client either (§4.7 of the app prompt still applies).
+
+---
+
+## BR-7 — A pinned `locationId` on `/assistant/remember` — **IMPLEMENTED 2026-09-17**
+
+### Why
+
+Filing many items into the same physical place is the common case, and today each sentence
+re-resolves that place independently through the model. Thirteen sentences into one box are
+thirteen independent chances to get the box wrong — which is what the 2026-09-16 incident was.
+Every other mitigation on the table reduces a probability; letting the caller name the destination
+removes the operation that can go wrong.
+
+### What the client gets
+
+`POST /assistant/remember` accepts an optional `locationId`:
+
+```jsonc
+{ "message": "termos", "locationId": "uuid-of-Karobka" }
+```
+
+* It settles the destination outright. `resolveOrCreateChain` — the only auto-creation path in the
+  system — is never entered, so **no location can be created by such a request**, and
+  `createdLocations` is always empty by construction rather than by luck.
+* The model is still called, for the item name and description.
+* `messagePlaceIgnored: true` on the response means the sentence named a place (or a space) other
+  than the pin and the pin won. Render it. The pin is deliberately never overridden by the
+  sentence — the alternative is the model trust the pin exists to remove — so this flag is the only
+  way a stale pin becomes visible.
+* Mutually exclusive with `spaceId`: both is a 400 `VALIDATION_ERROR`, rejected before the provider
+  is called. A location already names its space, so the pair can only be redundant or contradictory.
+* A foreign or deleted `locationId` is a 404, and it leaves a `FAILED` provenance row with a NULL
+  `space_id` (unlike a foreign `spaceId`, which writes nothing — the location lookup happens inside
+  the executor's transaction, so the request really did reach the model).
+
+### Building the chips
+
+`GET /spaces/{spaceId}/location-tree` already returns the tree; flatten it to full paths. There is
+no item-count per location and none was added — rank by **recently pinned**, kept on the client.
+"Where I just filed" beats "where I have the most things" for this job anyway.
+
+### What the pinned row is worth keeping for
+
+The provider is called with the same inputs on the pinned path as on every other path, on purpose.
+The `assistant_messages` row therefore records what the model WOULD have answered for a sentence
+whose correct destination is known — the only labelled evidence of placement quality we get for
+free. Compare `interpretation->>'spaceName'` against the row's `space_id` to measure it.
+
+### Tests
+
+`AssistantServiceTest` (8 cases: the chain and space lookups are never reached, the override is
+reported, a matching sentence is not, the provenance row carries the executor's space and the
+model's answer, a foreign id records FAILED with no space, a validator rejection never reaches the
+executor, and the both-ids contradiction) and `AssistantPinnedLocationIT` (5 cases, each asserting
+the location table is unchanged as well as the item).
+
+---
+
+## BR-8 — No cheap way to resolve a location's full path (found while building BR-7's chips)
+
+### The gap
+
+The BR-7 pin chips show a space-qualified path (`Xalqlar > Ashagi kladovka > Karobka`) and the
+client persists that string with the id, because there is no way to ask for it again affordably.
+`GET /locations/{id}` returns `LocationResponse` — `{id, spaceId, parentLocationId, name, …}` — with
+no path, so rebuilding one label costs `GET /locations/{id}` + `GET /spaces/{spaceId}` + walking the
+space tree, **per chip**.
+
+Consequence today: a location renamed or re-parented somewhere else keeps its old label in the chip
+row until it is pinned again (re-pinning refreshes the stored path). A deleted one is noticed only
+when a pinned send answers 404, which the client handles by unpinning. Cosmetic, not corrupting —
+the id is what travels, the label is only what is shown.
+
+### What the client needs
+
+A batch resolve, because the chip row wants five at once and the whole point is one call:
+
+```
+GET /api/v1/locations/paths?ids=a,b,c      →  { "a": ["Xalqlar","Ashagi kladovka","Karobka"], … }
+```
+
+Ownership-scoped like everything else; unknown or foreign ids simply absent from the map rather
+than a 404, so one dead chip does not fail the batch.
+
+### Why this shape
+
+`LocationTreeDao.resolvePaths(Collection<UUID>)` already exists and already returns exactly this —
+it is what `ItemResponse.locationPath` is built from, in one query per page. The endpoint is a thin
+wrapper over a method that is already there and already batched.
+
+Adding `path` to `LocationResponse` instead would be the obvious move and is the wrong one:
+`GET /spaces/{id}/locations` returns every location in the space, so a per-row path would
+re-introduce exactly the N+1 that BR-3 was filed to remove.
+
+### Priority
+
+Low. The stale label is visible for one pin and self-heals on re-pin.
+
