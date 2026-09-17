@@ -455,3 +455,59 @@ re-introduce exactly the N+1 that BR-3 was filed to remove.
 
 Low. The stale label is visible for one pin and self-heals on re-pin.
 
+---
+
+## BR-9 — `locationId` filter on `GET /items` — **IMPLEMENTED 2026-09-17**
+
+### Why
+
+Tapping a location in the client's location tree did nothing, because nothing answered "what is in
+this place?". `GET /items` had no location filter, `ItemRepository` knew only
+`existsByCurrentLocationId` (a boolean, for the delete guard), and `GET /items/search?q=` is the
+wrong tool: it matches a keyword over a location's whole **subtree** and by name, so searching for
+"Drawer" also returns items from every other similarly-named drawer in every space.
+
+### The contract
+
+```
+GET /api/v1/items?locationId={uuid}&page=&size=&sort=&includeArchived=
+```
+
+* `locationId` is **optional**. Absent → the previous behaviour, byte for byte.
+* Present → only items whose `currentLocationId` **equals** it.
+* Everything else is unchanged: the same Spring `Page<Item>` envelope, the same sort whitelist
+  (`name`, `category`, `createdAt`, `updatedAt`, anything else coerced to `updatedAt`, direction
+  preserved), `size` clamped to 100, the same `includeArchived` semantics, and the same two batch
+  queries behind `locationPath` and `primaryImageUrl` — a filtered page costs exactly one statement
+  more than an unfiltered one (the ownership lookup), regardless of page size.
+
+### Rules the client must know
+
+* **A `locationId` that is not the caller's — or does not exist — is a `404` with code
+  `LOCATION_NOT_FOUND`.** Not a `403`, and deliberately **not** an empty page: an empty page would
+  answer "does this id exist?" about another user's tree. Treat it the same way BR-7 treats a dead
+  pin — drop the selection and refresh the tree, do not render "0 items".
+* A non-UUID value is a `400 VALIDATION_ERROR` ("Malformed request"); an **empty** value
+  (`?locationId=`) is converted to null, i.e. no filter at all, not an error.
+* Archived items at that location still obey `includeArchived` (default `false`).
+
+### What it deliberately does NOT do
+
+**No subtree walk.** Asking for a location returns only what sits *directly* in it — a coat in the
+wardrobe is not returned when the top drawer inside it is queried, and vice versa. The client is
+expected to call this **only for a leaf** (a location with no children), where by definition there
+are no descendants, so a recursive CTE would be a query that cannot change the result. For "show me
+everything under this branch" there is no endpoint; that is a separate request if the UI ever wants
+it. Nor is there an item **count** per location — the tree still cannot show badges without one call
+per node, same conclusion as BR-7's chips.
+
+### Tests
+
+`ItemServiceTest` (5 cases: an absent id touches `LocationService` not at all, a present one
+verifies ownership and uses the userId-scoped finder, a foreign one throws before any item is read,
+the sort whitelist and size clamp still apply, and `includeArchived` picks its own finder) and
+`ItemListByLocationIT` (6 cases: siblings excluded, the equality-not-subtree property in both
+directions, a foreign location 404 that leaks neither the item name nor the location name, unknown
+404 / malformed 400 / empty-value unfiltered, sort and clamp, archived hidden unless asked).
+`ItemListCoverPhotoIT#theQueryCountOfALocationFilteredPageDoesNotGrowWithPageSize` extends BR-3's
+mutation-checked statement-count guard onto the filtered path.

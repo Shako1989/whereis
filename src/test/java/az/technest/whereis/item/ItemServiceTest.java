@@ -1,6 +1,7 @@
 package az.technest.whereis.item;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
@@ -12,6 +13,7 @@ import static org.mockito.Mockito.when;
 import az.technest.whereis.item.dto.ItemResponse;
 import az.technest.whereis.item.dto.MoveItemRequest;
 import az.technest.whereis.location.Location;
+import az.technest.whereis.location.LocationNotFoundException;
 import az.technest.whereis.location.LocationService;
 import az.technest.whereis.location.LocationTreeDao;
 import az.technest.whereis.location.LocationType;
@@ -118,7 +120,7 @@ class ItemServiceTest {
         when(itemRepository.findAllByUserIdAndArchivedFalse(eq(userId), any(Pageable.class)))
                 .thenReturn(Page.empty());
 
-        itemService.list(userId, 0, 500, "passwordHash,desc", false);
+        itemService.list(userId, null, 0, 500, "passwordHash,desc", false);
 
         ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
         verify(itemRepository).findAllByUserIdAndArchivedFalse(eq(userId), captor.capture());
@@ -141,7 +143,7 @@ class ItemServiceTest {
         when(treeDao.resolvePaths(List.of(locationId)))
                 .thenReturn(Map.of(locationId, List.of("Home", "Hallway")));
 
-        Page<ItemResponse> page = itemService.list(userId, 0, 20, null, false);
+        Page<ItemResponse> page = itemService.list(userId, null, 0, 20, null, false);
 
         assertThat(page.getContent()).allSatisfy(r ->
                 assertThat(r.locationPath()).containsExactly("Home", "Hallway"));
@@ -164,7 +166,7 @@ class ItemServiceTest {
         when(fileStorageService.primaryImages(List.of(withPhoto, withoutPhoto)))
                 .thenReturn(Map.of(withPhoto, new ItemPrimaryImage(fileId, "https://minio/presigned")));
 
-        List<ItemResponse> content = itemService.list(userId, 0, 20, null, false).getContent();
+        List<ItemResponse> content = itemService.list(userId, null, 0, 20, null, false).getContent();
 
         assertThat(content.get(0).primaryFileId()).isEqualTo(fileId);
         assertThat(content.get(0).primaryImageUrl()).isEqualTo("https://minio/presigned");
@@ -173,6 +175,106 @@ class ItemServiceTest {
         // Exactly one cover lookup for the page: the whole point of BR-3 is killing the N+1.
         verify(fileStorageService).primaryImages(List.of(withPhoto, withoutPhoto));
         verifyNoMoreInteractions(fileStorageService);
+    }
+
+    @Test
+    void listWithoutALocationNeverTouchesLocationService() {
+        when(itemRepository.findAllByUserIdAndArchivedFalse(eq(userId), any(Pageable.class)))
+                .thenReturn(Page.empty());
+
+        itemService.list(userId, null, 0, 20, null, false);
+
+        // An absent locationId must stay the pre-filter behaviour exactly: no ownership lookup,
+        // no location-scoped finder, one statement less than the filtered path.
+        verifyNoInteractions(locationService);
+        verify(itemRepository).findAllByUserIdAndArchivedFalse(eq(userId), any(Pageable.class));
+        verifyNoMoreInteractions(itemRepository);
+    }
+
+    @Test
+    void listAtALocationVerifiesOwnershipAndUsesTheUserScopedFinder() {
+        UUID locationId = UUID.randomUUID();
+        UUID itemId = UUID.randomUUID();
+        Item item = Item.builder().id(itemId).userId(userId).currentLocationId(locationId)
+                .name("Keys").normalizedName("keys").archived(false).build();
+        when(locationService.requireOwned(userId, locationId)).thenReturn(location(locationId, "Top Drawer"));
+        when(itemRepository.findAllByUserIdAndCurrentLocationIdAndArchivedFalse(
+                eq(userId), eq(locationId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(item)));
+        when(treeDao.resolvePaths(List.of(locationId)))
+                .thenReturn(Map.of(locationId, List.of("Home", "Bedroom", "Top Drawer")));
+
+        Page<ItemResponse> page = itemService.list(userId, locationId, 0, 20, null, false);
+
+        assertThat(page.getContent()).singleElement()
+                .satisfies(r -> assertThat(r.currentLocationId()).isEqualTo(locationId));
+        // Ownership of the LOCATION is a separate check from the userId scoping of the items;
+        // dropping it would turn a foreign id into an empty page instead of a 404.
+        verify(locationService).requireOwned(userId, locationId);
+        // §6: no bare findAllByCurrentLocationId exists, so the userId travels into the query too.
+        verify(itemRepository).findAllByUserIdAndCurrentLocationIdAndArchivedFalse(
+                eq(userId), eq(locationId), any(Pageable.class));
+        verifyNoMoreInteractions(itemRepository);
+        // Still one batch query each, exactly as on the unfiltered path.
+        verify(treeDao).resolvePaths(List.of(locationId));
+        verify(fileStorageService).primaryImages(List.of(itemId));
+        verifyNoMoreInteractions(treeDao, fileStorageService);
+    }
+
+    @Test
+    void listAtALocationThatIsNotTheCallersIs404AndReadsNoItems() {
+        UUID foreign = UUID.randomUUID();
+        when(locationService.requireOwned(userId, foreign)).thenThrow(new LocationNotFoundException());
+
+        assertThatThrownBy(() -> itemService.list(userId, foreign, 0, 20, null, false))
+                .isInstanceOf(LocationNotFoundException.class);
+
+        // Nothing is read, so nothing can leak — not even the fact that the id exists.
+        verifyNoInteractions(itemRepository, treeDao, fileStorageService);
+    }
+
+    @Test
+    void listAtALocationStillWhitelistsSortAndClampsPageSize() {
+        UUID locationId = UUID.randomUUID();
+        when(locationService.requireOwned(userId, locationId)).thenReturn(location(locationId, "Top Drawer"));
+        when(itemRepository.findAllByUserIdAndCurrentLocationIdAndArchivedFalse(
+                eq(userId), eq(locationId), any(Pageable.class)))
+                .thenReturn(Page.empty());
+
+        itemService.list(userId, locationId, 0, 500, "passwordHash,desc", false);
+
+        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
+        verify(itemRepository).findAllByUserIdAndCurrentLocationIdAndArchivedFalse(
+                eq(userId), eq(locationId), captor.capture());
+        Pageable pageable = captor.getValue();
+        assertThat(pageable.getPageSize()).isEqualTo(ItemService.MAX_PAGE_SIZE);
+        assertThat(pageable.getSort().getOrderFor("updatedAt"))
+                .isNotNull()
+                .extracting(Sort.Order::getDirection)
+                .isEqualTo(Sort.Direction.DESC);
+        assertThat(pageable.getSort().getOrderFor("passwordHash")).isNull();
+    }
+
+    @Test
+    void listAtALocationHonoursIncludeArchivedOnBothSettings() {
+        UUID locationId = UUID.randomUUID();
+        when(locationService.requireOwned(userId, locationId)).thenReturn(location(locationId, "Top Drawer"));
+        when(itemRepository.findAllByUserIdAndCurrentLocationIdAndArchivedFalse(
+                eq(userId), eq(locationId), any(Pageable.class)))
+                .thenReturn(Page.empty());
+        when(itemRepository.findAllByUserIdAndCurrentLocationId(
+                eq(userId), eq(locationId), any(Pageable.class)))
+                .thenReturn(Page.empty());
+
+        itemService.list(userId, locationId, 0, 20, null, false);
+        itemService.list(userId, locationId, 0, 20, null, true);
+
+        // The archived split is orthogonal to the filter: each flag picks its own scoped finder.
+        verify(itemRepository).findAllByUserIdAndCurrentLocationIdAndArchivedFalse(
+                eq(userId), eq(locationId), any(Pageable.class));
+        verify(itemRepository).findAllByUserIdAndCurrentLocationId(
+                eq(userId), eq(locationId), any(Pageable.class));
+        verifyNoMoreInteractions(itemRepository);
     }
 
     @Test

@@ -191,6 +191,43 @@ class ItemListCoverPhotoIT extends AbstractIntegrationTest {
                 assertThat(node.get("primaryImageUrl").isNull()).isFalse());
     }
 
+    /**
+     * BR-9: the same no-N+1 property on the {@code locationId}-filtered page. The filtered path
+     * adds exactly one statement — the location ownership lookup — and that one is per request,
+     * not per row, so the counts for a small and a large page must still be equal.
+     */
+    @Test
+    void theQueryCountOfALocationFilteredPageDoesNotGrowWithPageSize() {
+        String token = registerAndGetToken();
+        SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
+        LocationResponse drawer = createLocation(token, home.id(), "Drawer", LocationType.DRAWER, null);
+        for (int i = 0; i < 8; i++) {
+            uploadPrimaryPhoto(token, createItem(token, drawer.id(), "Item " + i));
+        }
+        String small = "/api/v1/items?locationId=" + drawer.id() + "&size=2";
+        String large = "/api/v1/items?locationId=" + drawer.id() + "&size=6";
+
+        Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.setStatisticsEnabled(true);
+
+        // Same sampling trick as above: the janitor's 2 s poll shares this SessionFactory, so the
+        // minimum over several identical requests is what isolates the list path.
+        JsonNode smallPage = get(token, small, JsonNode.class).getBody();
+        JsonNode largePage = get(token, large, JsonNode.class).getBody();
+        long statementsForTwoRows = minStatementsOver(5, statistics, token, small);
+        long statementsForSixRows = minStatementsOver(5, statistics, token, large);
+
+        assertThat(smallPage.get("content")).hasSize(2);
+        assertThat(largePage.get("content")).hasSize(6);
+        assertThat(statementsForSixRows).isEqualTo(statementsForTwoRows);
+        assertThat(largePage.get("content")).allSatisfy(node ->
+                assertThat(node.get("primaryImageUrl").isNull()).isFalse());
+        // And the filter really is on: the unfiltered page over the same data costs one statement
+        // less, which is the ownership lookup and nothing per-row.
+        assertThat(minStatementsOver(5, statistics, token, "/api/v1/items?size=6"))
+                .isEqualTo(statementsForSixRows - 1);
+    }
+
     /** Minimum prepared-statement count over {@code samples} identical requests — see the caller. */
     private long minStatementsOver(int samples, Statistics statistics, String token, String path) {
         long best = Long.MAX_VALUE;

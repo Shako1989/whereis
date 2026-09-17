@@ -39,13 +39,19 @@ public class ItemController {
         return itemService.create(CurrentUser.id(), request);
     }
 
+    /**
+     * {@code locationId} is optional: absent lists every item of the caller, present narrows the
+     * page to the items AT that location (no subtree — see {@link ItemService#list}). A location
+     * that is not the caller's, or does not exist, is a 404 {@code LOCATION_NOT_FOUND}.
+     */
     @GetMapping
     public Page<ItemResponse> list(
+            @RequestParam(required = false) UUID locationId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "updatedAt,desc") String sort,
             @RequestParam(defaultValue = "false") boolean includeArchived) {
-        return itemService.list(CurrentUser.id(), page, size, sort, includeArchived);
+        return itemService.list(CurrentUser.id(), locationId, page, size, sort, includeArchived);
     }
 
     @GetMapping("/search")

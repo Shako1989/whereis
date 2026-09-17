@@ -178,7 +178,7 @@ Errors: **409 `LOCATION_NOT_EMPTY`** (has children or items), **400 `CYCLE_DETEC
 | Method | Path | Body / Query | Success |
 |---|---|---|---|
 | POST | `/items` | `{name, description?, category?, locationId}` | 201 `Item` |
-| GET | `/items` | `?page=0&size=20&sort=updatedAt,desc&includeArchived=false` | 200 **Spring `Page<Item>`** |
+| GET | `/items` | `?locationId=uuid?&page=0&size=20&sort=updatedAt,desc&includeArchived=false` | 200 **Spring `Page<Item>`** |
 | GET | `/items/search` | `?q=…&limit=20` | 200 `SearchResult[]` |
 | GET | `/items/{itemId}` | — | 200 `Item` |
 | PUT | `/items/{itemId}` | `{name, description?, category?, archived?}` | 200 `Item` |
@@ -221,6 +221,14 @@ formatter so the UI looks uniform.
 - Sort: `sort={property},{asc|desc}`. Allowed properties: **`name`, `category`, `createdAt`,
   `updatedAt`**. Anything else is silently coerced to `updatedAt`. Direction defaults to `desc`.
 - `size` is clamped server-side to a **maximum of 100**.
+- **`locationId` on `GET /items` (BR-9) is optional and filters by EQUALITY on
+  `currentLocationId` — no subtree.** Send it only for a **leaf** location (no children); for a
+  branch it returns just what sits directly in it, not what is inside its children. Everything else
+  (sort, clamp, `includeArchived`, the page envelope) behaves identically with the filter on.
+  **A `locationId` that is not the caller's, or does not exist, is a `404 LOCATION_NOT_FOUND`, not an
+  empty page** — handle it like a dead BR-7 pin (clear the selection and reload the tree); never
+  render it as "this location is empty". A non-UUID value is a `400`; an empty value
+  (`?locationId=`) is simply no filter. There is still no per-location item count.
 - `GET /items` returns Spring's page envelope — `{content:[…], totalElements, totalPages, number,
   size, first, last, numberOfElements, empty, sort:{…}, pageable:{…}}`. Deserialize only the fields
   you need and ignore the rest.

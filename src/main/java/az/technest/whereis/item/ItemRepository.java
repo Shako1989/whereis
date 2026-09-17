@@ -25,6 +25,17 @@ public interface ItemRepository extends JpaRepository<Item, UUID> {
 
     Page<Item> findAllByUserIdAndArchivedFalse(UUID userId, Pageable pageable);
 
+    /**
+     * One page of the items sitting AT a location — equality on {@code current_location_id}, not a
+     * subtree walk (see {@link ItemService#list}). userId-scoped even though the caller has already
+     * verified the location's ownership: §6 leaves an owned aggregate no unscoped finder at all,
+     * and the extra predicate costs nothing.
+     */
+    Page<Item> findAllByUserIdAndCurrentLocationId(UUID userId, UUID currentLocationId, Pageable pageable);
+
+    Page<Item> findAllByUserIdAndCurrentLocationIdAndArchivedFalse(
+            UUID userId, UUID currentLocationId, Pageable pageable);
+
     boolean existsByCurrentLocationId(UUID currentLocationId);
 
     /**

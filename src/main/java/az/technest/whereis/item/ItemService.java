@@ -82,12 +82,25 @@ public class ItemService {
         return mapper.toResponse(item, pathOf(item.getCurrentLocationId()), coverOf(item.getId()));
     }
 
+    /**
+     * One page of the caller's items, optionally narrowed to a single location.
+     *
+     * <p>A null {@code locationId} lists everything the user owns — the unfiltered behaviour, byte
+     * for byte. When it is set, the filter is an EQUALITY on {@code current_location_id} and
+     * deliberately NOT a subtree walk: the only caller is the client's location tree, which offers
+     * this for a LEAF location, and a leaf by definition has no descendants — a recursive CTE would
+     * add a query and change no row. Items anywhere under a non-leaf are found through
+     * {@code GET /items/search?q=} instead.
+     *
+     * <p>The location's ownership is checked separately from the item scoping, and a miss is a 404
+     * (§6). Returning an empty page for a foreign id would turn this endpoint into an existence
+     * oracle for other users' location ids.
+     */
     @Transactional(readOnly = true)
-    public Page<ItemResponse> list(UUID userId, int page, int size, String sort, boolean includeArchived) {
+    public Page<ItemResponse> list(UUID userId, UUID locationId, int page, int size, String sort,
+                                   boolean includeArchived) {
         Pageable pageable = PageRequest.of(Math.max(page, 0), clampSize(size), parseSort(sort));
-        Page<Item> items = includeArchived
-                ? itemRepository.findAllByUserId(userId, pageable)
-                : itemRepository.findAllByUserIdAndArchivedFalse(userId, pageable);
+        Page<Item> items = pageOf(userId, locationId, includeArchived, pageable);
         // Two batch queries resolve the location paths and the cover photos for the whole page —
         // no per-row lookups, so the query count does not grow with page size. The presigning
         // inside primaryImages() is a local HMAC computation, not a MinIO call, which is why it
@@ -177,6 +190,22 @@ public class ItemService {
 
     Item requireOwned(UUID userId, UUID itemId) {
         return itemRepository.findByIdAndUserId(itemId, userId).orElseThrow(ItemNotFoundException::new);
+    }
+
+    /**
+     * Picks the scoped finder for {@link #list}. The location lookup is ONE extra statement on the
+     * filtered path, independent of page size, so the no-N+1 property of the page is untouched.
+     */
+    private Page<Item> pageOf(UUID userId, UUID locationId, boolean includeArchived, Pageable pageable) {
+        if (locationId == null) {
+            return includeArchived
+                    ? itemRepository.findAllByUserId(userId, pageable)
+                    : itemRepository.findAllByUserIdAndArchivedFalse(userId, pageable);
+        }
+        UUID owned = locationService.requireOwned(userId, locationId).getId();
+        return includeArchived
+                ? itemRepository.findAllByUserIdAndCurrentLocationId(userId, owned, pageable)
+                : itemRepository.findAllByUserIdAndCurrentLocationIdAndArchivedFalse(userId, owned, pageable);
     }
 
     /** One item's cover, or null. Single-item lookup — not an N+1, unlike calling this per row. */

@@ -187,7 +187,9 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
 auth: POST register/login/refresh · spaces: CRUD · locations: POST/GET
 /spaces/{id}/locations, GET /spaces/{id}/location-tree, GET/PUT/DELETE /locations/{id},
 GET /locations/{id}/children · items: CRUD, POST /items/{id}/move {locationId,note},
-GET /items/{id}/history, GET /items?page&size&sort, GET /items/search?q= (returns
+GET /items/{id}/history, GET /items?locationId&page&size&sort&includeArchived (locationId
+OPTIONAL: equality on current_location_id, NO subtree walk — the client calls it for a leaf;
+a foreign or unknown one is 404 LOCATION_NOT_FOUND, never an empty page), GET /items/search?q= (returns
 {id,name,locationPath[],primaryImageUrl,updatedAt}) · files: POST(multipart)/GET
 /items/{id}/files, DELETE /{fileId}, GET /{fileId}/url (presigned) · assistant:
 POST /assistant/remember {message, spaceId? XOR locationId? — locationId means no AI call and the text is the item name}, /assistant/search {query}, /assistant/images/analyze
@@ -381,9 +383,12 @@ adding one is a V9). Known cost: `POST /assistant/search` now writes one row per
 (33 new: `AssistantServiceTest` +10, `PlacementExecutorTest`, `PromptVersionTest`,
 `InterpretationSnapshotsTest`, `AssistantOutcomeTest`, provider metadata tests, `ItemServiceTest` +4,
 `ItemMapperTest` +2, `OwnershipScopingArchTest` +1 — the §6 AI-in-transaction rule, mutation-checked),
-**integration 40 across 11 classes** (`AssistantMessageIT` 5, `AssistantMessageFailureIT` 1 — the only IT
-that forks the context, via `@TestPropertySource` pointing the real `openai` provider at a closed port —
-and `AccountDeletionIT` +1). Every IT boots with `ddl-auto: validate`, which is what proves the
+**integration 39 across 10 classes** (`AssistantMessageIT` 5 and `AccountDeletionIT` +1).
+CORRECTED 2026-09-17: this entry originally also credited an `AssistantMessageFailureIT` — "the only IT
+that forks the context, via `@TestPropertySource` pointing the real `openai` provider at a closed port".
+**That class was never written**, in any commit, and the count was inflated by one. The coverage it
+describes is a genuine gap and still open: `FAILED` is one of the five `assistant_messages` outcomes and
+nothing exercises it end to end, only `AssistantServiceTest` at the unit level. Every IT boots with `ddl-auto: validate`, which is what proves the
 `jsonb`/`numeric`/`text` mappings against V8.
 
 **2026-09-17 — BR-7: a pinned `locationId` on `/assistant/remember`.** The prevention work for the
@@ -428,6 +433,31 @@ that says one thing and code that does another:
 2. `docs/BACKEND_REQUESTS.md` BR-6 claimed `sourceMessage` + `GET /assistant/messages` were
    IMPLEMENTED. They were not (see the 2026-09-16 entry). Re-titled PARTIALLY IMPLEMENTED with an
    explicit warning not to build a client against it.
+
+**2026-09-17 — BR-9: `locationId` on `GET /items`.** Tapping a location in the client's tree had
+nothing to call: the list had no location filter and `existsByCurrentLocationId` (the delete guard's
+boolean) was all `ItemRepository` knew about placement. `ItemService.list` now takes an optional
+`locationId`; null is the previous behaviour byte for byte, and set means an **equality** filter on
+`current_location_id`. **Deliberately no subtree walk** — the client offers this only for a LEAF,
+which has no descendants, so a recursive CTE would be a query that cannot change the result
+(`GET /items/search?q=` remains the subtree/keyword tool, and is the wrong one here because it also
+matches other similarly-named locations). The location's ownership is a SEPARATE check via the
+`LocationService.requireOwned` that `createAt` already depended on: a foreign or unknown id is a
+**404 LOCATION_NOT_FOUND**, never an empty page, because an empty page would let another user's
+location ids be probed for existence. The two finders are
+`findAllByUserIdAndCurrentLocationId(…)` / `…AndArchivedFalse(…)` — userId-scoped as §6 and
+`OwnershipScopingArchTest` require, even though the caller has already proved the location is the
+user's. Sort whitelist, the 100 clamp, `includeArchived` and BR-3's two batch queries are untouched;
+the filtered path costs exactly ONE statement more (the ownership lookup), per request and not per
+row, which `ItemListCoverPhotoIT#theQueryCountOfALocationFilteredPageDoesNotGrowWithPageSize`
+pins alongside the original BR-3 guard. **No migration**: `ix_items_location ON items
+(current_location_id)` has existed since V5. A composite `(user_id, current_location_id)` would suit
+the new predicate better and is NOT worth a V9 while the table is this small. Suites: **unit 193**
+(+5 `ItemServiceTest`), **integration 51 across 12 classes** (`ItemListByLocationIT` 6,
+`ItemListCoverPhotoIT` +1). Docs: `docs/BACKEND_REQUESTS.md` BR-9, `docs/ANDROID_APP_PROMPT.md` §3.4.
+A composite `(user_id, current_location_id, updated_at DESC)` would serve the filtered query without a
+sort step, but it is not worth a V9 at this table size — `ix_items_location` (V5) is what the planner
+picks today, verified on a throwaway PostgreSQL 16 rather than assumed.
 
 ## 9. Future extension points (design for, do not build)
 
