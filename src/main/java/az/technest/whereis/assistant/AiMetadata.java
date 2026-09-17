@@ -10,4 +10,15 @@ package az.technest.whereis.assistant;
  * @param promptVersion see {@link PromptVersion} — identifies the immutable prompt text only
  */
 public record AiMetadata(String provider, String model, String promptVersion) {
+
+    /**
+     * No model was consulted. Used by the pinned-destination path (BR-7), where the destination is
+     * already settled and the text is taken as the item name verbatim, so there is no provider, no
+     * prompt and nothing to interpret. The three columns are NOT NULL, so a sentinel is needed
+     * rather than nulls — and naming the configured provider here would be a lie, because nothing
+     * was asked of it. A CREATED row with {@code provider = 'none'} and a NULL {@code
+     * interpretation} is exactly the verbatim path; a NULL interpretation with a real provider is a
+     * failure instead.
+     */
+    public static final AiMetadata NONE = new AiMetadata("none", "none", "none");
 }

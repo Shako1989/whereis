@@ -319,9 +319,9 @@ Three levels, cheapest first.
 
 #### H1 — A pinned target (highest value, lowest risk) — **BACKEND SHIPPED 2026-09-17**
 
-> Backend done: `locationId` on `RememberRequest`, `PlacementExecutor.placeAt`,
-> `messagePlaceIgnored` on the response, 8 unit + 5 integration tests, suites 189/44 green. No
-> migration, no prompt change. Client work (chips, sticky pin, override note) in progress.
+> Shipped: `locationId` on `RememberRequest`, `PlacementExecutor.placeAt`, no provider call on the
+> pinned path, 7 unit + 5 integration tests, suites 188/44 green. No migration, no prompt change.
+> Android: chips, sticky pin, item-name composer.
 
 `GET /spaces/{spaceId}/location-tree` already exists and the Android client already consumes it
 (`LocationApi.kt:38`, `LocationTreeNodeDto`). Flatten it to full paths and offer them as chips
@@ -342,15 +342,15 @@ Two details worth building in:
 * **Stale pins are the only new failure mode.** Mitigate by rendering the pin large rather than as
   a footnote, and by keeping the full path in the success card (it is already there). Do **not**
   auto-clear the pin when the sentence seems to name somewhere else — that would restore exactly
-  the model trust §1.1 is about. If the model's interpretation disagrees with the pin, honour the
-  pin and *say so* in the response: the server knows both values, and reporting the conflict costs
-  nothing and acts on nothing. Both halves of the interpretation are checkable with one membership
-  test, because `locationPath` opens with the space name: the innermost chain segment **and** the
-  space — and the space is the half that went wrong on 16 Sep.
-* **Free evaluation data.** The `assistant_messages` row still stores the model's interpretation
-  even when a pin decided the outcome. Every pinned save is therefore a labelled example of "what
-  the model would have said vs. where it actually belongs" — the dataset needed to judge H3 and P7
-  without guessing. This alone is a reason to ship H1 before them.
+  the model trust §1.1 is about.
+* **With a pin, do not interpret the text at all.** The first cut kept calling the provider so the
+  provenance row would stay comparable with the model-decided rows, and it failed on the feature's
+  own headline input: a pinned `kabel 20A` answered NOT_UNDERSTOOD, because validation precedes the
+  pinned branch and rejects an interpretation naming no location — and a bare noun phrase is
+  correctly not a placement statement. Shipped behaviour: no model call, the text is the item name
+  as typed, guarded only by the item-name charset and length. The free labelled dataset is the
+  price, and it was worth paying. **The composer must ask for an item name while a pin is set** —
+  a pin pill above a "tell me where you put it" placeholder is what produced the failing sentence.
 
 Ranking the chips: `LocationTreeNode` carries no item count and there is no count query, so do not
 add one yet. Rank by **recently used**, derived from the client's own assistant history (each entry

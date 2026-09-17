@@ -345,54 +345,73 @@ has to stay free to change.
 
 ### Why
 
-Filing many items into the same physical place is the common case, and today each sentence
-re-resolves that place independently through the model. Thirteen sentences into one box are
-thirteen independent chances to get the box wrong — which is what the 2026-09-16 incident was.
-Every other mitigation on the table reduces a probability; letting the caller name the destination
-removes the operation that can go wrong.
+Filing many items into the same physical place is the common case, and each sentence used to
+re-resolve that place independently through the model. Thirteen sentences into one box are thirteen
+independent chances to get the box wrong — which is what the 2026-09-16 incident was. Every other
+mitigation reduces a probability; letting the caller name the destination removes the operation.
 
 ### What the client gets
 
-`POST /assistant/remember` accepts an optional `locationId`:
-
 ```jsonc
-{ "message": "termos", "locationId": "uuid-of-Karobka" }
+{ "message": "kabel 20A", "locationId": "uuid-of-Karobka" }
 ```
 
-* It settles the destination outright. `resolveOrCreateChain` — the only auto-creation path in the
-  system — is never entered, so **no location can be created by such a request**, and
-  `createdLocations` is always empty by construction rather than by luck.
-* The model is still called, for the item name and description.
-* `messagePlaceIgnored: true` on the response means the sentence named a place (or a space) other
-  than the pin and the pin won. Render it. The pin is deliberately never overridden by the
-  sentence — the alternative is the model trust the pin exists to remove — so this flag is the only
-  way a stale pin becomes visible.
-* Mutually exclusive with `spaceId`: both is a 400 `VALIDATION_ERROR`, rejected before the provider
-  is called. A location already names its space, so the pair can only be redundant or contradictory.
-* A foreign or deleted `locationId` is a 404, and it leaves a `FAILED` provenance row with a NULL
-  `space_id` (unlike a foreign `spaceId`, which writes nothing — the location lookup happens inside
-  the executor's transaction, so the request really did reach the model).
+**With `locationId` present, no model is called at all and the text IS the item name, stored exactly
+as typed.** No parsing, no title-casing, no description extraction (`description` comes back null).
+
+That rule was settled by the user after the first cut shipped and failed on the very input it
+existed for: a pin was set, `kabel 20A` was typed, and the answer was `NOT_UNDERSTOOD`. The cause
+was that validation ran before the pinned branch and rejects an interpretation naming no location —
+and a bare noun phrase is legitimately not a placement statement, so a prompt calibrated to score
+placement statements was right to score it low. Once the place is chosen there is nothing left to
+interpret, so nothing interprets it.
+
+Consequences, all deliberate:
+
+* `resolveOrCreateChain` — the only auto-creation path in the system — is never entered, so **no
+  location can be created by such a request** and `createdLocations` is always empty by construction.
+* The text must still pass the item-name rule: non-blank, ≤ 120 characters, matching
+  `^[\p{L}\p{N}][\p{L}\p{N} .,'&()\-]*$`. This is not model distrust — it is what the column and
+  the UI can hold. A failure answers **`NOT_UNDERSTOOD`** (not 400: the client already renders that
+  status with the message and an "Add manually" fallback, and the user did nothing malformed).
+  The charset is also what keeps a question out, in any language and with no model: `?` has never
+  been allowed in a name.
+* **A full sentence sent with a pin becomes an item named after the whole sentence.** That is the
+  accepted consequence of "no syntax analysis", tested rather than hidden; the remedy is the Undo
+  the created card already offers.
+* `NEEDS_CONFIRMATION` cannot happen on this path.
+* Mutually exclusive with `spaceId`: both is a 400 `VALIDATION_ERROR`. A location already names its
+  space, so the pair can only be redundant or contradictory.
+* A foreign or deleted `locationId` is a 404 and leaves a `FAILED` row with a NULL `space_id` — the
+  ownership lookup happens inside the executor's transaction.
+
+### What the UI must do
+
+The pin changes what the input field is asking for. While a pin is set, the composer must ask for an
+item name, not a placement — the first user to hit this had a pin pill on screen and a placeholder
+below it still reading "Tell me where you put it…", which is what produced the sentence.
+
+### Provenance
+
+One row as always, with `provider = 'none'`, `model = 'none'`, `prompt_version = 'none'` and a NULL
+`interpretation`. Those together are the discriminator for this path: a NULL interpretation with a
+*real* provider means the provider failed instead. What is given up is the earlier design's free
+labelled dataset ("what would the model have answered for a sentence whose right destination is
+known") — a deliberate trade for a path that must be fast, free and literal.
 
 ### Building the chips
 
 `GET /spaces/{spaceId}/location-tree` already returns the tree; flatten it to full paths. There is
 no item-count per location and none was added — rank by **recently pinned**, kept on the client.
-"Where I just filed" beats "where I have the most things" for this job anyway.
-
-### What the pinned row is worth keeping for
-
-The provider is called with the same inputs on the pinned path as on every other path, on purpose.
-The `assistant_messages` row therefore records what the model WOULD have answered for a sentence
-whose correct destination is known — the only labelled evidence of placement quality we get for
-free. Compare `interpretation->>'spaceName'` against the row's `space_id` to measure it.
 
 ### Tests
 
-`AssistantServiceTest` (8 cases: the chain and space lookups are never reached, the override is
-reported, a matching sentence is not, the provenance row carries the executor's space and the
-model's answer, a foreign id records FAILED with no space, a validator rejection never reaches the
-executor, and the both-ids contradiction) and `AssistantPinnedLocationIT` (5 cases, each asserting
-the location table is unchanged as well as the item).
+`AssistantServiceTest` (7 cases: the provider is never touched, the text is the name, a sentence is
+filed unparsed, a text that cannot be a name is NOT_UNDERSTOOD and writes nothing, one too long is
+too, the row records no provider and no interpretation, a foreign id records FAILED with no space,
+and the both-ids contradiction) and `AssistantPinnedLocationIT` (5 cases, each asserting the
+`locations` table is unchanged as well as the item — an item-only assertion would still pass if a
+chain had been created and then ignored).
 
 ---
 

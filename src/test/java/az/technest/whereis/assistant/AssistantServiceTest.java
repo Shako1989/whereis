@@ -534,105 +534,117 @@ class AssistantServiceTest {
         assertThat(annotation.propagation()).isEqualTo(Propagation.REQUIRES_NEW);
     }
 
-    // ---- BR-7: a pinned locationId ------------------------------------------------------------
+    // ---- BR-7: a pinned locationId — no model, the text is the name ----------------------------
 
     /**
-     * The whole point of the pin: {@code resolveOrCreateChain} — the only auto-creation path in the
-     * system — is unreachable, so a wrong or duplicate location is not unlikely on this path, it is
-     * impossible. Pinned by asserting the space lookup never happens either: the space cannot be
-     * guessed wrong if it is never guessed.
+     * The decision this path rests on: once the place is chosen there is nothing to interpret, so
+     * the provider is not called at all. Asserting {@code verifyNoInteractions(aiAssistant)} is the
+     * whole feature — it is what makes the path free, instant, and incapable of misreading
+     * "kabel 20A" as anything other than "kabel 20A".
      */
     @Test
-    void aPinnedLocationSettlesTheDestinationWithoutResolvingASpaceOrAChain() {
+    void aPinnedLocationTakesTheTextAsTheItemNameAndNeverCallsTheModel() {
         UUID pinned = UUID.randomUUID();
         UUID space = UUID.randomUUID();
-        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Home", 0.93));
-        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+        when(executor.placeAt(eq(userId), eq(pinned), eq("kabel 20A"), eq(null),
+                eq(AssistantService.PLACEMENT_NOTE)))
                 .thenReturn(new PlacementExecutor.ExecutionResult(
-                        item("Passport", List.of("Ashagi kladovka", "Karobka")), List.of(), space));
+                        item("kabel 20A", List.of("Xalqlar", "Ashagi kladovka", "Karobka")), List.of(), space));
 
-        RememberResponse response =
-                service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned);
+        RememberResponse response = service.remember(userId, "kabel 20A", null, pinned);
 
         assertThat(response.status()).isEqualTo(RememberResponse.Status.CREATED);
+        assertThat(response.item().name()).isEqualTo("kabel 20A");
         assertThat(response.createdLocations()).isEmpty();
+        assertThat(response.message()).isEqualTo("Saved. kabel 20A is in Xalqlar > Ashagi kladovka > Karobka.");
+        verifyNoInteractions(aiAssistant);
+        verifyNoInteractions(spaceRepository);
         verify(executor, never()).place(any(), any(), any(), any());
-        verify(spaceRepository, never()).findByUserIdAndNormalizedName(any(), any());
-        verify(spaceRepository, never()).findByIdAndUserId(any(), any());
-    }
-
-    @Test
-    void aPinnedLocationReportsThatTheSentencesOwnPlaceWasIgnored() {
-        UUID pinned = UUID.randomUUID();
-        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.93));
-        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
-                .thenReturn(new PlacementExecutor.ExecutionResult(
-                        item("Passport", List.of("Ashagi kladovka", "Karobka")), List.of(), UUID.randomUUID()));
-
-        RememberResponse response =
-                service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned);
-
-        // Reported, not obeyed — a stale pin has to be visible without the sentence being able to
-        // move the item.
-        assertThat(response.messagePlaceIgnored()).isTrue();
-        assertThat(response.message()).contains("Ashagi kladovka > Karobka").contains("ignored");
-        assertThat(response.item().locationPath()).containsExactly("Ashagi kladovka", "Karobka");
-    }
-
-    @Test
-    void aPinnedLocationTheSentenceAlsoNamesIsNotReportedAsAnOverride() {
-        UUID pinned = UUID.randomUUID();
-        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.93));
-        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
-                .thenReturn(new PlacementExecutor.ExecutionResult(
-                        // The model's innermost segment is "Top Drawer" — the pinned leaf itself.
-                        item("Passport", List.of("Bedroom", "Top Drawer")), List.of(), UUID.randomUUID()));
-
-        RememberResponse response =
-                service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned);
-
-        assertThat(response.messagePlaceIgnored()).isFalse();
-        assertThat(response.message()).doesNotContain("ignored");
     }
 
     /**
-     * The pinned path calls the provider with the same inputs as every other path on purpose: the
-     * row it leaves is the only labelled evidence of what the model WOULD have answered for a
-     * sentence whose right answer is known. Losing that would make the placement quality
-     * unmeasurable exactly where it is cheapest to measure.
+     * The accepted consequence of "no syntax analysis", pinned here so it is a decision rather than
+     * a surprise: with a pin, a full sentence becomes an item named after the whole sentence. The
+     * user asked for exactly this — the alternative is the interpretation that went wrong — and the
+     * remedy is the Undo the created card already offers.
      */
     @Test
-    void aPinnedRememberStillRecordsWhatTheModelAnsweredAndWhatItWasOffered() {
+    void aPinnedSentenceIsFiledUnderItsOwnWordsWithoutBeingParsed() {
+        UUID pinned = UUID.randomUUID();
+        when(executor.placeAt(eq(userId), eq(pinned), eq("termosu karobkaya qoydum"), eq(null), anyString()))
+                .thenReturn(new PlacementExecutor.ExecutionResult(
+                        item("termosu karobkaya qoydum", List.of("Xalqlar", "Karobka")),
+                        List.of(), UUID.randomUUID()));
+
+        RememberResponse response = service.remember(userId, "termosu karobkaya qoydum", null, pinned);
+
+        assertThat(response.status()).isEqualTo(RememberResponse.Status.CREATED);
+        assertThat(response.item().name()).isEqualTo("termosu karobkaya qoydum");
+        verifyNoInteractions(aiAssistant);
+    }
+
+    /**
+     * A question typed into Remember mode with a pin set. It is kept out by the item-name charset
+     * rather than by any language understanding — SAFE_NAME has never allowed '?' — which is why
+     * this defence survives without a model and in every language.
+     */
+    @Test
+    void aPinnedTextThatCannotBeAnItemNameIsNotUnderstoodAndWritesNothing() {
+        UUID pinned = UUID.randomUUID();
+
+        RememberResponse response = service.remember(userId, "kabel haradadir?", null, pinned);
+
+        assertThat(response.status()).isEqualTo(RememberResponse.Status.NOT_UNDERSTOOD);
+        assertThat(response.message()).contains("exactly as typed");
+        verifyNoInteractions(aiAssistant);
+        verify(executor, never()).placeAt(any(), any(), any(), any(), any());
+        // The sentence is still kept: the row is the record of why nothing happened.
+        AssistantMessageDraft draft = recordedDraft(AssistantOutcome.NOT_UNDERSTOOD);
+        assertThat(draft.message()).isEqualTo("kabel haradadir?");
+        assertThat(draft.interpretation()).isNull();
+    }
+
+    @Test
+    void aPinnedTextTooLongToBeAnItemNameIsNotUnderstood() {
+        UUID pinned = UUID.randomUUID();
+
+        RememberResponse response = service.remember(userId, "k".repeat(121), null, pinned);
+
+        assertThat(response.status()).isEqualTo(RememberResponse.Status.NOT_UNDERSTOOD);
+        verify(executor, never()).placeAt(any(), any(), any(), any(), any());
+    }
+
+    /**
+     * The provenance row has to say that no model ran, and say it in a way a query can separate
+     * from a provider failure: {@code provider = 'none'} with a NULL interpretation is this path,
+     * a NULL interpretation with a real provider is a failure.
+     */
+    @Test
+    void aPinnedRowRecordsNoProviderAndNoInterpretation() {
         UUID pinned = UUID.randomUUID();
         UUID space = UUID.randomUUID();
-        ItemResponse created = item("Passport", List.of("Ashagi kladovka", "Karobka"));
-        when(spaceRepository.findAllByUserIdOrderByNameAsc(userId))
-                .thenReturn(List.of(space("Xalqlar"), space("Work")));
-        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Work", 0.93));
-        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+        ItemResponse created = item("kabel 20A", List.of("Xalqlar", "Karobka"));
+        when(executor.placeAt(eq(userId), eq(pinned), anyString(), eq(null), anyString()))
                 .thenReturn(new PlacementExecutor.ExecutionResult(created, List.of(), space));
 
-        service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned);
+        service.remember(userId, "kabel 20A", null, pinned);
 
-        verify(aiAssistant).interpretPlacement("I put my passport in the bedroom top drawer",
-                List.of("Xalqlar", "Work"));
         RecordedRow row = recordedRow(AssistantOutcome.CREATED);
+        assertThat(row.draft().ai()).isEqualTo(AiMetadata.NONE);
+        assertThat(row.draft().ai().provider()).isEqualTo("none");
+        assertThat(row.draft().interpretation()).isNull();
+        assertThat(row.draft().confidence()).isNull();
         assertThat(row.result().itemId()).isEqualTo(created.id());
-        // The space comes from the executor: on this path only the location lookup knows it.
         assertThat(row.result().spaceId()).isEqualTo(space);
-        assertThat(row.draft().interpretation().spaceName()).isEqualTo("Work");
-        assertThat(row.draft().interpretation().offeredSpaces()).containsExactly("Xalqlar", "Work");
     }
 
     @Test
     void aPinnedLocationThatIsNotThisUsersRecordsFailedWithNoSpaceAndRethrows() {
         UUID pinned = UUID.randomUUID();
-        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.93));
-        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
+        when(executor.placeAt(eq(userId), eq(pinned), anyString(), eq(null), anyString()))
                 .thenThrow(new NotFoundException(ErrorCode.LOCATION_NOT_FOUND, "Location not found"));
 
-        assertThatThrownBy(() ->
-                service.remember(userId, "I put my passport in the bedroom top drawer", null, pinned))
+        assertThatThrownBy(() -> service.remember(userId, "kabel 20A", null, pinned))
                 .isInstanceOf(NotFoundException.class);
 
         AssistantMessageResult result = recordedRow(AssistantOutcome.FAILED).result();
@@ -641,22 +653,9 @@ class AssistantServiceTest {
         assertThat(result.spaceId()).isNull();
     }
 
-    @Test
-    void aPinnedRememberTheValidatorRejectsNeverReachesTheExecutor() {
-        UUID pinned = UUID.randomUUID();
-        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation(null, 0.2));
-
-        RememberResponse response = service.remember(userId, "gibberish", null, pinned);
-
-        assertThat(response.status()).isEqualTo(RememberResponse.Status.NOT_UNDERSTOOD);
-        verify(executor, never()).placeAt(any(), any(), any(), any());
-        verify(executor, never()).place(any(), any(), any(), any());
-    }
-
     /**
      * A location already names its space, so the pair can only be redundant or contradictory.
-     * Rejecting it keeps precedence out of the contract — and the rejection happens before the
-     * provider is paid, which is the other reason it is a 400 rather than a documented winner.
+     * Rejecting it keeps precedence out of the contract.
      */
     @Test
     void sendingBothASpaceIdAndALocationIdIsARejectedContradiction() {
@@ -666,29 +665,5 @@ class AssistantServiceTest {
                 .hasMessageContaining("not both");
 
         verifyNoInteractions(aiAssistant, spaceRepository, executor, messages);
-    }
-
-    /**
-     * The incident this feature answers: the sentence's innermost place was right and the SPACE was
-     * wrong. {@code locationPath} carries the space as its first element, so the same membership
-     * test catches it — and the pin still wins, which is the only reason the item is in the right
-     * place at all.
-     */
-    @Test
-    void aPinnedLocationReportsASentenceThatNamedTheRightBoxInTheWrongSpace() {
-        UUID pinned = UUID.randomUUID();
-        when(aiAssistant.interpretPlacement(anyString(), anyList()))
-                .thenReturn(new PlacementInterpretation("Passport", null, "Work",
-                        List.of(new LocationSegment("Karobka", "BOX")), 0.93));
-        when(executor.placeAt(eq(userId), eq(pinned), any(), eq(AssistantService.PLACEMENT_NOTE)))
-                .thenReturn(new PlacementExecutor.ExecutionResult(
-                        item("Passport", List.of("Xalqlar", "Ashagi kladovka", "Karobka")),
-                        List.of(), UUID.randomUUID()));
-
-        RememberResponse response =
-                service.remember(userId, "I put my passport in the karobka at work", null, pinned);
-
-        assertThat(response.messagePlaceIgnored()).isTrue();
-        assertThat(response.item().locationPath()).startsWith("Xalqlar");
     }
 }

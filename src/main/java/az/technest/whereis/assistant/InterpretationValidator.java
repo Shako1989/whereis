@@ -19,6 +19,7 @@ public class InterpretationValidator {
 
     static final int MAX_CHAIN_DEPTH = 6;
     static final double MIN_CONFIDENCE = 0.6;
+    static final int MAX_ITEM_NAME_LENGTH = 120;
     private static final Pattern SAFE_NAME = Pattern.compile("^[\\p{L}\\p{N}][\\p{L}\\p{N} .,'&()\\-]*$");
 
     public record ValidatedPlacement(
@@ -34,7 +35,7 @@ public class InterpretationValidator {
             return Optional.empty();
         }
         String itemName = Names.clean(interpretation.itemName());
-        if (!isSafeName(itemName, 120)) {
+        if (!isSafeName(itemName, MAX_ITEM_NAME_LENGTH)) {
             return Optional.empty();
         }
         List<LocationSegment> locations = interpretation.locations();
@@ -106,6 +107,16 @@ public class InterpretationValidator {
     /** Written so NaN fails the comparison (NaN >= x is false); >1 is not a valid confidence. */
     private static boolean isPlausibleConfidence(Double confidence) {
         return confidence != null && confidence >= MIN_CONFIDENCE && confidence <= 1.0;
+    }
+
+    /**
+     * The item-name rule on its own. The pinned path (BR-7) has no model output to validate — the
+     * user's text IS the name — but it still has to survive the same charset and length limits as a
+     * name the model produced, because those limits are about what the database and the UI can hold,
+     * not about trusting the provider.
+     */
+    public boolean isUsableItemName(String name) {
+        return isSafeName(name, MAX_ITEM_NAME_LENGTH);
     }
 
     private static boolean isSafeName(String value, int maxLength) {

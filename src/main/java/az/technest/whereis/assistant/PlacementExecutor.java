@@ -40,21 +40,24 @@ public class PlacementExecutor {
     }
 
     /**
-     * BR-7: the caller already chose the exact destination, so {@code placement.segments()} and
-     * {@code placement.spaceName()} are not consulted at all and {@code resolveOrCreateChain} — the
-     * only auto-creation path in the system — is never entered. Nothing in the location tree can
-     * change on this path; {@code createdLocations} is therefore always empty, by construction
-     * rather than by luck.
+     * BR-7: the caller already chose the exact destination, so there is no placement to execute —
+     * only an item to file. {@code resolveOrCreateChain}, the only auto-creation path in the
+     * system, is never entered and nothing in the location tree can change; {@code
+     * createdLocations} is therefore always empty by construction rather than by luck.
+     *
+     * <p>It takes the name and description rather than a {@link ValidatedPlacement} on purpose:
+     * on this path no model ran, so there is no interpretation to validate and fabricating a
+     * "validated placement" out of a literal string would put a lie in the type.
      *
      * <p>The lookup is here and not in the service because it must share the transaction with the
      * item insert: a location that vanishes between the ownership check and the insert would
      * otherwise pass the check and then fail the FK.
      */
     @Transactional
-    public ExecutionResult placeAt(UUID userId, UUID locationId, ValidatedPlacement placement, String note) {
+    public ExecutionResult placeAt(UUID userId, UUID locationId, String itemName, String description,
+                                   String note) {
         Location target = locationService.requireOwned(userId, locationId);
-        ItemResponse item = itemService.createAt(userId, target.getId(), placement.itemName(),
-                placement.description(), null, note);
+        ItemResponse item = itemService.createAt(userId, target.getId(), itemName, description, null, note);
         return new ExecutionResult(item, List.of(), target.getSpaceId());
     }
 }

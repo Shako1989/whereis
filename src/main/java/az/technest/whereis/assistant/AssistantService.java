@@ -11,7 +11,6 @@ import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.common.error.NotFoundException;
 import az.technest.whereis.common.util.Names;
 import az.technest.whereis.item.dto.ItemResponse;
-import az.technest.whereis.location.ChainSegment;
 import az.technest.whereis.search.SearchService;
 import az.technest.whereis.search.dto.ItemSearchResult;
 import az.technest.whereis.space.Space;
@@ -23,9 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -51,14 +48,19 @@ import org.springframework.web.multipart.MultipartFile;
  * keeping and no outcome meaning "never reached the model") and a foreign {@code spaceId} 404 (a
  * client error, not an interpretation). {@code analyzeImage} has no sentence.
  *
- * <p>Entity resolution has three entry points, in descending order of how much is left to guess.
- * A pinned {@code locationId} (BR-7) settles the destination outright and skips both space
- * resolution and chain resolution, so no location can be created; an explicit {@code spaceId}
- * (BR-2) settles only the space; with neither, the space is resolved from the model's answer and
- * the chain is resolved-or-created under it. The provider is called identically on all three —
- * same message, same {@code knownSpaceNames} — deliberately, so that a pinned row records what the
- * model WOULD have answered and stays comparable with the rows where the model decided. That is
- * the only labelled evidence we have for whether the model's placement is improving.
+ * <p>There are three entry points, in descending order of how much is left to guess.
+ *
+ * <p>A pinned {@code locationId} (BR-7) settles the destination before the request starts, and the
+ * decision that follows from that is the important one: <strong>no model is called at all and the
+ * text is the item name, as typed</strong>. Once the place is chosen there is nothing to interpret,
+ * and interpreting anyway is what produced the failure this path exists to avoid — a bare
+ * "kabel 20A" is not a placement statement, so a prompt calibrated to score placement statements
+ * correctly rejects it. Skipping the provider also means no cost, no latency and no location
+ * resolution of any kind on the hot path of filing many things in a row.
+ *
+ * <p>An explicit {@code spaceId} (BR-2) settles only the space, and the provider still interprets
+ * the sentence. With neither, the space is resolved from the model's answer and the chain is
+ * resolved-or-created under it.
  */
 @Slf4j
 @Service
@@ -81,6 +83,10 @@ public class AssistantService {
     public RememberResponse remember(UUID userId, String message, UUID chosenSpaceId, UUID pinnedLocationId) {
         String sanitized = sanitize(message, MAX_REMEMBER_LENGTH);
         requireOneTarget(chosenSpaceId, pinnedLocationId);
+        if (pinnedLocationId != null) {
+            // Before the provider, not after: nothing here needs interpreting.
+            return placeVerbatim(userId, sanitized, pinnedLocationId);
+        }
         // Read first, then call the provider: the user's own space names let it map a mention in
         // any language ("evdə") onto a space that already exists ("Home"). Names only — never ids,
         // and never another user's rows. Deliberately outside any transaction: no AI call may sit
@@ -103,9 +109,6 @@ public class AssistantService {
         ValidatedPlacement placement = validated.get();
         AssistantMessageDraft draft = rememberDraft(userId, sanitized, ai,
                 InterpretationSnapshots.fromValidated(placement, interpretation, knownSpaceNames));
-        if (pinnedLocationId != null) {
-            return placeAtPinned(pinnedLocationId, placement, draft);
-        }
         Optional<Space> space = chosenSpaceId != null
                 ? Optional.of(requireOwnSpace(userId, chosenSpaceId))
                 : resolveSpace(userId, spaces, placement.spaceName());
@@ -188,62 +191,46 @@ public class AssistantService {
                 savedMessage(result.item()));
     }
 
-    /**
-     * BR-7. Same after-commit discipline as {@link #place}, with two differences that both follow
-     * from the destination being settled before the request started. The FAILED row carries no
-     * space: on this path the space is only known once the location lookup inside the executor's
-     * transaction has succeeded, and that lookup is one of the things that can throw (a foreign or
-     * deleted id is a 404), so claiming a space link here would sometimes be a lie.
-     *
-     * <p>And the sentence's own idea of the place is reported, never obeyed. Letting it win would
-     * reintroduce precisely the model trust a pin exists to remove; leaving it unmentioned would
-     * make a stale pin invisible, which is the only new way this path can go wrong.
-     */
-    private RememberResponse placeAtPinned(UUID locationId, ValidatedPlacement placement,
-                                           AssistantMessageDraft draft) {
-        PlacementExecutor.ExecutionResult result;
-        try {
-            result = executor.placeAt(draft.userId(), locationId, placement, PLACEMENT_NOTE);
-        } catch (RuntimeException e) {
-            recordQuietly(draft, AssistantMessageResult.failed(errorCodeOf(e)));
-            throw e;
-        }
-        recordQuietly(draft, AssistantMessageResult.created(result.item().id(), result.spaceId()));
-        boolean ignored = namesSomewhereElse(placement, result.item().locationPath());
-        String message = ignored
-                ? savedMessage(result.item()) + " The place named in your message was ignored:"
-                        + " you had already pinned this one."
-                : savedMessage(result.item());
-        return RememberResponse.created(result.item(), result.createdLocations(), message, ignored);
-    }
-
     private static String savedMessage(ItemResponse item) {
         return "Saved. " + item.name() + " is in " + String.join(" > ", item.locationPath()) + ".";
     }
 
     /**
-     * Whether the sentence pointed somewhere other than where the item was pinned.
+     * BR-7, the pinned path end to end. No provider is consulted, so there is no interpretation,
+     * no confidence and no space resolution: the sanitized text is the item name and the chosen
+     * location is the destination.
      *
-     * <p>{@code locationPath} opens with the SPACE name and continues with the locations
-     * ({@code LocationTreeDao.PATHS_SQL} joins {@code spaces} for exactly that), so one membership
-     * test over it covers both halves of the interpretation: the innermost chain segment — the part
-     * that claims where inside the space the item went — and the space itself, which is the half
-     * that went wrong in the incident this feature exists for ("Work" instead of the listed
-     * "Xalqlar").
+     * <p>The text still has to pass the item-name rule, which is not model distrust — it is what
+     * the column and the UI can hold. A rejection answers NOT_UNDERSTOOD rather than 400 because
+     * the client already renders that status with the message and an "Add manually" fallback, and
+     * because the user did nothing malformed; their text simply cannot be a name. The row is still
+     * written: the sentence is the user's, and the outcome is the record of why nothing happened.
      *
-     * <p>Only the innermost segment is checked, not every segment: a shortened chain naming just
-     * the box ("karobkaya qoydum") agrees with a pin on that box, and calling it a disagreement
-     * because it omitted the room would make the warning fire on the common case and stop being
-     * read. A sentence that named no place at all ("termos", after a pin) is likewise not a
-     * disagreement — it is the whole point of pinning.
+     * <p>Provenance shape: {@link AiMetadata#NONE} and a NULL interpretation, which together are
+     * the discriminator for this path — a NULL interpretation with a real provider means the
+     * provider failed instead. What is lost by not calling the model is the comparison "what would
+     * it have answered for a sentence whose right destination is known"; that is a deliberate
+     * trade for a path that must be fast, free and literal.
      */
-    private static boolean namesSomewhereElse(ValidatedPlacement placement, List<String> pinnedPath) {
-        Set<String> pinned = pinnedPath.stream().map(Names::normalize).collect(Collectors.toSet());
-        List<ChainSegment> segments = placement.segments();
-        if (!segments.isEmpty() && !pinned.contains(Names.normalize(segments.getLast().name()))) {
-            return true;
+    private RememberResponse placeVerbatim(UUID userId, String itemName, UUID locationId) {
+        AssistantMessageDraft draft = new AssistantMessageDraft(userId, AssistantMode.REMEMBER, itemName,
+                AiMetadata.NONE, null, null);
+        if (!validator.isUsableItemName(itemName)) {
+            recordQuietly(draft, AssistantMessageResult.notUnderstood());
+            return RememberResponse.notUnderstood(
+                    "With a place already chosen, the text is saved as the item name exactly as typed. "
+                            + "Keep it under 120 characters and use only letters, digits and . , ' & ( ) -");
         }
-        return placement.spaceName() != null && !pinned.contains(Names.normalize(placement.spaceName()));
+        PlacementExecutor.ExecutionResult result;
+        try {
+            result = executor.placeAt(userId, locationId, itemName, null, PLACEMENT_NOTE);
+        } catch (RuntimeException e) {
+            // No space link: the ownership check that would have revealed the space is what threw.
+            recordQuietly(draft, AssistantMessageResult.failed(errorCodeOf(e)));
+            throw e;
+        }
+        recordQuietly(draft, AssistantMessageResult.created(result.item().id(), result.spaceId()));
+        return RememberResponse.created(result.item(), result.createdLocations(), savedMessage(result.item()));
     }
 
     /**

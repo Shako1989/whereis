@@ -98,15 +98,20 @@ assistant/ fixed pipeline: read the user's spaces → AiAssistant.interpret(mess
            dictionary forms for every name — the location dedup key is the normalized name, so
            "şkafın içində" and "şkafa" must both yield "Şkaf" or the tree grows duplicates.
            Entity resolution has three entry points, in descending order of what is left to guess.
-           A pinned request-level locationId (BR-7) settles the DESTINATION: resolveOrCreateChain is
-           never entered, so no location can be created or guessed on that path and createdLocations
-           is empty by construction; the provider is still called (item name + description) with the
-           SAME inputs as every other path, deliberately, so the row records what the model WOULD
-           have answered for a sentence whose right answer is known — the only free labelled evidence
-           of placement quality. The sentence's own place is REPORTED, never obeyed
-           (RememberResponse.messagePlaceIgnored, compared against item.locationPath, which opens
-           with the space name): obeying it restores the model trust the pin removes, and staying
-           silent makes a stale pin invisible — the one new failure mode the pin introduces.
+           A pinned request-level locationId (BR-7) settles the DESTINATION, and the decision that
+           follows is that NO MODEL IS CALLED AT ALL: the sanitized text is the item name, stored as
+           typed, with a null description. resolveOrCreateChain is never entered, so no location can
+           be created; createdLocations is empty by construction and NEEDS_CONFIRMATION cannot
+           happen. The text still has to pass the item-name rule (non-blank, <=120, SAFE_NAME) —
+           that is what the column and the UI can hold, not model distrust — and a failure is
+           NOT_UNDERSTOOD, not 400, because the client already renders that status usefully and the
+           user did nothing malformed. SAFE_NAME excluding '?' is also what keeps a question out
+           with no model and in any language. A full sentence sent with a pin becomes an item named
+           after the whole sentence: the accepted, tested consequence of "no syntax analysis".
+           Provenance: AiMetadata.NONE (provider/model/prompt_version all 'none') with a NULL
+           interpretation — together the discriminator for this path, since a NULL interpretation
+           with a REAL provider is a failure instead. The UI half is part of the contract: while a
+           pin is set the composer must ask for an item name, not a placement.
            An explicit request-level spaceId (BR-2) settles only the space without asking the AI;
            an id that is not the caller's is a 404. spaceId and locationId together are a 400
            (a location already names its space, so the pair is redundant or contradictory). NEEDS_CONFIRMATION carries one of three
@@ -185,7 +190,7 @@ GET /locations/{id}/children · items: CRUD, POST /items/{id}/move {locationId,n
 GET /items/{id}/history, GET /items?page&size&sort, GET /items/search?q= (returns
 {id,name,locationPath[],primaryImageUrl,updatedAt}) · files: POST(multipart)/GET
 /items/{id}/files, DELETE /{fileId}, GET /{fileId}/url (presigned) · assistant:
-POST /assistant/remember {message, spaceId? XOR locationId?}, /assistant/search {query}, /assistant/images/analyze
+POST /assistant/remember {message, spaceId? XOR locationId? — locationId means no AI call and the text is the item name}, /assistant/search {query}, /assistant/images/analyze
 (the `assistant_messages` rows V8 writes have NO endpoint — write-only for now) ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
@@ -385,21 +390,32 @@ and `AccountDeletionIT` +1). Every IT boots with `ddl-auto: validate`, which is 
 16 Sep incident (`docs/PREVENT_WRONG_LOCATIONS.md` — causes traced to the resolver, not the prompt)
 starts here because this is the only measure that makes a wrong location *impossible* rather than
 less likely: `PlacementExecutor.placeAt` calls `ItemService.createAt` directly, so
-`resolveOrCreateChain` is unreachable and the location tree cannot move. `ExecutionResult` gained
-`spaceId` — on the pinned path only the executor's ownership lookup knows it, and that lookup is
-also what can throw, which is why a pinned FAILED row carries a NULL `space_id` while a chain
-FAILED row keeps its space. `RememberResponse` gained `messagePlaceIgnored` (additive; the deployed
-client ignores unknown keys). No migration, no prompt change, no schema change. Suites: **unit 189**
-(+8 `AssistantServiceTest` cases), **integration 44 across 11 classes** (`AssistantPinnedLocationIT`
-+5, each asserting the `locations` table is unchanged as well as the item — an item-only assertion
-would still pass if the chain had been created and then ignored).
+`resolveOrCreateChain` is unreachable and the location tree cannot move.
+
+The first cut kept interpreting the sentence on the pinned path, to keep the provenance row
+comparable with the rows where the model decided. **It failed on the very input the feature exists
+for**: a real user pinned a box, typed `kabel 20A`, and got NOT_UNDERSTOOD — the validator gate runs
+before the pinned branch and rejects an interpretation naming no location, and a bare noun phrase is
+legitimately not a placement statement. The user settled it: with a specific location chosen the
+text is *only* the item name and no syntax analysis happens on it. So the pinned branch now sits
+before the provider call, `AiMetadata.NONE` and a NULL interpretation mark the row, and
+`RememberResponse.messagePlaceIgnored` was **removed** — with nothing interpreted there is no
+conflict to report. The lesson worth keeping: a provenance property, however real, does not justify
+running an interpretation whose calibration does not fit the input.
+
+`ExecutionResult` gained `spaceId` — on the pinned path only the executor's ownership lookup knows
+it, and that lookup is also what can throw, which is why a pinned FAILED row carries a NULL
+`space_id` while a chain FAILED row keeps its space. No migration, no prompt change, no schema
+change. Suites: **unit 188** (+7 `AssistantServiceTest` cases), **integration 44 across 11 classes**
+(`AssistantPinnedLocationIT` +5, each asserting the `locations` table is unchanged as well as the
+item — an item-only assertion would still pass if the chain had been created and then ignored).
 
 The Android client shipped the same day: `locationId` on the request DTO (with **no** `spaceId`
 field at all, so the 400 is unrepresentable rather than merely avoided), a sticky pin cleared only
 by the user or by a 404 on a pinned send, recent pins in their own DataStore file, the picker reusing
-the existing `LocationPickerSheet`, and `messagePlaceIgnored` rendered as a filled
-`tertiaryContainer` note (not `errorContainer` — the save succeeded). App suite **95 tests, 0
-failures** (+20). One API gap fell out of it and is filed as BR-8: nothing returns a location's
+the existing `LocationPickerSheet`, and the composer asking for an item name
+rather than a placement while a pin is set. App suite **95 tests, 0 failures** (+20) at the first
+cut, adjusted with the contract change. One API gap fell out of it and is filed as BR-8: nothing returns a location's
 space-qualified path, so a persisted chip label goes stale until the destination is pinned again.
 
 Two stale documents were found and corrected while doing this, both of the same kind — a contract

@@ -266,8 +266,7 @@ formatter so the UI looks uniform.
   "message":"human-readable explanation",
   "item": { …Item… } | null,
   "createdLocations": ["Bedroom","Wardrobe","Top drawer"],   // newly auto-created, may be empty
-  "candidateSpaces": [ {"id":"uuid","name":"Home"} ],         // only on NEEDS_CONFIRMATION
-  "messagePlaceIgnored": false }                              // only on the pinned path, see BR-7
+  "candidateSpaces": [ {"id":"uuid","name":"Home"} ] }        // only on NEEDS_CONFIRMATION
 ```
 
 - `CREATED` — item stored. Show it, show `createdLocations` as "I also created: …", offer Undo
@@ -286,17 +285,22 @@ formatter so the UI looks uniform.
   **Zero writes happened.** Show `candidateSpaces` as a picker. §7.1 is CLOSED — send `spaceId`;
   do NOT fold the space name into the sentence and re-send it through the model.
 - **Pinned destination — `locationId` (BR-7).** Send it when the user picked the exact place
-  before speaking (the "filed here recently" chips). It settles the destination outright: no space
-  resolution, no chain resolution, and **no location can be created by the request at all** —
-  `createdLocations` is always empty, by construction. The model is still called for the item name
-  and description. Rules:
-  - **Mutually exclusive with `spaceId`** — sending both is a 400 `VALIDATION_ERROR`. A location
-    already names its space.
+  before speaking (the "filed here recently" chips). **With it, the backend calls no model at all
+  and the text IS the item name, stored exactly as typed** — no parsing, no title-casing, no
+  description. Once the place is chosen there is nothing to interpret, and interpreting anyway is
+  what made a pinned `kabel 20A` answer NOT_UNDERSTOOD on the first cut. Rules:
+  - **The composer must ask for an item name while a pin is set**, not for a placement. A pin pill
+    above a "Tell me where you put it…" placeholder is the bug, not a cosmetic issue — it is what
+    produced the sentence that failed.
+  - The text must be non-blank, ≤ 120 chars, and match `^[\p{L}\p{N}][\p{L}\p{N} .,'&()\-]*$`.
+    A failure is **`NOT_UNDERSTOOD`** with a message saying so — render it like any other; the user
+    did nothing malformed. That charset is also what keeps a question out (`?` is not allowed in a
+    name), in every language and with no model involved.
+  - A full sentence sent with a pin becomes an item named after the whole sentence. Accepted and
+    tested; Undo is the remedy.
+  - `createdLocations` is always empty and `NEEDS_CONFIRMATION` cannot happen.
+  - **Mutually exclusive with `spaceId`** — sending both is a 400 `VALIDATION_ERROR`.
   - A location that is not yours is a 404, like every other ownership miss.
-  - `messagePlaceIgnored: true` means the sentence named a place (or a space) other than the pin,
-    and **the pin won**. The pin is never overridden by the sentence — that would restore exactly
-    the model trust it exists to remove — so render this as a visible note ("the place in your
-    sentence was ignored"), which is how a stale pin becomes noticeable instead of silent.
   - Keep the pin across consecutive saves until the user clears it. That is the point: filing ten
     things into one box should resolve the box once, not ten times.
 - `NOT_UNDERSTOOD` — show `message` and fall back to the manual add-item form, pre-filled with
