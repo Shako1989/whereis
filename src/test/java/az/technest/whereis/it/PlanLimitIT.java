@@ -62,15 +62,6 @@ class PlanLimitIT extends AbstractIntegrationTest {
                 """, userId);
     }
 
-    /** {@code count} extra ACTIVE items at {@code locationId}, in one statement. */
-    private void seedActiveItems(UUID userId, UUID locationId, int count) {
-        jdbc.update("""
-                insert into items (id, user_id, current_location_id, name, normalized_name, archived)
-                select gen_random_uuid(), ?, ?, 'Seed ' || g, 'seed ' || g, false
-                from generate_series(1, ?) g
-                """, userId, locationId, count);
-    }
-
     private ResponseEntity<JsonNode> createItem(String token, UUID locationId, String name) {
         return post(token, ITEMS, new CreateItemRequest(name, null, null, locationId), JsonNode.class);
     }

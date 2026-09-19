@@ -9,6 +9,9 @@ import static org.mockito.Mockito.when;
 
 import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.item.ItemRepository;
+import az.technest.whereis.plan.dto.PlanLimitsResponse;
+import az.technest.whereis.plan.dto.PlanStatusResponse;
+import az.technest.whereis.plan.dto.PlanUsageResponse;
 import az.technest.whereis.space.SpaceRepository;
 import az.technest.whereis.user.UserRepository;
 import java.util.Optional;
@@ -114,6 +117,81 @@ class PlanLimitEnforcerTest {
         // The limits apply rather than being waived: a guard's default must be the restrictive one.
         assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
                 .isInstanceOf(PlanLimitReachedException.class);
+    }
+
+    // ------------------------------------------------- the report (GET /users/me/plan)
+
+    @Test
+    void aFreeAccountReportsItsPlanItsLimitsAndItsTrueUsage() {
+        plan(Plan.FREE);
+        when(spaceRepository.countByUserId(userId)).thenReturn(1L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(19L);
+
+        PlanStatusResponse status = enforcer(1, 100).statusOf(userId);
+
+        assertThat(status.plan()).isEqualTo(Plan.FREE);
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(1, 100));
+        assertThat(status.usage()).isEqualTo(new PlanUsageResponse(1L, 19L));
+    }
+
+    @Test
+    void anUnlimitedAccountReportsNoLimitsButStillReportsUsage() {
+        plan(Plan.UNLIMITED);
+        when(spaceRepository.countByUserId(userId)).thenReturn(4L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(19L);
+
+        PlanStatusResponse status = enforcer(1, 100).statusOf(userId);
+
+        assertThat(status.plan()).isEqualTo(Plan.UNLIMITED);
+        // Null, not the configured numbers: an account they do not apply to must not be handed a
+        // ceiling it could render. The guard says the same thing by returning before it counts.
+        assertThat(status.limits()).isNull();
+        // Usage is still reported — the screen shows "19 items" on both plans, so the two counts
+        // run here even though the guard skips them for an UNLIMITED account.
+        assertThat(status.usage()).isEqualTo(new PlanUsageResponse(4L, 19L));
+    }
+
+    @Test
+    void theReportedUsageIsTheSameNumberTheGuardRefusesOn() {
+        plan(Plan.FREE);
+        when(spaceRepository.countByUserId(userId)).thenReturn(1L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(100L);
+        PlanLimitEnforcer enforcer = enforcer(1, 100);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        // "usage == limit" on the screen and 409 from the guard have to be the same fact, or the
+        // upgrade screen says "0 of 1 used" over a refusal.
+        assertThat(status.usage().spaces()).isEqualTo(status.limits().spaces());
+        assertThat(status.usage().activeItems()).isEqualTo(status.limits().items());
+        assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
+                .isInstanceOf(PlanLimitReachedException.class);
+        assertThatThrownBy(() -> enforcer.requireRoomForAnotherItem(userId))
+                .isInstanceOf(PlanLimitReachedException.class);
+    }
+
+    @Test
+    void theReportedItemUsageExcludesArchivedItems() {
+        plan(Plan.FREE);
+        when(spaceRepository.countByUserId(userId)).thenReturn(1L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(7L);
+
+        assertThat(enforcer(1, 100).statusOf(userId).usage().activeItems()).isEqualTo(7L);
+
+        // Same finder as the guard, and no other: a report that counted archived rows too would
+        // disagree with the wall the moment a user archives something.
+        verify(itemRepository).countByUserIdAndArchivedFalse(userId);
+        verifyNoMoreInteractions(itemRepository);
+    }
+
+    @Test
+    void anAccountThatNoLongerExistsIsReportedAsFreeWithItsLimits() {
+        when(userRepository.findPlanById(userId)).thenReturn(Optional.empty());
+        when(spaceRepository.countByUserId(userId)).thenReturn(0L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
+
+        // Same restrictive default as the guard: an unknown subject is never told it is unlimited.
+        assertThat(enforcer(1, 100).statusOf(userId).plan()).isEqualTo(Plan.FREE);
     }
 
     @Test

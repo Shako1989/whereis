@@ -134,6 +134,20 @@ public abstract class AbstractIntegrationTest {
         }
     }
 
+    /**
+     * Inserts {@code count} extra ACTIVE items at {@code locationId} in ONE statement — the cheap
+     * way to stand an account next to the 100-item free-tier wall without 99 HTTP calls. Both the
+     * guard and {@code GET /users/me/plan} count rows, so how the rows got there is irrelevant to
+     * what those tests measure (the seeded rows have no history record, which neither reads).
+     */
+    protected void seedActiveItems(UUID userId, UUID locationId, int count) {
+        jdbc.update("""
+                insert into items (id, user_id, current_location_id, name, normalized_name, archived)
+                select gen_random_uuid(), ?, ?, 'Seed ' || g, 'seed ' || g, false
+                from generate_series(1, ?) g
+                """, userId, locationId, count);
+    }
+
     protected HttpHeaders bearer(String token) {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(token);

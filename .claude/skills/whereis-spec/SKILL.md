@@ -152,12 +152,18 @@ plan/      the free tier. `Plan` (FREE|UNLIMITED, varchar+CHECK in V9), `FreeTie
            Those two sites cover all THREE creation paths, because `ItemService.create` delegates to
            `createAt` and so do both `PlacementExecutor` paths (chain and pinned BR-7). Counts are
            `count` queries, userId-scoped, ACTIVE-only (`countByUserIdAndArchivedFalse`) — archiving
-           frees room. The guard sits AFTER the location ownership lookup (a foreign id stays 404,
-           not 409) and BEFORE every write, so a refusal inside the assistant's transaction rolls
-           back the just-created chain too. `hasUnlimitedEntitlement` is the one method whose BODY
-           is meant to grow into `plan = 'UNLIMITED' OR active subscription`; the COLUMN must not —
+           frees room. `statusOf` (the read side, behind `PlanController` / GET /users/me/plan) runs
+           those SAME two count expressions and the same `FreeTierLimits`, so the upgrade screen and
+           the wall cannot disagree; it is the only `@Transactional` on the class (readOnly, one
+           snapshot for its three statements) and reports usage on both plans, while the guards skip
+           counting entirely for an UNLIMITED account. The guard sits AFTER the location ownership
+           lookup (a foreign id stays 404, not 409) and BEFORE every write, so a refusal inside the
+           assistant's transaction rolls back the just-created chain too. `hasUnlimitedEntitlement`
+           is the one method whose BODY is meant to grow into `plan = 'UNLIMITED' OR active
+           subscription` (GET /users/me/plan reports ITS answer, not the column); the COLUMN must not —
            an RTDN expiry writing it would erase a hand-made grant. `users.plan` has no setter on
-           the entity and no endpoint: the migration's default or an operator's UPDATE, nothing else.
+           the entity and no endpoint that writes it (GET /users/me/plan only reports the
+           entitlement): the migration's default or an operator's UPDATE, nothing else.
            A vanished account reads as FREE (a guard's default is the restrictive one).
 common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler; CurrentUser
            (JWT subject → UUID); CorrelationIdFilter (X-Correlation-Id → MDC); Names — the ONE
@@ -226,8 +232,15 @@ the client branches on `code`, this API answers every other guard violation with
 (SPACE_NOT_EMPTY, DUPLICATE_NAME), and 402 would advertise a payment path that does not exist yet.
 The message names what was hit and the limit, because the client shows it. DUPLICATE_NAME still
 wins over the space limit (the more specific answer), and LOCATION_NOT_FOUND (404) still wins over
-the item limit. There is NO plan/quota field in any response and no endpoint to ask: the client
-learns it by being refused. ·
+the item limit. No other response carries a plan or quota field: the ONE place to ask is
+**GET /users/me/plan** (BR-11) — `{plan: FREE|UNLIMITED, limits: {spaces,items} | null, usage:
+{spaces,activeItems}}`. `limits` is ALWAYS PRESENT and is `null` exactly when nothing is limited
+(chosen over omitting the key, and over numbers plus an `unlimited` flag — that shape can state two
+contradictory things at once); `usage` is present on both plans and `activeItems` excludes archived
+rows. `plan` is the EFFECTIVE ENTITLEMENT from `PlanLimitEnforcer#hasUnlimitedEntitlement`, not a
+copy of `users.plan`, so the report cannot contradict the guard — when billing lands a subscriber
+will read UNLIMITED here while the column stays FREE. No path or query parameter (the account is the
+JWT subject), no write, three statements (one plan lookup + the guard's own two counts). ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
 Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
@@ -247,6 +260,9 @@ the Play Store data-deletion and privacy URLs).
   transaction boundary is still a gap.
 - Free-tier enforcement stays in `PlanLimitEnforcer` and its two call sites; never inline a second
   copy of the rule, never count by loading rows, and never write `users.plan` from application code.
+  Anything that REPORTS the tier (GET /users/me/plan today) reads it from the same class and the
+  same count expressions — a usage number counted somewhere else drifts from the wall it describes,
+  and then the screen lies.
 - Bulk `@Modifying` updates: think before `clearAutomatically` — it detaches managed entities
   the caller still mutates (this exact bug shipped once and was caught in review).
 - Login is enumeration-safe (dummy BCrypt verify + uniform INVALID_CREDENTIALS).
@@ -264,7 +280,7 @@ the Play Store data-deletion and privacy URLs).
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 214 unit tests — must stay green without Docker OR network
+./gradlew build              # compile + 221 unit tests — must stay green without Docker OR network
 ./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO) — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
@@ -575,6 +591,38 @@ Suites: **unit 214** (+16: `PlanLimitEnforcerTest` 7, `PlanTest` 2, `ItemService
 so a FREE account at either limit cannot pay to get past it — only archive an item or receive a
 grant. That is intentional for closed testing (testers are meant to exercise the wall) and is
 recorded as a GATE in `deploy/README.md` Step 10, where whoever promotes a build will see it.
+
+**2026-09-19 — BR-11: `GET /users/me/plan`, the read side of the free tier.** V9 enforced the wall
+but nothing described it, so the Android upgrade screen could not tell a FREE account from a granted
+one, had to hardcode limits that live in config, and could not render "1 of 1 spaces used" at all.
+The endpoint answers `{plan, limits, usage}` for the JWT subject — no path parameter, so asking
+about another account is unrepresentable rather than merely refused. Decisions:
+
+* **`limits` is `null` for UNLIMITED and the key is always present.** Absent was rejected because
+  "missing means null" is a decoder setting on the client, not a property of the wire; numbers plus
+  an `unlimited` flag was rejected because it states one fact twice and lets the wire contradict
+  itself. Nothing here configures Jackson inclusion, so the explicit null is also what the codebase
+  already emits everywhere — the alternative needed a per-DTO `@JsonInclude`.
+* **The endpoint shares the guard's counting instead of repeating it.** `PlanLimitEnforcer.statusOf`
+  is the read side: the two `count` expressions became private methods called by BOTH the `require*`
+  guards and the report, so "usage == limit" on the screen and 409 from the wall are two readings of
+  one set of numbers. Mutation-checked in both directions: emitting limits for an UNLIMITED account
+  fails a unit test, and swapping the ACTIVE-only count for an unscoped one fails 6 of the 8 ITs.
+* **`plan` is the effective entitlement, not the column.** It comes from `hasUnlimitedEntitlement`,
+  so when billing lands a subscriber reads UNLIMITED while `users.plan` stays FREE. Telling a grant
+  apart from a subscription (a "manage subscription" button) is a different question and needs its
+  own field — deliberately not invented now.
+* Usage is reported on BOTH plans (the screen still shows "19 items" for a granted account), which
+  is the one place the report deliberately does more work than the guard: two counts the guard skips.
+* Read-only transaction so the three statements share one snapshot; no migration; no new column; the
+  numbers still come from `whereis.limits.free.*`.
+
+Suites: **unit 221** (+7: `PlanLimitEnforcerTest` +5, `PlanStatusResponseTest` 2), **integration 69
+across 14 classes** (`PlanStatusIT` 8). `seedActiveItems` moved from `PlanLimitIT` to
+`AbstractIntegrationTest` — both suites need to stand an account next to the 100-item wall. Docs:
+`docs/BACKEND_REQUESTS.md` BR-11, `docs/ANDROID_APP_PROMPT.md` §3.1a + §3.8. Still open from the V9
+entry, unchanged by this: the wall has no door (no billing), and the endpoint does not add one — it
+describes the wall honestly, which is all a client can do until a payment path exists.
 
 ## 9. Future extension points (design for, do not build)
 

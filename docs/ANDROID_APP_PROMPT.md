@@ -103,6 +103,7 @@ Every other endpoint requires `Authorization: Bearer {accessToken}`.
 | Method | Path | Auth | Body | Success |
 |---|---|---|---|---|
 | DELETE | `/users/me` | bearer | `{password}` | **204** (empty) |
+| GET | `/users/me/plan` | bearer | — | 200 `PlanStatus` (§3.8) |
 
 - Re-authentication is mandatory: the body carries the user's **current password**. A wrong, blank or
   missing password — and a token whose account no longer exists — all return **401
@@ -347,10 +348,48 @@ indistinguishable from one that does not exist. Your UI must respect that: on 40
 
 A `FREE` account may hold **1 space** and **100 ACTIVE items**. Beyond either, the three creation
 calls above answer **409** with `code: "PLAN_LIMIT_REACHED"` and a `message` that names what was hit
-and what the limit is. There is no "what plan am I on?" endpoint and no quota in any response: the
-client learns it has hit the wall by being refused. That is deliberate — the limits are a
-server-side product rule, and a client that tracks its own counters will disagree with the server
-the first time an item is created on another device.
+and what the limit is.
+
+**`GET /users/me/plan` is where the numbers come from (BR-11).** Ask the server; never hardcode a
+limit and never keep a running counter of your own — the limits live in server configuration and can
+be tuned without an app release, and a local counter disagrees with the server the first time an
+item is created on another device.
+
+```jsonc
+// PlanStatus — GET /api/v1/users/me/plan, 200
+{ "plan": "FREE",                              // "FREE" | "UNLIMITED" — an unknown tier is NOT FREE; see below
+  "limits": { "spaces": 1, "items": 100 },     // what a FREE account may hold
+  "usage":  { "spaces": 1, "activeItems": 19 } }
+
+// the same endpoint for an account that was granted UNLIMITED
+{ "plan": "UNLIMITED",
+  "limits": null,                              // ALWAYS PRESENT, null = nothing is limited
+  "usage":  { "spaces": 4, "activeItems": 19 } }
+```
+
+- **A tier this build does not recognise must not be treated as `FREE`.** §4.4's "unknown becomes
+  `OTHER`" rule is about `SpaceType`/`LocationType` and does not transfer here: `FREE` is the only
+  value that offers an upgrade, so defaulting to it would offer more room to an account that may
+  already have paid for it. Map any unrecognised, blank or missing `plan` to its own `UNKNOWN`
+  state, render it as "a plan this version does not know about", and offer nothing — the same
+  answer as `UNLIMITED`. Only an explicit `"FREE"` may be offered an upgrade.
+- **`limits` is `null`, not absent, and not a set of numbers with a flag.** Branch on
+  `limits == null` and nothing else. When it is null there is no ceiling to render: show usage alone
+  ("4 spaces, 19 items"), never "19 of 100", never "∞ of 100", and never an upgrade offer — that
+  account already has everything an upgrade could give. Model it as a nullable object; the key is
+  always on the wire, so `explicitNulls = false` is not required to read it.
+- **`usage` is always present, on both plans**, and `usage.activeItems` counts exactly what the wall
+  counts: non-archived items. `limits.items` and `usage.activeItems` are deliberately named
+  differently — the limit is the configured product rule, the usage says precisely what it counted.
+- `plan` is the caller's **effective entitlement**, computed by the same code that refuses a
+  creation, so `usage.spaces == limits.spaces` is true exactly when the next `POST /spaces` will be
+  a 409. Render "1 of 1 spaces used" from these two numbers; do not infer the state from a past
+  error.
+- There is no path or query parameter: the account is the JWT subject. **401** anonymously, like
+  every other `/api/v1` call.
+- Three statements server-side (one plan lookup, two counts) — cheap, but not free. Fetch it when
+  the upgrade/settings screen opens and after a `409 PLAN_LIMIT_REACHED`, not on every list render.
+- It is a **read**: it never grants, never upgrades and never changes anything.
 
 **Server-side facts the client can rely on**
 
@@ -368,8 +407,9 @@ the first time an item is created on another device.
 
 **What the UI must do**
 
-1. Show the limit, not the error. Render your own localized copy — you have the number in the
-   server `message`, and §3.7's rule still applies (never surface a raw `code`). For the item limit
+1. Show the limit, not the error. Render your own localized copy — the numbers come from
+   `GET /users/me/plan` (the server `message` also carries them, for the case where the refusal
+   arrives first), and §3.7's rule still applies (never surface a raw `code`). For the item limit
    the honest wording is *"You've reached 100 items on the free plan"*.
 2. **Offer the action that works today: archive something.** For the item limit, deep-link to a list
    the user can archive from. For the space limit there is no such action — say what the plan allows
@@ -380,7 +420,9 @@ the first time an item is created on another device.
    When the subscription contract lands it will arrive as its own BR entry.
 4. During closed testing, accounts that need more room are granted `UNLIMITED` by the operator
    directly in the database. A tester who hits the wall is a working test, not a bug — there is
-   nothing the app can do about it, and nothing it should pretend to do.
+   nothing the app can do about it, and nothing it should pretend to do. A granted account reads
+   `plan: "UNLIMITED"` with `limits: null`, which is the one thing the upgrade screen must check
+   before it offers anything: never offer an upgrade to someone who already has one.
 
 ---
 
@@ -600,7 +642,9 @@ space preselected. Never loop more than once.
   (BR-1): client-side logout = wipe tokens + wipe the local database, and the refresh token stays
   valid server-side until it expires.
 - **No item-count aggregates.** Space and location item counts must be derived client-side or
-  omitted. Do not N+1 the API to compute them; prefer omitting them in v1.
+  omitted. Do not N+1 the API to compute them; prefer omitting them in v1. The one aggregate that
+  does exist is account-wide: `usage.activeItems` / `usage.spaces` from `GET /users/me/plan`
+  (BR-11). It is a quota reading, not a per-space or per-location count.
 - **~~`primaryImageUrl` only appears in search results~~ — fixed (BR-3, 2026-09-13).** `ItemResponse`
   now carries `primaryFileId` + `primaryImageUrl`, resolved in one batch query per page, so the
   list and detail screens need no `GET /items/{id}/files` call to show a cover photo. Key image

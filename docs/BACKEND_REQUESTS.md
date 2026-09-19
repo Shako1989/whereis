@@ -585,3 +585,71 @@ archived-excluding finder being consulted, and a configured limit below 1 refusi
 `PlanTest` (the V9 CHECK vs the enum, and that V9 grants nothing), `ItemServiceTest` +3,
 `SpaceServiceTest` +2, `AssistantServiceTest` +2 (the FAILED/`PLAN_LIMIT_REACHED` row on both
 remember paths), and `PlanLimitIT` (8 cases, run against the REAL production limits).
+
+## BR-11 — `GET /users/me/plan`: what plan am I on, and how much have I used — **IMPLEMENTED 2026-09-19**
+
+**Raised by:** Android client, the upgrade screen.
+**Contract reference:** `docs/ANDROID_APP_PROMPT.md` §3.1a (the route) and §3.8 (the shape).
+
+### Why
+
+BR-10 shipped the wall without a way to describe it. The client could not tell a `FREE` account from
+a granted `UNLIMITED` one, so it would have offered an upgrade to someone who already had one; it
+did not know the limits, so it would have hardcoded two numbers that live in server configuration
+and can be tuned without an app release; and it could not render "1 of 1 spaces used" at all. The
+trigger was a real user: they created a second space on a `FREE` account, it was refused, and the
+app showed a generic error because it had no idea why.
+
+### The contract
+
+```
+GET /api/v1/users/me/plan          Authorization: Bearer {accessToken}
+
+200 { "plan": "FREE",
+      "limits": { "spaces": 1, "items": 100 },
+      "usage":  { "spaces": 1, "activeItems": 19 } }
+
+200 { "plan": "UNLIMITED",
+      "limits": null,
+      "usage":  { "spaces": 4, "activeItems": 19 } }
+
+401  anonymously (standard error shape) — there is no unauthenticated variant
+```
+
+* **`limits` is `null` for an `UNLIMITED` account, and the key is always present.** Branch on
+  `limits == null`. Two alternatives were considered and rejected: *omitting* the key means "missing
+  is null", which is a decoder setting on the client rather than a property of the wire; *numbers
+  plus an `unlimited` flag* states one fact twice, so `{"unlimited": true, "spaces": 1}` is
+  representable and self-contradictory, and a client ignoring the flag would render a limit nobody
+  enforces.
+* **`usage` is present on both plans.** A granted account still shows "4 spaces, 19 items"; it just
+  has no ceiling to show them against.
+* **`usage.activeItems` counts exactly what the wall counts** — non-archived items — because the
+  endpoint and the guard share the same two count expressions inside `PlanLimitEnforcer`. So
+  `usage.spaces == limits.spaces` is true exactly when the next `POST /spaces` is a 409. A second
+  `count` written separately is how the screen would start lying, and the integration tests assert
+  the agreement rather than the arithmetic (create up to the limit, get refused, then read the
+  endpoint back).
+* **`plan` is the effective entitlement, not a copy of `users.plan`.** It is whatever
+  `PlanLimitEnforcer#hasUnlimitedEntitlement` answers, which is the method the guards ask. Today
+  that is exactly the column; when billing lands and the rule becomes "granted OR subscribed", a
+  subscriber will read `UNLIMITED` here while `users.plan` stays `FREE`. **Telling a grant apart
+  from a subscription is a different question** (it needs a "manage subscription" button) and will
+  get its own field when there is a subscription to manage — do not infer it from this one.
+* The naming asymmetry (`limits.items` vs `usage.activeItems`) is deliberate: the limit mirrors the
+  configuration key `whereis.limits.free.items`, while the usage field has to say precisely what it
+  counted, because "items" reads as "all items" and archived ones do not count.
+* No path or query parameter: the account is the JWT subject, so asking about another user is
+  unrepresentable rather than merely refused. The call is a pure read — it never grants or upgrades.
+* Cost: three statements (one plan lookup + the two `count`s the guard itself runs). No new table,
+  no new column, **no migration**. `users.plan` is still written only by V9's default or an
+  operator's UPDATE.
+
+### What the client must do
+
+Fetch it when the upgrade/settings screen opens and after a `409 PLAN_LIMIT_REACHED`; do not poll it
+on every list render and do not keep a local counter (it disagrees with the server the moment
+another device creates an item). When `limits == null`, show usage alone and **no upgrade offer** —
+that account already has everything an upgrade could give. There is still **no paywall**: BR-10's
+rule stands, the only action that works today is archiving, and a subscription contract will arrive
+as its own BR entry.
