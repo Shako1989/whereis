@@ -298,20 +298,46 @@ metadata rows, so both must be captured together. Add to root's crontab:
              > /var/backups/whereis-$(date +\%F).dump 2>/dev/null
 30 3 * * * find /var/backups -name 'whereis-*.dump' -mtime +14 -delete
 
-> **CORRECTED 2026-09-19 — this step was documented but never carried out.** The box runs
-> `/root/db_backup.sh` from root's crontab at 03:00, and that script dumps **only the `autoparts`
-> database**: `pg_dump -U autoparts autoparts`. It predates whereis (written 2026-06-15) and was
-> never extended. Verified on the box: the dumps in `/root/backups/` contain none of
-> `spaces`, `items`, `locations` or `assistant_messages`.
+> **REWRITTEN 2026-09-19.** The cron line above was documented but never carried out. What the box
+> actually ran was `/root/db_backup.sh`, and that script dumped **only the `autoparts` database** —
+> it was written 2026-06-15, whereis was deployed in September, and it was never extended. So the
+> whereis database and **every MinIO object, both applications'**, had no backup at all. Verified on
+> the box: the old dumps in `/root/backups/` contained none of `spaces`, `items`, `locations` or
+> `assistant_messages`.
 >
-> So **whereis is not backed up at all** — neither PostgreSQL nor the MinIO bucket. If the volume
-> is lost, every item, space, photo reference and assistant message goes with it. Retention for
-> `autoparts` is 14 days (`-mtime +14` in that script), which is where the 14 in this document came
-> from; it says nothing about whereis.
+> The replacement is version-controlled in this repo as `deploy/db_backup.sh`. Install it with:
 >
-> This also decides `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS`. Until the script covers whereis, the
-> honest value is **0** — deleted data survives in no backup because there is no backup. Do not
-> write 14 into the privacy notice while that is true.
+> ```sh
+> scp deploy/db_backup.sh root@$VM:/root/db_backup.sh && ssh root@$VM chmod +x /root/db_backup.sh
+> ssh root@$VM 'crontab -l | grep -q db_backup || (crontab -l; echo "0 3 * * * /root/db_backup.sh") | crontab -'
+> ```
+>
+> It writes three artefacts a night, each independent so one failure cannot skip the others, and
+> exits non-zero so a failure is visible rather than silent — it also appends to
+> `/root/backups/backup.log`, which is the only place a cron failure would otherwise be seen:
+>
+> | artefact | what |
+> |---|---|
+> | `postgres-autoparts-*.sql.gz` | `pg_dump` of autoparts |
+> | `postgres-whereis-*.sql.gz` | `pg_dump` of whereis |
+> | `minio-*.tar.gz` | the whole MinIO volume, every bucket |
+>
+> Retention is 14 days per artefact kind, which is what
+> `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS=14` in `.env` promises the user.
+>
+> The MinIO archive is a **hot copy** — read from the volume while the server runs, so an object
+> being written at that instant can land torn. Accepted: objects are independent files, so the
+> blast radius is that one photo rather than the archive, and the alternative is stopping MinIO
+> nightly for both applications.
+>
+> **Verified after installing, and worth repeating after any change** — "a file exists" is not "a
+> backup exists". Row counts from the dump matched the live database exactly
+> (`users|spaces|locations|items|item_files|assistant_messages` = `1|4|11|19|19|9`), the MinIO
+> archive held the same 38 files as the volume, and all three passed `gzip -t`.
+>
+> **Remaining gap, not solved:** every copy lives on this box's only disk. That covers a dropped
+> table or a bad deploy; it does not cover losing the VM. An off-box destination needs a target and
+> credentials and is a separate decision.
 ```
 
 Copy `/var/backups` and the `minio-data` volume off the box — a backup that only lives on the
@@ -330,7 +356,7 @@ Privacy policy URL: https://$WHEREIS_API_HOST/legal/privacy
 
 Both pages ship with **placeholders that must be replaced before a submission** — a page showing a
 literal `{{SUPPORT_EMAIL}}` will fail review. Edit the two files under
-`src/main/resources/static/legal/`, then gate the build on the grep being empty:
+`src/main/resources/legal/`. They are no longer edited at all — set the five `WHEREIS_LEGAL_*` values in `.env` and the app renders them at startup:
 
 | Placeholder | Meaning |
 |---|---|
@@ -338,7 +364,7 @@ literal `{{SUPPORT_EMAIL}}` will fail review. Edit the two files under
 | `{{LEGAL_ENTITY}}` | the legal name of the data controller |
 | `{{LEGAL_ADDRESS}}` | its postal address |
 | `{{EFFECTIVE_DATE}}` | the date the notice takes effect |
-| `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS` | how long deleted data can persist in backups. See the correction under Step 8: while whereis is not backed up at all, the honest value is `0`. |
+| `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS` | how long deleted data can persist in backups. `14`, matching the rotation in `deploy/db_backup.sh`. Change both together or the page lies. |
 
 ```sh
 # Nothing to grep any more. The pages moved out of src/main/resources/static/ to

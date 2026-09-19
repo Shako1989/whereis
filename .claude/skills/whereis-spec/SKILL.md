@@ -352,7 +352,11 @@ statement for the whole location forest → bulk delete spaces → `userReposito
 request path — `StorageJanitor` removes the binaries shortly after. `/legal/delete-account` and
 `/legal/privacy` are bilingual static pages (permitAll GET) with `{{SUPPORT_EMAIL}}`, `{{LEGAL_ENTITY}}`,
 `{{LEGAL_ADDRESS}}`, `{{EFFECTIVE_DATE}}`, `{{BACKUP_RETENTION_DAYS}}` placeholders that MUST be replaced
-before submission (`grep -R "{{" src/main/resources/static` must be empty — deploy/README.md Step 9).
+before submission. SUPERSEDED 2026-09-19: the pages are no longer shipped pre-filled and that grep
+now matches nothing because the directory is gone. The five values are `whereis.legal.*`
+(`WHEREIS_LEGAL_*` in `deploy/.env`), the pages live in `src/main/resources/legal/` — deliberately
+NOT under `static/`, where the resource handler would serve an unrendered one — and `LegalPages`
+renders them once at startup and FAILS STARTUP on any leftover marker.
 Known, accepted: a still-valid access token is not killed (reads return empty, writes 409 on the users
 FK — pinned by `AccountDeletionIT#deletedAccountRefreshTokenCannotResurrectTheSession`); a concurrent
 `POST /items` from a second device can abort the delete with a full rollback (item creation takes no
@@ -458,6 +462,32 @@ the new predicate better and is NOT worth a V9 while the table is this small. Su
 A composite `(user_id, current_location_id, updated_at DESC)` would serve the filtered query without a
 sort step, but it is not worth a V9 at this table size — `ix_items_location` (V5) is what the planner
 picks today, verified on a throwaway PostgreSQL 16 rather than assumed.
+
+**2026-09-19 — the legal pages render from the environment, and whereis finally has backups.**
+
+The privacy notice and the account-deletion page had been public since 2026-09-14 with all five
+placeholders visible; those are the URLs Play links to from the store listing and the Data safety
+form, so it blocked a release to ANY track. The values are now `whereis.legal.*` (`WHEREIS_LEGAL_*`
+in `deploy/.env`), the sources moved out of `static/` — under it the resource handler serves an
+unrendered page straight from the jar at `/legal/privacy.html`, behind the same permitAll matcher,
+so the hole would have outlived the fix — and `LegalPages` renders them once at startup and REFUSES
+TO BOOT on a leftover marker. Two adjacent defects fixed on the way: `/legal/**` was GET-only so
+HEAD answered 401 (link checkers probe with HEAD), and `HttpMediaTypeNotAcceptableException` was
+unmapped so a bad `Accept` produced a 500 plus an error-level "Unhandled exception" line; now 406
+and 415. Suites: **unit 198, integration 53.**
+
+The bigger finding was operational. `/root/db_backup.sh` on the VM dumped **only the `autoparts`
+database** — written 2026-06-15, never extended after whereis shipped — so the whereis database and
+**every MinIO object of both applications** had no backup at all. It is now version-controlled as
+`deploy/db_backup.sh`, writes three independent artefacts a night (autoparts dump, whereis dump, the
+whole MinIO volume), logs to `/root/backups/backup.log`, and exits non-zero on any failure so a
+silent one is impossible. Verified rather than assumed: dump row counts matched the live database
+exactly (`1|4|11|19|19|9`), the MinIO archive held the same 38 files as the volume, and all three
+passed `gzip -t`. `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS` is 14 because that is what the script now
+rotates — the two must change together or the page lies to the user.
+
+Still open: every copy is on the box's only disk, so this covers a dropped table or a bad deploy but
+not losing the VM. Off-box needs a destination and credentials.
 
 ## 9. Future extension points (design for, do not build)
 
