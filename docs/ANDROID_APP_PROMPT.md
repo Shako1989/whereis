@@ -376,13 +376,32 @@ Ask the server; never hardcode a limit and never keep a running counter of your 
   "limits": { "spaces": 5, "items": 600 },        // always an OBJECT; a null MEMBER = no ceiling there
   "usage":  { "spaces": 2, "activeItems": 143 },
   "source": "SUBSCRIPTION",                       // NONE | GRANT | SUBSCRIPTION — for copy only
-  "subscription": {                               // null when there is no entitling subscription
+  "subscription": {                               // null when there is no LIVE Play purchase
     "productId": "whereis_pro_annual",
     "tier": "PRO",
-    "state": "ACTIVE",                            // ACTIVE | CANCELED | IN_GRACE_PERIOD | ...
+    "state": "ACTIVE",                            // the nine states in §3.8d
     "entitledUntil": "2027-09-19T10:04:00Z",
     "provenance": "PLAY_PURCHASE",                // PLAY_PURCHASE | PROMO_CODE | OPERATOR
-    "acknowledged": true } }
+    "acknowledged": true,
+    "entitling": true,                            // NEW — does THIS row entitle right now?
+    "pendingProductId": null,                     // NEW — a DEFERRED change at entitledUntil
+    "pendingTier": null } }                       // NEW — its tier, or null rather than wrong
+
+// AN ON_HOLD SUBSCRIBER. plan is FREE and subscription.tier is PRO AT THE SAME TIME. Not a
+// contradiction — see §3.8d.
+{ "plan": "FREE", "limits": {"spaces": 1, "items": 100}, "usage": {"spaces": 3, "activeItems": 412},
+  "source": "NONE",
+  "subscription": {"productId": "whereis_pro_annual", "tier": "PRO", "state": "ON_HOLD",
+                   "entitledUntil": "2027-09-19T10:04:00Z", "provenance": "PLAY_PURCHASE",
+                   "acknowledged": true, "entitling": false,
+                   "pendingProductId": null, "pendingTier": null} }
+
+// A DEFERRED DOWNGRADE. Still PRO, and the screen can finally say what happens next.
+{ "plan": "PRO", "limits": {"spaces": 5, "items": 600}, "usage": {...}, "source": "SUBSCRIPTION",
+  "subscription": {"productId": "whereis_pro_annual", "tier": "PRO", "state": "ACTIVE",
+                   "entitledUntil": "2027-03-14T00:00:00Z", "provenance": "PLAY_PURCHASE",
+                   "acknowledged": true, "entitling": true,
+                   "pendingProductId": "whereis_standard_annual", "pendingTier": "STANDARD"} }
 
 // Max: a finite space ceiling beside no item ceiling at all
 { "plan": "MAX", "limits": {"spaces": 10, "items": null}, "usage": {...},
@@ -414,10 +433,23 @@ Ask the server; never hardcode a limit and never keep a running counter of your 
 - **`source` is for copy, never for behaviour.** Show "Manage subscription" **iff `subscription !=
   null`** — a paid subscription must stay manageable even for an account that also holds a higher
   operator grant, which is exactly the `source: "GRANT"` + non-null `subscription` case.
+- **`subscription` IS NOW NON-NULL FOR A LIVE PURCHASE THAT DOES NOT ENTITLE. This supersedes
+  BR-12's "non-null exactly when an entitling row exists".** It additionally covers `ON_HOLD`,
+  `PAUSED` and `PENDING` — the three states where the subscription is not entitling and the user
+  most needs to act on it. Reporting `null` for an `ON_HOLD` subscriber, as the previous contract
+  did, took away the only control that could fix their failed payment from an account that was
+  still being charged. It is `null` for a refunded, superseded, `EXPIRED` or
+  `PENDING_PURCHASE_CANCELED` purchase: those have nothing left to manage, which is what stops a
+  lapsed account carrying a permanent, actionless Manage button.
+- **`entitling` is rendered, never computed with.** It is the difference between "you keep Pro until
+  14 March" and "Pro is paused" — and **it must never be used to derive a tier**. The client does
+  not compute tiers at all.
 - **`subscription.acknowledged == false` means the purchase is not yet confirmed to Google.** Google
   auto-refunds and revokes an unacknowledged purchase (3 days; **5 minutes** for a test purchase on a
-  closed track). There is no server-side reconciler yet, so while this reads `false` the client must
-  **ignore its own 24-hour re-post rule and re-POST the token on the next foreground.**
+  closed track). A server-side reconciler now retries it every 15 minutes, ahead of everything else,
+  so a re-POST is no longer the only repair — but it is still the fastest one, so while this reads
+  `false` the client should **ignore its own 24-hour re-post rule and re-POST the token on the next
+  foreground.**
 - **`usage` is always present, on every tier, and is NEVER CLAMPED.** `{"limits": {"spaces": 3},
   "usage": {"spaces": 5}}` is a valid, expected body for an account that dropped from `PRO` to
   `STANDARD`. Draw it as full, not as overflowing (the shipped `PlanAllowance.fraction` already
@@ -548,6 +580,169 @@ interrupted by process death completes on Google's side with nothing to tell the
   sentence implied. Do not optimistically insert a row and then reconcile.
 * `CANCELED` entitles: auto-renew is off but the paid term is not over. `PAUSED` and `ON_HOLD` do
   not, even with a future `entitledUntil`.
+
+#### 3.8d The subscription strip, and changing tiers (BR-13)
+
+##### The one rule the whole screen hangs on
+
+**The badge describes the ENTITLEMENT. The strip describes the SUBSCRIPTION. Neither is derived from
+the other.**
+
+`plan.tier` is the server's effective entitlement — `max(users.plan, best entitling subscription)` —
+and **it is the only thing that may badge a row or phrase what the account can do**.
+`plan.subscription` is a separate object describing a Play purchase that may or may not currently
+entitle. An `ON_HOLD` subscriber must see the tier badge read **Free** *and* a strip saying their
+subscription is on hold, **at the same time, on the same screen**. Showing the paid tier because a
+subscription object exists is the exact lie this section exists to prevent, and it is the easy
+mistake to make.
+
+`subscription.entitling` is rendered only as the difference between *"you keep Pro until…"* and
+*"Pro is paused"*. It is **never** used to compute a tier.
+
+##### Typed state, replacing the raw String
+
+`PlanSubscription.state` is a `String?` in the shipped build. Make it a typed `SubscriptionState`
+with the app's established `fromWire` + `UNKNOWN` shape (`PlanTier` and `EntitlementSource` already
+do this) — a raw string reaching a `when` is how a state Google adds later ends up rendering as
+nothing at all.
+
+```kotlin
+enum class SubscriptionState { ACTIVE, CANCELED, IN_GRACE_PERIOD, ON_HOLD, PAUSED,
+                               EXPIRED, PENDING, PENDING_PURCHASE_CANCELED, UNKNOWN }
+```
+
+##### The strip — one line, at most one action
+
+Render it whenever `plan.subscription != null`, between the current-plan section and usage.
+**Every `<tier>` token below is `subscription.tier`, never `plan.tier`** — applying the governing
+rule literally to `ON_HOLD` (where `plan.tier` is `FREE` by design) would produce "Free is paused
+until it goes through", which is nonsense. The badge and every allowance number stay on `plan.tier`.
+
+| state | line | action |
+|---|---|---|
+| `ACTIVE` | "Renews on \<entitledUntil\>." | Manage |
+| `CANCELED` **and `entitling`** | "Cancelled. You keep \<tier\> until \<entitledUntil\>." | Manage (resubscribe lives there) |
+| `IN_GRACE_PERIOD` **and `entitling`** | "There's a problem with your payment method. Fix it by \<entitledUntil\> to keep \<tier\>." | **Fix payment** — the same Play deep link, differently labelled, because "Manage" does not tell somebody their card is failing |
+| `ON_HOLD` | "Your subscription is on hold — Google couldn't take the payment. \<tier\> is paused until it goes through." | **Fix payment** |
+| `PAUSED` | "Paused in Google Play. Resume it there when you want \<tier\> back." | Manage |
+| `PENDING` | "Waiting for your payment to be confirmed." | none |
+| `PENDING_PURCHASE_CANCELED` | "Your pending payment was cancelled, so the subscription never started." | none |
+| `EXPIRED` | strip hidden | — |
+| `UNKNOWN` | "Managed in Google Play." | Manage |
+| `CANCELED` or `IN_GRACE_PERIOD` with **`entitling == false`** | "Your subscription ended on \<entitledUntil\>." | Manage |
+
+**That last row is not a formality.** Entitlement is fail-closed on `entitledUntil > now`, but
+`state` only moves to `EXPIRED` when Google tells us — so a `CANCELED` row whose term has just run
+out (an RTDN lost, or the reconciler's 15-minute window not yet elapsed) would otherwise render
+"Cancelled. You keep Pro until 14 March 2026" with a date in the past, directly beneath a badge
+reading **Free**. That is the collapse this whole section exists to prevent, in the most confusing
+direction: the strip promising access the wall has already refused. **Drive both deadline lines off
+`entitling`, not off `state` alone.**
+
+Grace and hold read as **fixable problems with a deadline**, not as error states. They are the two
+moments where good copy actually recovers revenue, and both currently render as nothing at all.
+
+##### The pending change, above the strip
+
+Whenever `subscription.pendingProductId != null`:
+
+> **Pro until 14 March 2027, then Standard.** · *Change or cancel in Google Play*
+
+If `pendingTier` is null (a product this build cannot name) degrade to *"Your plan changes on 14
+March 2027. See Google Play for details."* — **never** to an invented tier.
+
+##### Upgrades and downgrades
+
+The server never learns the replacement mode and must not need to: it refreshes from Google and
+resolves `linkedPurchaseToken`. So the client owns the choice.
+
+- **Upgrade → `ReplacementMode.CHARGE_PRORATED_PRICE`.** Access is immediate, the user pays only the
+  difference for the remainder of the period, and the renewal date does not move. All plans are
+  annual, so the same-billing-period precondition always holds.
+- **Downgrade → `ReplacementMode.DEFERRED`.** The user keeps what they paid for until the term ends,
+  then the lower plan starts. Nothing is taken away and no refund is owed.
+
+`ReplacementModeSelector` is a **pure function** in the `OfferSelector` mould, taking the two ranks
+from `GET /plans` (never a hardcoded order):
+
+```kotlin
+fun modeFor(currentRank: Int?, targetRank: Int?): Int? = when {
+    currentRank == null || targetRank == null -> null   // not a change: plain purchase
+    targetRank > currentRank -> ReplacementMode.CHARGE_PRORATED_PRICE
+    targetRank < currentRank -> ReplacementMode.DEFERRED
+    else -> null
+}
+```
+
+- **The old token comes from Play, never from the server.** `PlanSubscription` carries no purchase
+  token and must never carry one. Use `BillingRepository.activePurchases()`: exactly one PURCHASED
+  subscription → use its token; zero → a plain purchase with no update params; **more than one →
+  refuse to launch and log WARN**, because guessing which subscription is being replaced is how the
+  wrong one gets cancelled.
+- `setObfuscatedAccountId` stays **mandatory** on a change as well as on a first purchase. It is the
+  only thing that lets the server attribute the new token without waiting for the app to reopen —
+  and the server **fails closed** on a missing hash there, unlike at the verify endpoint, precisely
+  because our own client always sets it.
+- **A confirmation dialog before any change**, because this costs money and the two outcomes differ:
+  - upgrade: *"You'll get \<target\> right away. Google charges the difference for the rest of your
+    current period; your renewal date doesn't change."*
+  - downgrade: *"You keep \<current\> until \<entitledUntil\>. From then on you'll be on
+    \<target\> at its price. Nothing you've saved is removed — you just can't add more than
+    \<target\> allows."*
+
+##### When a downgrade row is offered at all
+
+`LadderRowState` gains **`DOWNGRADE_OFFERED`**. A row strictly *below* the caller's tier is offered
+iff **all** of: `plan.subscription != null`, `plan.source == SUBSCRIPTION`, the row is purchasable,
+an offer and a live billing connection exist, and `subscription.pendingProductId == null`. Otherwise
+`NOT_AN_UPGRADE`, exactly as today.
+
+The `source == SUBSCRIPTION` clause matters: a *granted* `PRO` account is on the ladder, and offering
+it a "downgrade to Standard" would be offering a brand-new purchase dressed up as a reduction.
+
+While a deferred change is pending, **no row offers a downgrade** — a second one can only confuse,
+and Play is where a pending change is altered. Upgrades stay offered: upgrading out of a pending
+downgrade is legitimate.
+
+**Cancelling entirely is not a ladder row.** There is no `FREE` product, so one line under the
+ladder says: *"To stop paying, cancel in Google Play — you keep your plan until the period you've
+paid for ends."*
+
+##### One more thing `rowStateOf` must handle
+
+After the `CURRENT` branch: when `plan.subscription != null && !plan.subscription.entitling &&
+row.tier == plan.subscription.tier`, return a **non-buyable** state (reuse `NOT_AN_UPGRADE`, or add
+`SUBSCRIPTION_INACTIVE`). Without it, an `ON_HOLD` PRO subscriber reads `plan.tier == FREE`, so the
+PRO row evaluates to `UPGRADE_OFFERED` and renders a live Subscribe button — Play answers
+`ITEM_ALREADY_OWNED`, and the dead end sits directly beside a strip saying "Fix payment". Two
+controls contradicting each other on the same screen.
+
+##### Tests worth naming
+
+- `PlanUiStateTest`: `rowStateOf` across grant-vs-subscription × pending-change × billing
+  availability × above/below/equal, plus `ON_HOLD` and `PAUSED` rows asserting **no buy button on
+  the subscription's own tier**.
+- The strip's state → (line, action) mapping as a parameterised test over **all nine** states, so a
+  state added later fails the test instead of rendering blank — including the `entitling == false`
+  variants of `CANCELED` and `IN_GRACE_PERIOD`.
+- `SubscriptionStateTest` (client): `fromWire` never throws; unknown → `UNKNOWN`.
+- `ReplacementModeSelectorTest`: every rank pair including nulls and equality.
+- `PlanViewModelTest`: zero / one / two active purchases at change time.
+- **The one regression test worth writing explicitly:** an `ON_HOLD` subscription with
+  `plan.tier == FREE` renders the **Free badge and the hold strip together**, and the hold line names
+  **Pro** while the badge names **Free**. That is the assertion that would have caught the mistake
+  this section exists to prevent.
+
+##### After Play settles
+
+`PurchaseSyncer` posts the new token unchanged. Its per-`(account, token)` records already handle the
+old token simply disappearing from `queryPurchasesAsync`, and `PLAY_PRODUCT_MISMATCH` already stays
+in the retry bucket — which is exactly right for a deferred downgrade, where Google legitimately
+keeps reporting the old product.
+
+Every new string goes into all three locales (`values/`, `values-az/`, `values-ru/`
+`strings_plan.xml`), and dates use the existing date formatter, never `toString()` on the ISO
+instant.
 
 **What the UI must do**
 

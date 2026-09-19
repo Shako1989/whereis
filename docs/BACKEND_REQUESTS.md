@@ -798,19 +798,24 @@ An absent value is accepted — a promo code redeemed in the Play Store legitima
 and the token binding remains the binding protection: `user_id` and `purchase_token` are
 `updatable = false`, so a token bound to one account can never be re-bound.
 
-### Out of scope, and therefore still broken
+### Out of scope at the time — **ALL FOUR CLOSED BY BR-13 on 2026-09-19**
 
-* **The RTDN webhook handler.** `play_notifications` exists and is empty; nothing reads the Pub/Sub
-  topic. Pauses, holds, refunds and upgrades are not reflected until it ships.
-* **Refund sweeps.** `voided_at` is never written, so a refunded annual purchase keeps entitling for
-  up to a year. Tolerable only while the track is closed. (`purchases.voidedpurchases.list` defaults
-  to `type=0`, one-time products, and needs `type=1` for subscriptions.)
-* **The acknowledgement reconciler.** If the app is never reopened, a failed acknowledgement is not
-  retried.
-* **Upgrade/downgrade proration.** The schema supports it (`linked_purchase_token`,
-  `superseded_by`); the replacement mode is a pricing decision, not an engineering one.
+Left broken by this wave, and recorded as promotion gates:
 
-All four are recorded as promotion gates in `deploy/README.md` Step 10.
+* **The RTDN webhook handler.** `play_notifications` existed and was empty; nothing read the Pub/Sub
+  topic. Pauses, holds, refunds and upgrades were not reflected.
+* **Refund sweeps.** `voided_at` was never written, so a refunded annual purchase kept entitling for
+  up to a year. (`purchases.voidedpurchases.list` defaults to `type=0`, one-time products, and needs
+  `type=1` for subscriptions.)
+* **The acknowledgement reconciler.** If the app was never reopened, a failed acknowledgement was
+  never retried.
+* **Upgrade/downgrade proration.** The schema supported it (`linked_purchase_token`,
+  `superseded_by`); the replacement mode was a pricing decision.
+
+**See BR-13**, which also closed a fifth problem this wave did not list: `AccountDeletionService`
+had no billing awareness, so `DELETE /users/me` left Google charging a card for an account that no
+longer existed, and neither legal page mentioned subscriptions. The remaining gates in
+`deploy/README.md` are now about Play Console access rather than about missing code.
 
 ### Open questions
 
@@ -833,3 +838,135 @@ All four are recorded as promotion gates in `deploy/README.md` Step 10.
   API call against a per-project quota everyone shares.
 * `source = SUBSCRIPTION` wins the tie when a grant and a subscription name the same tier. Confirm the
   support copy ("your Pro access is a grant" vs "manage your Pro subscription") for that account.
+
+---
+
+## BR-13 — The RTDN lifecycle: notifications, refunds, the reconciler, tier changes, and deletion with a live subscription — **IMPLEMENTED 2026-09-19**
+
+**Raised by:** the four promotion gates BR-12 left open in `deploy/README.md`.
+**Contract reference:** `docs/ANDROID_APP_PROMPT.md` §3.8d (the subscription strip and tier changes).
+
+### Why
+
+BR-12 shipped the ladder, the schema and the verify endpoint, and closed with four gates. Three of
+them cost real money on a closed track:
+
+* **no RTDN handler.** `play_notifications` existed and was empty. Pauses, holds, refunds, upgrades
+  and revocations were invisible; only the fail-closed `entitled_until > now()` predicate worked.
+* **no voided-purchase handling.** A refunded annual purchase kept entitling for **up to a year**.
+* **no acknowledgement reconciler.** Google auto-refunds an unacknowledged purchase after 3 days —
+  **5 minutes** for a test purchase, i.e. every purchase a license tester makes — so one transient
+  5xx left an account this database said was entitled for a year and Google had silently refunded.
+
+And one that is indefensible rather than expensive: **`AccountDeletionService` had no billing
+awareness at all.** `user_subscriptions.user_id` is `ON DELETE CASCADE`, so the row vanished with the
+account and Google kept charging the card for a product the person could no longer sign in to.
+`src/main/resources/legal/delete-account.html` — the page Play links to from the Data-safety form —
+did not contain the word "subscription" in either language.
+
+### What the client needs to know (the whole wire change)
+
+**`PlanStatusResponse.subscription` is now non-null whenever a LIVE Play purchase exists, not only an
+entitling one.** This is a deliberate WIDENING and it supersedes BR-12's "non-null exactly when an
+entitling row exists". The predicate is
+`purchase_token IS NOT NULL AND voided_at IS NULL AND superseded_by IS NULL AND state NOT IN (EXPIRED, PENDING_PURCHASE_CANCELED)`.
+
+The reason is a real defect in the shipped build: an `ON_HOLD` subscriber is **not** entitled, so
+their badge reads `FREE` — and wave 1 reported `subscription: null` for them, which took away the
+only control that could fix their failed payment, from an account that was still being charged.
+
+Three new fields carry it:
+
+| field | type | meaning |
+|---|---|---|
+| `entitling` | `boolean` | whether THIS row currently entitles. The difference between "you keep Pro until 14 March" and "Pro is paused" — **never** used to compute a tier |
+| `pendingProductId` | `string?` | Google's product id for a DEFERRED change that takes effect at `entitledUntil` |
+| `pendingTier` | `PlanTier?` | the tier behind it, resolved at READ time through the catalog. **Null rather than wrong** for a product this deployment does not configure |
+
+**THE ONE RULE THE PLAN SCREEN HANGS ON.** The badge describes the ENTITLEMENT (`plan`), the strip
+describes the SUBSCRIPTION (`subscription`), and **neither is derived from the other**. An `ON_HOLD`
+PRO subscriber reads `plan: "FREE"` and `subscription: {tier: "PRO", state: "ON_HOLD", entitling:
+false}` at the same time, on the same screen. That pair is not a contradiction — it is the honest
+answer, and showing the paid tier because a subscription object exists is the exact lie this change
+exists to prevent.
+
+`plan`, `limits` and `usage` still come from the entitling finder ALONE. A unit test pins it: an
+entitling `STANDARD` row beside a live `ON_HOLD` `MAX` row must badge `STANDARD`.
+
+### What was built
+
+* **`POST /play/rtdn`** — the Pub/Sub push endpoint, outside `/api/v1` because it is not part of the
+  client contract and has no JWT. TWO INDEPENDENT authentication checks (a shared secret in the push
+  URL's query string, compared in constant time, and Google's OIDC push token), its own `@Order(0)`
+  security chain so the resource-server filter never sees Google's RS256 token, an exhaustive ack
+  decision table, and a controller-local exception handler so nothing escapes to the global advice.
+* **The full notification state machine.** The notification is a TRIGGER and an ORDERING TOKEN, not a
+  fact: every type except revocation re-reads `subscriptionsv2.get` and writes what Google says
+  through the same writer the verify endpoint uses. A type added after this ships is REFRESHED, not
+  ignored.
+* **Refunds, through two independent entry points** — `voidedPurchaseNotification` (immediate, no
+  Google call, so a Play outage cannot keep a refunded user entitled) and a six-hourly sweep of
+  `purchases.voidedpurchases.list` **with `type=1`** over a fixed 7-day look-back.
+* **`SubscriptionReconciler`** — drift repair plus the acknowledgement retry, unacknowledged rows
+  first.
+* **Tier changes** — `linkedPurchaseToken` resolved with a userId-SCOPED finder (V10's hard
+  contract) and `superseded_by` set so the old row stops entitling at once; the server has no branch
+  anywhere on "upgrade or downgrade".
+* **Account deletion** — one new first step, `SubscriptionCancellationService.enqueueFor`, writing an
+  outbox row that `PlayCancellationJanitor` drains against
+  `purchases.subscriptions.cancel`. Both legal pages now say what happens, including what happens
+  when the cancellation never succeeds.
+
+### Decisions worth keeping
+
+* **A REVOKE is never gated on the monotonic watermark.** A refund and its accompanying
+  `SUBSCRIPTION_CANCELED` are emitted milliseconds apart and Pub/Sub guarantees no order; if the
+  cancellation landed first, a watermark-guarded revoke would be discarded as stale, leaving the row
+  `CANCELED` with a future expiry — one of the three ENTITLING states. Write-once `voided_at` already
+  gives redelivery safety, so the watermark buys nothing there and could only lose refunds.
+* **A void is decided by the TOKEN, not by `productType`.** `productType != 1` fails OPEN: an absent
+  field makes the test true and every refund is silently ignored.
+* **A refresh that matches no offered line item keeps the row's frozen tier**, rather than throwing
+  `PLAY_PRODUCT_MISMATCH`. `EXPIRED` and `REVOKED` are exactly when Google is most likely to return
+  no usable line item, and the exception produced a 400 the ledger never recorded plus a reconciler
+  batch that aborted on the same row forever.
+* **Nothing is ever revoked on the strength of a Google ERROR.** A 404 ends the message; a 400 is
+  retried with a ceiling, because a 400 can be our own bug.
+* **The cancellation enqueue predicate is only `purchase_token IS NOT NULL`.** Every narrower version
+  was rejected: a `state IN (…)` list decides from local state that may be stale, and even
+  `voided_at IS NULL` is wrong — a refund of one payment without revocation leaves auto-renew ON.
+  Cancelling twice is a no-op at Google; not cancelling once costs the user a year of charges.
+* **The janitor re-checks the token before cancelling.** The legal page invites the person to
+  re-register, and the client re-posts the same token on the first foreground, so without the check
+  the janitor would turn auto-renew off for somebody who did not ask.
+* **`voided_at` has an operator repair, documented in `deploy/README.md` Step 11d.** A revocation is
+  the only thing applied from a notification with no corroboration, so an erroneous one was
+  permanent; every applied revoke is now logged at WARN so it can be FOUND, and clearing
+  `verified_at` alongside `voided_at` lets Google — not the operator — restore the true state.
+
+### Still open
+
+* **Play Console access.** Everything in `deploy/README.md` Step 11 — the Pub/Sub topic, the push
+  subscription with an EXPLICIT audience, the ack deadline, the backoff, the 7-day retention — is
+  Console and Cloud work this repository cannot do or verify. The handler receives nothing until it
+  is done, and a `play_notifications` table that is still empty a day after the first tester purchase
+  is the symptom.
+* **The audience trap.** Cloud Pub/Sub makes the OIDC audience optional and fills `aud` with the full
+  push URL — shared secret included — when it is left blank. The app refuses to boot on a URL-shaped
+  audience, but nothing can stop the subscription being created without one.
+* **Upgrade/downgrade replacement modes are unverified against real Play behaviour**, and whether a
+  DEFERRED downgrade issues a NEW token or retains the old one is not settled. The server is correct
+  either way; one real upgrade and one real downgrade on the closed track would replace the
+  assumption with an observation.
+* **Account deletion refunds nothing.** `subscriptionsv2.revoke` exists in the pinned client and
+  would refund and end access immediately; cancelling instead is a COMMERCIAL decision, and it is now
+  stated on a public page. A human should sign it off.
+* **Nothing notices if RTDN stops arriving.** A ledger with no rows for 48 hours is indistinguishable
+  from a quiet week at this user count, and the reconciler papers over it.
+* **The reconciler's throughput ceiling is ~1,200 live subscriptions** (batch 25 every 15 minutes
+  against a 12-hour staleness target). Past that it silently stops keeping up; a WARN fires when a
+  full batch coincides with an over-stale oldest candidate, which is the only observable signal.
+* **`play_notifications` is not deleted by account deletion**, deliberately — there is no `user_id` on
+  that table, because a notification can arrive for a token this server has never seen. The rows hold
+  a purchase token and Google's payload. Legal review before the Data-safety form is submitted; the
+  privacy page now names the token and Google as its processor, but not this table's retention.

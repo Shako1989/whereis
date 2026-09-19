@@ -120,16 +120,46 @@ public class PlanLimitEnforcer {
      */
     @Transactional(readOnly = true)
     public PlanStatusResponse statusOf(UUID userId) {
+        Instant now = Instant.now();
         Plan granted = grantedTierOf(userId);
-        UserSubscription best = best(subscriptionRepository.entitlingOf(userId, Instant.now()));
+        UserSubscription best = best(subscriptionRepository.entitlingOf(userId, now));
         Plan subscribed = tierOf(best);
         Plan effective = effectiveTierOf(granted, subscribed);
+        UserSubscription reported = reportable(best, userId, now);
         return new PlanStatusResponse(
                 effective,
                 new PlanLimitsResponse(catalog.spaceLimit(effective), catalog.itemLimit(effective)),
                 new PlanUsageResponse(countSpaces(userId), countActiveItems(userId)),
                 sourceOf(granted, subscribed),
-                best == null ? null : PlanSubscriptionResponse.of(best));
+                reported == null ? null : PlanSubscriptionResponse.of(reported, catalog, now));
+    }
+
+    /**
+     * WHICH SUBSCRIPTION THE REPORT NAMES — a strictly wider question than which one entitles, and
+     * the ONE place the two are allowed to differ.
+     *
+     * <p>{@code plan}, {@code limits}, {@code usage} and {@code source} above are computed from
+     * {@code entitlingOf} alone and this method cannot influence any of them; a fifth statement was
+     * added here rather than widening the entitling finder precisely so that stays true.
+     * {@code PlanLimitEnforcerTest} pins it: an entitling STANDARD row beside a live ON_HOLD MAX
+     * row must badge STANDARD.
+     *
+     * <p>The reduction is <strong>entitling first, then tier, then expiry, then id</strong>. The
+     * entitling row wins outright when there is one, because the badge and the strip agreeing is
+     * worth more than naming the largest purchase; only when NOTHING entitles does the report fall
+     * back to the best live row, which is exactly the ON_HOLD / PAUSED / PENDING case the field was
+     * widened for. The last three legs make the answer deterministic — an account with two rows of
+     * the same tier must not have the reported product id flip between requests.
+     *
+     * <p>The extra statement is skipped entirely for the common case: an entitling row is always
+     * manageable ({@code manageableOf}'s predicate is strictly weaker), so when one exists there is
+     * nothing to look up.
+     */
+    private UserSubscription reportable(UserSubscription entitling, UUID userId, Instant now) {
+        if (entitling != null) {
+            return entitling;
+        }
+        return best(subscriptionRepository.manageableOf(userId));
     }
 
     /**

@@ -37,4 +37,44 @@ public interface PlaySubscriptionsApi {
      * @throws PlayPurchaseInvalidException Google does not know this token
      */
     void acknowledge(String productId, String purchaseToken);
+
+    /**
+     * {@code purchases.subscriptions.cancel(packageName, subscriptionId, token)}: turn auto-renew
+     * OFF and let the already-paid term run out. The v1 endpoint, like {@link #acknowledge}, which
+     * is why it too needs the product id.
+     *
+     * <p>Called only by {@code PlayCancellationJanitor}, draining the outbox
+     * {@code AccountDeletionService} fills: Google Play does NOT cancel a subscription when a user
+     * deletes their app account, so without this the person keeps being billed for a product they
+     * can no longer sign in to.
+     *
+     * <p>Idempotent on Google's side; cancelling an already-cancelled subscription is not an error.
+     * {@code subscriptionsv2.cancel} and {@code subscriptionsv2.revoke} also exist in the pinned
+     * revision — revoking would refund the user and end access at once, which is a commercial
+     * decision this application does not make on their behalf (see V11).
+     *
+     * @throws PlayPurchaseUnknownException Google answered 404 — nothing left to cancel
+     * @throws PlayPurchaseInvalidException Google answered 400 — possibly OUR product id
+     * @throws PlayApiException             retryable failure
+     */
+    void cancel(String productId, String purchaseToken);
+
+    /**
+     * {@code purchases.voidedpurchases.list}: the refunds and chargebacks in a time window — the
+     * BACKSTOP for a {@code voidedPurchaseNotification} that was lost, given up on, or arrived
+     * before the purchase was known to us.
+     *
+     * <p><strong>The implementation MUST set {@code type=1}.</strong> The endpoint defaults to
+     * {@code type=0}, which is one-time products only: omit it and this returns an empty list
+     * forever, every run succeeds, every metric is green, and no refund is ever caught. Note the
+     * inversion with {@code voidedPurchaseNotification.productType}, where 1 = subscription and
+     * 2 = one-time — two Google fields, the same numbers, opposite meanings.
+     *
+     * @param startTime inclusive start of the window (a fixed look-back, not a stored watermark)
+     * @param endTime   exclusive end of the window
+     * @param pageToken {@code tokenPagination.nextPageToken} from the previous page, or null first
+     * @throws PlayApiException any failure; the sweep logs and stops, and runs again in six hours
+     */
+    PlayVoidedPage listVoidedPurchases(java.time.Instant startTime, java.time.Instant endTime,
+                                       String pageToken);
 }

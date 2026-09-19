@@ -11,12 +11,9 @@ import az.technest.whereis.plan.play.PlayPurchaseInvalidException;
 import az.technest.whereis.plan.play.PlayPurchaseNotActiveException;
 import az.technest.whereis.plan.play.PlaySubscription;
 import az.technest.whereis.plan.play.PlaySubscriptionsApi;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -72,6 +69,7 @@ public class PurchaseVerificationService {
     private final PlaySubscriptionsApi play;
     private final PlanCatalog catalog;
     private final PlanLimitEnforcer planLimits;
+    private final SubscriptionLinkResolver linkResolver;
 
     /**
      * The order of operations, with the transaction boundaries:
@@ -164,6 +162,10 @@ public class PurchaseVerificationService {
         // 6. Write, repairing a lost insert race in a fresh transaction.
         UserSubscription row = persist(callerId, token, google, lineItem, expiry, verifiedAt);
 
+        // 6b. An upgrade: point the replaced row at this one so it stops entitling. Shared with the
+        // RTDN handler and the reconciler, so whichever sees the upgrade first stitches it.
+        linkResolver.resolve(row, verifiedAt);
+
         // 7 + 8. Acknowledge outside every transaction, then record it.
         if (!google.acknowledged() && acknowledge(lineItem.productId(), token, callerId)) {
             writer.markAcknowledged(row.getId());
@@ -196,7 +198,13 @@ public class PurchaseVerificationService {
                 google.linkedPurchaseToken(),
                 google.testPurchase(),
                 google.latestOrderId(),
-                verifiedAt);
+                verifiedAt,
+                // The DEFERRED downgrade's future product, from the MATCHED line item. It MUST be
+                // on the Snapshot: apply() overwrites every mutable field, and PurchaseSyncer posts
+                // the token on every app foreground, so a component left off here would null out
+                // the pending product the RTDN handler had just written — the plan screen's "Pro
+                // until 14 March, then Standard" would appear and disappear at random.
+                lineItem.deferredProductId());
         try {
             return writer.upsert(snapshot);
         } catch (DataIntegrityViolationException race) {
@@ -287,13 +295,13 @@ public class PurchaseVerificationService {
         return new PlayPurchaseNotActiveException("This purchase is not active (" + state + ")");
     }
 
-    /** Twelve hex characters of SHA-256 — enough to correlate a token across log lines, and not the token. */
+    /**
+     * Twelve hex characters of SHA-256 — enough to correlate a token across log lines, and not the
+     * token. Lifted into {@link PurchaseTokens} when the RTDN handler, the reconciler and the
+     * cancellation janitor became the other three callers; four private copies of a hash is four
+     * chances for one of them to drift and stop correlating with the rest.
+     */
     private static String digest(String token) {
-        try {
-            byte[] hash = MessageDigest.getInstance("SHA-256").digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash).substring(0, 12);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is unavailable", e);
-        }
+        return PurchaseTokens.digest(token);
     }
 }

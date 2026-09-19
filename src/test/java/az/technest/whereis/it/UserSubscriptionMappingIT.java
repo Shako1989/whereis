@@ -179,9 +179,13 @@ class UserSubscriptionMappingIT extends AbstractIntegrationTest {
                 subscriptions.save(row(userId, "token-" + UUID.randomUUID(), Plan.MAX))).getId();
         jdbc.update("update user_subscriptions set superseded_by = ? where id = ?", newer, older);
 
-        // AccountDeletionService is unchanged by this wave: user_subscriptions hangs off users with
-        // ON DELETE CASCADE, and the self-FK is NO ACTION (checked at end of statement), so a
-        // whole same-user chain goes in one statement exactly like the location forest.
+        // The SCHEMA half of the cascade, which V11 did not change: user_subscriptions hangs off
+        // users with ON DELETE CASCADE, and the self-FK is NO ACTION (checked at end of statement),
+        // so a whole same-user chain goes in one statement exactly like the location forest.
+        //
+        // (V11 DID add a step to AccountDeletionService — the Play cancellation outbox, enqueued
+        // first — which is why this comment no longer says the service is untouched.
+        // AccountDeletionIT owns that behaviour; this test owns the FK shape.)
         assertThat(deleteWithBody(token, "/api/v1/users/me",
                 java.util.Map.of("password", PASSWORD), Void.class).getStatusCode().value())
                 .isEqualTo(204);

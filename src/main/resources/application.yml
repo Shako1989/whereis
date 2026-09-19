@@ -107,6 +107,10 @@ whereis:
     legal-address: ${WHEREIS_LEGAL_ADDRESS:not set in a development build}
     effective-date: ${WHEREIS_LEGAL_EFFECTIVE_DATE:1970-01-01}
     backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS:0}
+    # How long a Google purchase token is kept after the account is gone, while the cancellation is
+    # retried. The SAME number PlayCancellationJanitor gives up after — it reads this property, so
+    # the page and the code cannot drift. Stated on /legal/delete-account in both languages.
+    cancellation-retry-days: ${WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS:7}
 
   # The tier ladder. Product rules rather than deployment secrets, so they are plain values here
   # instead of .env placeholders — relaxed binding still lets WHEREIS_PLANS_PRO_ITEMS retune a
@@ -155,3 +159,61 @@ whereis:
     # the process reads it. Contents of the service-account key, from the environment.
     service-account-json: ${PLAY_SERVICE_ACCOUNT_JSON:}
     timeout: ${PLAY_TIMEOUT:10s}
+
+    # POST /play/rtdn, the Cloud Pub/Sub push endpoint. TWO INDEPENDENT CHECKS, both required: a
+    # shared secret in the push URL's query string, and Google's OIDC push token.
+    #
+    # Note what does NOT mirror whereis.play.provider: `verifier` defaults to `google`, not `fake`.
+    # The failure modes are not symmetric — a fake Play API cannot grant anything until somebody
+    # posts a token, while an unverified push endpoint IS a self-service entitlement grant. A blank
+    # shared-secret, and a blank fake bearer, REJECT every request rather than skipping the check.
+    rtdn:
+      enabled: ${PLAY_RTDN_ENABLED:true}
+      # google (verify Google's RS256 OIDC push token) | fake (one literal, refused under prod)
+      verifier: ${PLAY_RTDN_VERIFIER:google}
+      # Check 1. 32 random bytes, base64url; it is the ?key= of the registered push URL.
+      shared-secret: ${PLAY_RTDN_SHARED_SECRET:}
+      # Check 2's `aud`. MUST be an explicit opaque string set on the Pub/Sub subscription (e.g.
+      # whereis-rtdn). Left blank there, Google sets aud to the full push URL — shared secret and
+      # all — and PlayRtdnConfig refuses to boot on a URL-shaped value for exactly that reason.
+      audience: ${PLAY_RTDN_AUDIENCE:}
+      # Check 2's `email`: the service account the push subscription signs with.
+      service-account-email: ${PLAY_RTDN_SERVICE_ACCOUNT_EMAIL:}
+      jwk-set-uri: ${PLAY_RTDN_JWK_SET_URI:https://www.googleapis.com/oauth2/v3/certs}
+      # The fake verifier's literal. Blank rejects everything; tests set it explicitly.
+      fake-bearer: ${PLAY_RTDN_FAKE_BEARER:}
+      # MUST equal the literal in ix_play_notifications_unprocessed (V10: attempts < 10).
+      # RtdnConfigurationTest parses V10 and fails if they drift.
+      max-attempts: ${PLAY_RTDN_MAX_ATTEMPTS:10}
+      max-payload-bytes: ${PLAY_RTDN_MAX_PAYLOAD_BYTES:262144}
+
+    # Drift repair and the acknowledgement retry. Google auto-refunds an unacknowledged purchase
+    # after 3 days — 5 MINUTES for a test purchase, i.e. every purchase on a closed track.
+    reconcile:
+      enabled: ${PLAY_RECONCILE_ENABLED:true}
+      delay: ${PLAY_RECONCILE_DELAY:PT15M}
+      initial-delay: ${PLAY_RECONCILE_INITIAL_DELAY:PT2M}
+      batch-size: ${PLAY_RECONCILE_BATCH_SIZE:25}
+      stale-after: ${PLAY_RECONCILE_STALE_AFTER:PT12H}
+      graveyard: ${PLAY_RECONCILE_GRAVEYARD:P35D}
+      ack-window: ${PLAY_RECONCILE_ACK_WINDOW:P7D}
+      min-interval: ${PLAY_RECONCILE_MIN_INTERVAL:PT0.2S}
+
+    # The refund backstop. A FIXED 7-day look-back, not a watermark: applying a void twice is a
+    # no-op (voided_at is write-once), so a 28x-redundant window is free and self-heals after any
+    # outage shorter than a week. Paced against the TIGHTER of Google's two documented quotas.
+    voided-sweep:
+      enabled: ${PLAY_VOIDED_SWEEP_ENABLED:true}
+      cron: ${PLAY_VOIDED_SWEEP_CRON:0 17 */6 * * *}
+      lookback: ${PLAY_VOIDED_SWEEP_LOOKBACK:P7D}
+      max-pages: ${PLAY_VOIDED_SWEEP_MAX_PAGES:20}
+      min-interval: ${PLAY_VOIDED_SWEEP_MIN_INTERVAL:PT2S}
+
+    # Drains play_cancellation_queue: stops Google charging accounts that no longer exist. The
+    # give-up deadline is deliberately NOT here — it is whereis.legal.cancellation-retry-days, the
+    # same number the public page states.
+    cancellation:
+      enabled: ${PLAY_CANCELLATION_ENABLED:true}
+      delay: ${PLAY_CANCELLATION_DELAY:PT5M}
+      initial-delay: ${PLAY_CANCELLATION_INITIAL_DELAY:PT2M}
+      batch-size: ${PLAY_CANCELLATION_BATCH_SIZE:20}

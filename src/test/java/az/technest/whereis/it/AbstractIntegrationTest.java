@@ -79,7 +79,34 @@ public abstract class AbstractIntegrationTest {
         registry.add("minio.external-endpoint", MINIO::getS3URL);
         registry.add("minio.access-key", MINIO::getUserName);
         registry.add("minio.secret-key", MINIO::getPassword);
+
+        // THE RTDN AND SCHEDULER SETTINGS LIVE HERE, on the SHARED registry, and not on a
+        // per-class @TestPropertySource. §8 records why: the ITs deliberately run with the REAL
+        // production limits because a @TestPropertySource forks the shared Testcontainers context,
+        // and three more forks is exactly the cost the suite was designed to avoid. Every RTDN test
+        // drives its variation through the REQUEST, never through the context.
+        //
+        // The push endpoint needs a configured secret and the fake verifier or every request is
+        // 401 — blank REJECTS by design, which is the whole point of check 1 and check 2.
+        registry.add("whereis.play.rtdn.verifier", () -> "fake");
+        registry.add("whereis.play.rtdn.shared-secret", () -> RTDN_SECRET);
+        registry.add("whereis.play.rtdn.fake-bearer", () -> RTDN_BEARER);
+        registry.add("whereis.play.rtdn.audience", () -> "whereis-rtdn-test");
+
+        // @EnableScheduling is global, so every one of these would otherwise fire inside the
+        // shared context and drain or repair whatever a test had just set up — making
+        // AccountDeletionIT and the new billing ITs order-dependent. Each test drives its component
+        // by calling sweep() directly, which is also the only way to assert a single pass.
+        registry.add("whereis.play.reconcile.enabled", () -> "false");
+        registry.add("whereis.play.voided-sweep.enabled", () -> "false");
+        registry.add("whereis.play.cancellation.enabled", () -> "false");
     }
+
+    /** Check 1: the {@code ?key=} of the registered push URL. */
+    protected static final String RTDN_SECRET = "integration-test-shared-secret";
+
+    /** Check 2: the literal the fake push authenticator accepts. */
+    protected static final String RTDN_BEARER = "integration-test-push-token";
 
     /** The password every {@link #register()} call uses — needed by tests that re-authenticate. */
     protected static final String PASSWORD = "password123";
@@ -201,6 +228,56 @@ public abstract class AbstractIntegrationTest {
                 select gen_random_uuid(), ?, ?, 'Seed ' || g, 'seed ' || g, false
                 from generate_series(1, ?) g
                 """, userId, locationId, count);
+    }
+
+    /**
+     * POSTs one Pub/Sub push envelope to {@code /play/rtdn}, authenticated with both checks.
+     *
+     * <p>{@code String} rather than a DTO deliberately: the endpoint reads the body itself, and
+     * several cases here are about bodies no DTO could represent.
+     */
+    protected ResponseEntity<String> postRtdn(String messageId, String base64Data) {
+        return postRtdnRaw(RTDN_SECRET, RTDN_BEARER, envelopeJson(messageId, base64Data));
+    }
+
+    /** The unauthenticated / forged forms, and the malformed bodies. */
+    protected ResponseEntity<String> postRtdnRaw(String key, String bearer, String body) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (bearer != null) {
+            headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + bearer);
+        }
+        String url = key == null ? "/play/rtdn" : "/play/rtdn?key=" + key;
+        return rest.exchange(url, HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+    }
+
+    protected static String envelopeJson(String messageId, String base64Data) {
+        return "{\"message\":{\"messageId\":\"" + messageId + "\",\"data\":\"" + base64Data
+                + "\",\"publishTime\":\"2026-09-19T10:00:00Z\"},"
+                + "\"subscription\":\"projects/p/subscriptions/s\"}";
+    }
+
+    /** A {@code subscriptionNotification} of the given type, base64 as Google sends it. */
+    protected static String subscriptionNotification(long eventTimeMillis, int type, String purchaseToken) {
+        return base64("{\"version\":\"1.0\",\"packageName\":\"az.technest.whereis\","
+                + "\"eventTimeMillis\":\"" + eventTimeMillis + "\","
+                + "\"subscriptionNotification\":{\"version\":\"1.0\",\"notificationType\":" + type
+                + ",\"purchaseToken\":\"" + purchaseToken + "\","
+                + "\"subscriptionId\":\"whereis_pro_annual\"}}");
+    }
+
+    /** A {@code voidedPurchaseNotification} — a SIBLING of the above, not a subtype. */
+    protected static String voidedNotification(long eventTimeMillis, String purchaseToken, Integer productType) {
+        return base64("{\"version\":\"1.0\",\"packageName\":\"az.technest.whereis\","
+                + "\"eventTimeMillis\":\"" + eventTimeMillis + "\","
+                + "\"voidedPurchaseNotification\":{\"purchaseToken\":\"" + purchaseToken + "\","
+                + "\"orderId\":\"GS.0000-0000-0000\""
+                + (productType == null ? "" : ",\"productType\":" + productType)
+                + ",\"refundType\":1}}");
+    }
+
+    protected static String base64(String json) {
+        return Base64.getEncoder().encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     protected HttpHeaders bearer(String token) {

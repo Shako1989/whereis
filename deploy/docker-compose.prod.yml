@@ -84,6 +84,11 @@ services:
       WHEREIS_LEGAL_ADDRESS: ${WHEREIS_LEGAL_ADDRESS:?set WHEREIS_LEGAL_ADDRESS in .env}
       WHEREIS_LEGAL_EFFECTIVE_DATE: ${WHEREIS_LEGAL_EFFECTIVE_DATE:?set WHEREIS_LEGAL_EFFECTIVE_DATE in .env}
       WHEREIS_LEGAL_BACKUP_RETENTION_DAYS: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS:?set WHEREIS_LEGAL_BACKUP_RETENTION_DAYS in .env}
+      # How long a Google purchase token is kept after the account is gone, while the Play
+      # cancellation is retried. PlayCancellationJanitor reads the SAME property, so the code and
+      # the public page cannot drift — the coupling WHEREIS_LEGAL_BACKUP_RETENTION_DAYS already has
+      # with db_backup.sh.
+      WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS: ${WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS:?set WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS in .env}
       AI_CLAUDE_WORKSPACE_ID: ${WHEREIS_AI_CLAUDE_WORKSPACE_ID:-}
       AI_CLAUDE_MAX_RETRIES: ${WHEREIS_AI_CLAUDE_MAX_RETRIES:-1}
 
@@ -97,6 +102,33 @@ services:
       PLAY_PROVIDER: ${WHEREIS_PLAY_PROVIDER:?set WHEREIS_PLAY_PROVIDER in .env (google)}
       PLAY_PACKAGE_NAME: ${WHEREIS_PLAY_PACKAGE_NAME:?set WHEREIS_PLAY_PACKAGE_NAME in .env}
       PLAY_SERVICE_ACCOUNT_JSON: ${WHEREIS_PLAY_SERVICE_ACCOUNT_JSON:?set WHEREIS_PLAY_SERVICE_ACCOUNT_JSON in .env}
+
+      # The RTDN push endpoint (V11). `:?` on all four, for a sharper reason than the rest: this
+      # endpoint can hand ANY account ANY tier and it is reachable by anyone on the internet, so a
+      # half-configured deployment must not start.
+      #
+      # PLAY_RTDN_VERIFIER must be `google`. PlayRtdnConfig refuses `fake` under the prod profile
+      # with its OWN Environment check — deliberately not keyed on PLAY_PROVIDER, so a deployment
+      # running provider=google with the verifier left unset is not silently unguarded.
+      #
+      # PLAY_RTDN_AUDIENCE must be the opaque audience string set explicitly on the Pub/Sub push
+      # subscription (e.g. whereis-rtdn) and NEVER the push URL. Cloud Pub/Sub sets the `aud` claim
+      # to the full endpoint URL — shared secret and all — when the subscription leaves the audience
+      # blank; the app refuses to boot on a URL-shaped value for exactly that reason. See README
+      # Step 11.
+      PLAY_RTDN_VERIFIER: ${WHEREIS_PLAY_RTDN_VERIFIER:?set WHEREIS_PLAY_RTDN_VERIFIER in .env (google)}
+      PLAY_RTDN_SHARED_SECRET: ${WHEREIS_PLAY_RTDN_SHARED_SECRET:?set WHEREIS_PLAY_RTDN_SHARED_SECRET in .env}
+      PLAY_RTDN_AUDIENCE: ${WHEREIS_PLAY_RTDN_AUDIENCE:?set WHEREIS_PLAY_RTDN_AUDIENCE in .env}
+      PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: ${WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL:?set WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL in .env}
+
+      # The three scheduled billing components. All default to ON in application.yml, so these are
+      # only here for the one operational answer they exist for: if whereis is ever scaled to more
+      # than one container, turn all three OFF on every instance but one. Correctness survives two
+      # instances — every write is idempotent and guarded by compare-and-set or write-once — but the
+      # Play API quota spend doubles.
+      PLAY_RECONCILE_ENABLED: ${WHEREIS_PLAY_RECONCILE_ENABLED:-true}
+      PLAY_VOIDED_SWEEP_ENABLED: ${WHEREIS_PLAY_VOIDED_SWEEP_ENABLED:-true}
+      PLAY_CANCELLATION_ENABLED: ${WHEREIS_PLAY_CANCELLATION_ENABLED:-true}
 
       # Tier limits. Deliberately NOT forwarded by default — the numbers in application.yml ARE the
       # product rule, and an unused knob in the compose file invites drift. Add these only when

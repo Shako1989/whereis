@@ -68,7 +68,8 @@ class PurchaseVerificationServiceTest {
         play = new FakePlaySubscriptionsApi(shippedCatalog());
         planLimits = mock(PlanLimitEnforcer.class);
         catalog = shippedCatalog();
-        service = new PurchaseVerificationService(subscriptions, writer, play, catalog, planLimits);
+        service = new PurchaseVerificationService(subscriptions, writer, play, catalog, planLimits,
+                new SubscriptionLinkResolver(subscriptions, writer));
 
         when(subscriptions.findByPurchaseToken(any())).thenReturn(Optional.empty());
         when(writer.upsert(any())).thenAnswer(invocation -> rowOf(invocation.getArgument(0)));
@@ -274,7 +275,8 @@ class PurchaseVerificationServiceTest {
             SubscriptionWriter freshWriter = mock(SubscriptionWriter.class);
             when(freshWriter.upsert(any())).thenAnswer(invocation -> rowOf(invocation.getArgument(0)));
             PurchaseVerificationService fresh = new PurchaseVerificationService(
-                    subscriptions, freshWriter, play, catalog, planLimits);
+                    subscriptions, freshWriter, play, catalog, planLimits,
+                    new SubscriptionLinkResolver(subscriptions, freshWriter));
 
             assertRefused(() -> fresh.verify(caller, new PurchaseVerificationRequest(token, PRO)),
                     HttpStatus.CONFLICT, ErrorCode.PLAY_PURCHASE_NOT_ACTIVE);

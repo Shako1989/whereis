@@ -23,6 +23,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param backupRetentionDays how long deleted data can survive in backups. MUST match the box: the
  *                            number is a promise to the user, and the only honest source for it is
  *                            the rotation the backup job actually performs
+ * @param cancellationRetryDays how long a purchase token may be kept after the account is gone,
+ *                            while the Play cancellation is retried. The SAME value
+ *                            {@code PlayCancellationJanitor} gives up after, bound here rather than
+ *                            hardcoded in both places — {@code WHEREIS_LEGAL_BACKUP_RETENTION_DAYS}
+ *                            exists for exactly this reason and the lesson transfers verbatim: the
+ *                            constant and the page must change together or the page lies. Because
+ *                            {@code LegalPages} refuses to boot on an unset marker, the cross-check
+ *                            comes for free
  */
 @ConfigurationProperties(prefix = "whereis.legal")
 public record LegalProperties(
@@ -30,6 +38,7 @@ public record LegalProperties(
         String legalEntity,
         String legalAddress,
         String effectiveDate,
-        String backupRetentionDays
+        String backupRetentionDays,
+        String cancellationRetryDays
 ) {
 }

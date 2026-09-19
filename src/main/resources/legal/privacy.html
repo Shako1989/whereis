@@ -55,6 +55,11 @@
     <tr><td>Köməkçiyə yazdığınız cümlələr və modelin onları necə şərh etdiyi</td>
         <td>Səhvlərin araşdırılması və tətbiqin sizə əvvəl nə yazdığınızı göstərə bilməsi üçün; hesabınızla
           birlikdə saxlanılır və onunla birlikdə silinir</td></tr>
+    <tr><td>Google Play abunəliyinin qeydi: satınalma nişanı (purchase token), məhsul kodu, səviyyə,
+        vəziyyət və bitmə tarixi</td>
+        <td>Nəyin ödənildiyini yoxlamaq və hesaba hansı imkanların açıq olduğunu müəyyən etmək.
+          Kart və ödəniş məlumatları whereis-ə heç vaxt çatmır — onları yalnız Google Play emal
+          edir</td></tr>
   </table>
   <p>Reklam identifikatoru, dəqiq məkan (GPS), kontaktlar və ya cihaz məlumatları toplanmır. Analitika və
     izləmə SDK-ları istifadə edilmir.</p>
@@ -68,6 +73,10 @@
     təsir etmir; model heç vaxt verilənlər bazasına birbaşa yazmır — bütün yazılar yalnız serverimiz
     tərəfindən, sizin öz məlumatlarınız əsasında aparılır. Provayder söndürülübsə, mətn cihazınızdan
     yalnız bizim serverə gedir.</p>
+  <p><strong>Google LLC / Google Play</strong> abunəliklərin ödəniş emalçısıdır. Abunəlik alındıqda
+    Google-un satınalma nişanı (purchase token) və məhsul kodu Google Play Developer API-yə göndərilir:
+    ödənişi yoxlamaq, təsdiqləmək (acknowledge) və — hesabı sildikdə — abunəliyi dayandırmaq üçün.
+    Kart və ödəniş məlumatları whereis-ə heç vaxt çatmır.</p>
   <p>Köməkçiyə yazdığınız mətnlər istehsal mühitində jurnala yazılmır. Bununla belə, onlar modelin şərhi ilə
     birlikdə verilənlər bazasında hesabınızla saxlanılır — səhvlərin araşdırılması və tətbiqin sizə əvvəl nə
     yazdığınızı göstərə bilməsi üçün — və hesabınızı sildikdə onunla birlikdə silinir. Onları yalnız siz görürsünüz.</p>
@@ -77,6 +86,9 @@
     əşyalar, tarixçə, köməkçiyə yazdığınız cümlələr, foto metadata və sessiyalar dərhal silinir; fotoların özləri obyekt yaddaşından qısa
     müddət sonra asinxron silinir. Şifrələnmiş ehtiyat nüsxələr silinmiş məlumatları ən çox
     {{BACKUP_RETENTION_DAYS}} gün saxlaya bilər və sonra rotasiya ilə silinir.</p>
+  <p>Yeganə istisna Google-un satınalma nişanı (purchase token) və məhsul kodudur: onlar abunəliyin
+    dayandırılması sorğusunu başa çatdırmaq üçün hesab silindikdən sonra ən çoxu
+    {{CANCELLATION_RETRY_DAYS}} gün saxlanılır və sorğu uğurla tamamlanan kimi silinir.</p>
 
   <h3>Hüquqlarınız</h3>
   <ul>
@@ -122,6 +134,9 @@
     <tr><td>The sentences you type to the assistant, with the model's interpretation of them</td>
         <td>So mistakes can be investigated and so the app can show you what you originally said; stored with
           your account and deleted with it</td></tr>
+    <tr><td>Google Play subscription record: purchase token, product code, tier, state and expiry</td>
+        <td>Verifying what was paid for and deciding what the account may use. Card and payment
+          details never reach whereis — they are handled only by Google Play</td></tr>
   </table>
   <p>No advertising identifiers, precise location (GPS), contacts or device inventories are collected.
     No analytics or tracking SDKs are used.</p>
@@ -135,6 +150,10 @@
     validation; the model never writes to the database directly — every write is performed by our server
     against your own data only. If the provider is disabled, the text leaves your device only to reach
     our server.</p>
+  <p><strong>Google LLC / Google Play</strong> is the billing processor for subscriptions. When a
+    subscription is purchased, Google's purchase token and the product code are sent to the Google
+    Play Developer API to verify the purchase, acknowledge it, and — if you delete your account —
+    cancel it. Card and payment details never reach whereis.</p>
   <p>Assistant messages are never written to production logs. They are, however, stored with your account in
     the database together with the model's interpretation — so mistakes can be investigated and so the app can
     show you what you originally said — and they are deleted when you delete your account. Only you can see them.</p>
@@ -144,6 +163,9 @@
     history, the sentences you typed to the assistant, photo metadata and sessions are removed immediately; the photo files are removed from object
     storage asynchronously shortly after. Encrypted backups may hold deleted data for up to
     {{BACKUP_RETENTION_DAYS}} days before rotating out.</p>
+  <p>The only exception is Google's purchase token and product code, which are kept for up to
+    {{CANCELLATION_RETRY_DAYS}} days after deletion solely to complete the subscription-cancellation
+    request, and are deleted as soon as it succeeds.</p>
 
   <h3>Your rights</h3>
   <ul>

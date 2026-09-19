@@ -41,7 +41,7 @@ class SubscriptionWriterTest {
     private SubscriptionWriter.Snapshot snapshot() {
         return new SubscriptionWriter.Snapshot(caller, "token", "whereis_pro_annual", Plan.PRO,
                 PurchaseProvenance.PLAY_PURCHASE, SubscriptionState.ACTIVE,
-                Instant.now().plus(Duration.ofDays(365)), true, null, false, "GPA.1", Instant.now());
+                Instant.now().plus(Duration.ofDays(365)), true, null, false, "GPA.1", Instant.now(), null);
     }
 
     private UserSubscription existing(UUID owner) {

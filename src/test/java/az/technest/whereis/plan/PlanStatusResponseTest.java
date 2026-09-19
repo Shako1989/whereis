@@ -47,7 +47,8 @@ class PlanStatusResponseTest {
         String body = serialize(new PlanStatusResponse(Plan.MAX, new PlanLimitsResponse(10, null),
                 new PlanUsageResponse(4L, 1203L), EntitlementSource.SUBSCRIPTION,
                 new PlanSubscriptionResponse("whereis_max_annual", Plan.MAX, SubscriptionState.ACTIVE,
-                        Instant.parse("2027-09-19T10:04:00Z"), PurchaseProvenance.PLAY_PURCHASE, true)));
+                        Instant.parse("2027-09-19T10:04:00Z"), PurchaseProvenance.PLAY_PURCHASE, true,
+                        true, null, null)));
 
         assertThat(json.readTree(body).get("limits").get("spaces").asInt()).isEqualTo(10);
         assertThat(json.readTree(body).get("limits").get("items").isNull()).isTrue();
@@ -84,7 +85,7 @@ class PlanStatusResponseTest {
                 new PlanUsageResponse(5L, 412L), EntitlementSource.SUBSCRIPTION,
                 new PlanSubscriptionResponse("whereis_standard_annual", Plan.STANDARD,
                         SubscriptionState.ACTIVE, Instant.parse("2027-01-01T00:00:00Z"),
-                        PurchaseProvenance.PLAY_PURCHASE, true)));
+                        PurchaseProvenance.PLAY_PURCHASE, true, true, null, null)));
 
         assertThat(json.readTree(body).get("usage").get("spaces").asLong()).isEqualTo(5L);
         assertThat(json.readTree(body).get("limits").get("spaces").asInt()).isEqualTo(3);

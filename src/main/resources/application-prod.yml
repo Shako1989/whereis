@@ -40,6 +40,7 @@ whereis:
     legal-address: ${WHEREIS_LEGAL_ADDRESS}
     effective-date: ${WHEREIS_LEGAL_EFFECTIVE_DATE}
     backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS}
+    cancellation-retry-days: ${WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS}
 
   # The Play Developer API. No defaults on purpose: prod must not be able to start half-configured,
   # and it must NEVER run on the fake provider — PlayConfig refuses to construct the fake under this
@@ -49,3 +50,17 @@ whereis:
     provider: ${PLAY_PROVIDER}
     package-name: ${PLAY_PACKAGE_NAME}
     service-account-json: ${PLAY_SERVICE_ACCOUNT_JSON}
+
+    # The RTDN push endpoint, with no defaults for the same reason: it can hand any account any
+    # tier, so prod must refuse to start rather than start unprotected. PlayRtdnConfig ALSO refuses
+    # verifier=fake under this profile with its own Environment check — deliberately not keyed on
+    # whereis.play.provider, so a deployment running provider=google with the verifier left unset
+    # is not silently unguarded.
+    rtdn:
+      verifier: ${PLAY_RTDN_VERIFIER}
+      shared-secret: ${PLAY_RTDN_SHARED_SECRET}
+      # An explicit opaque audience set on the Pub/Sub subscription — NEVER the push URL. Boot fails
+      # on a URL-shaped value, because pasting the URL here would put the shared secret into
+      # configuration, the process environment and every startup log that echoes bound properties.
+      audience: ${PLAY_RTDN_AUDIENCE}
+      service-account-email: ${PLAY_RTDN_SERVICE_ACCOUNT_EMAIL}

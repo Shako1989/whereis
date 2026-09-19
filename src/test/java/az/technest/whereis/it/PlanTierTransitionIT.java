@@ -272,8 +272,18 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
 
         PlanStatusResponse status = planOf(token);
         assertThat(status.plan()).isEqualTo(Plan.PRO);
-        assertThat(status.subscription()).isNull();
         assertThat(status.limits().spaces()).isEqualTo(5);
+        // WAVE 2 WIDENED THIS, deliberately. It used to assert subscription == null, because the
+        // report named the best ENTITLING row and this one has run out. It now names the best LIVE
+        // row (UserSubscriptionRepository#manageableOf), and a row whose state Google still reports
+        // as ACTIVE is live: its expiry notification may simply have been lost, in which case
+        // Google is still auto-renewing it and the user needs the Manage button more than ever.
+        //
+        // What must NOT change, and is asserted here: the badge still comes from the grant alone,
+        // and `entitling` is how the client tells "you keep Pro until…" from "Pro is paused".
+        assertThat(status.subscription()).isNotNull();
+        assertThat(status.subscription().tier()).isEqualTo(Plan.STANDARD);
+        assertThat(status.subscription().entitling()).isFalse();
     }
 
     @Test

@@ -17,6 +17,7 @@ import az.technest.whereis.location.dto.LocationResponse;
 import az.technest.whereis.space.SpaceType;
 import az.technest.whereis.space.dto.CreateSpaceRequest;
 import az.technest.whereis.space.dto.SpaceResponse;
+import az.technest.whereis.plan.play.FakePlaySubscriptionsApi;
 import az.technest.whereis.storage.MinioAdapter;
 import az.technest.whereis.storage.dto.PresignedUrlResponse;
 import az.technest.whereis.user.dto.DeleteAccountRequest;
@@ -59,6 +60,11 @@ class AccountDeletionIT extends AbstractIntegrationTest {
     private EntityManagerFactory entityManagerFactory;
     @Autowired
     private MinioAdapter minioAdapter;
+    @Autowired
+    private az.technest.whereis.plan.play.PlaySubscriptionsApi play;
+    /** Driven by hand: the scheduled flag is off in the shared IT context so one pass is assertable. */
+    @Autowired
+    private az.technest.whereis.plan.reconcile.PlayCancellationJanitor janitor;
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
@@ -447,6 +453,131 @@ class AccountDeletionIT extends AbstractIntegrationTest {
         assertThat(statementsForLarge)
                 .as("statements: small=%d large=%d", statementsForSmall, statementsForLarge)
                 .isEqualTo(statementsForSmall);
+    }
+
+    // ---------------------------------------------------------------- billing (wave 2)
+
+    @Test
+    void anAccountWithALiveSubscriptionLeavesACancellationBehindWhenItIsDeleted() {
+        // Google Play does NOT cancel a subscription when a user deletes their app account. Before
+        // this wave, DELETE /users/me removed everything and left the person being billed for a
+        // product they could no longer sign in to.
+        Account alice = buildAccount(1, 1, 0);
+        String purchaseToken = "fake-active-pro-" + UUID.randomUUID();
+        buy(alice.token(), purchaseToken, "whereis_pro_annual");
+        awaitQuietJanitorWindow();
+
+        assertThat(deleteAccount(alice).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        // The user_subscriptions row cascaded away with the account; the OUTBOX row did not, and
+        // deliberately carries no user_id and no foreign key — the user is gone by the time the
+        // janitor reads it, and an FK would make the queue undrainable in exactly that case.
+        assertThat(count("select count(*) from user_subscriptions where user_id = ?", alice.userId()))
+                .isZero();
+        assertThat(jdbc.queryForList(
+                "select product_id, reason from play_cancellation_queue where purchase_token = ?",
+                purchaseToken))
+                .singleElement()
+                .satisfies(row -> {
+                    assertThat(row.get("product_id")).isEqualTo("whereis_pro_annual");
+                    assertThat(row.get("reason")).isEqualTo("ACCOUNT_DELETED");
+                });
+    }
+
+    @Test
+    void deletingTwiceOverTheSameUndrainedTokenStillAnswers204() {
+        // THE SEQUENCE THAT WOULD HAVE BROKEN THE PLAY-MANDATED ENDPOINT. ux_user_subscriptions_
+        // purchase_token is global, so two LIVE accounts can never hold the same token — the
+        // reachable collision is sequential: A enqueues T and is deleted (freeing T), the janitor
+        // has not drained, the same person re-registers as B and the client re-posts T, B deletes.
+        // A plain INSERT would hit ux_play_cancellation_queue_token inside AccountDeletionService's
+        // single @Transactional method, roll the WHOLE cascade back and answer 409 with nothing
+        // deleted. ON CONFLICT DO NOTHING makes the second enqueue a silent no-op.
+        Account alice = buildAccount(1, 1, 0);
+        String purchaseToken = "fake-active-pro-" + UUID.randomUUID();
+        buy(alice.token(), purchaseToken, "whereis_pro_annual");
+        awaitQuietJanitorWindow();
+        assertThat(deleteAccount(alice).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        Account bob = buildAccount(1, 1, 0);
+        assertThat(buy(bob.token(), purchaseToken, "whereis_pro_annual").getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        assertThat(deleteAccount(bob).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(count("select count(*) from play_cancellation_queue where purchase_token = ?",
+                purchaseToken))
+                .isEqualTo(1);
+        assertThat(count("select count(*) from users where id = ?", bob.userId())).isZero();
+    }
+
+    @Test
+    void theJanitorDoesNotCancelATokenThatBelongsToALiveAccountAgain() {
+        // The legal page explicitly invites the person to register again. Wave 1's PurchaseSyncer
+        // then posts the same token on the FIRST foreground — cancel only turns auto-renew off, so
+        // queryPurchasesAsync keeps returning it for the rest of the paid term. Cancelling then
+        // would turn auto-renew off for somebody who did not ask, with no notification anywhere.
+        Account alice = buildAccount(1, 1, 0);
+        String purchaseToken = "fake-active-pro-" + UUID.randomUUID();
+        buy(alice.token(), purchaseToken, "whereis_pro_annual");
+        awaitQuietJanitorWindow();
+        deleteAccount(alice);
+
+        Account bob = buildAccount(1, 1, 0);
+        assertThat(buy(bob.token(), purchaseToken, "whereis_pro_annual").getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+        ((FakePlaySubscriptionsApi) play).reset();
+        makeDue(purchaseToken);
+
+        janitor.runOnce();
+
+        assertThat(((FakePlaySubscriptionsApi) play).cancelledTokens()).doesNotContainKey(purchaseToken);
+        assertThat(count("select count(*) from play_cancellation_queue where purchase_token = ?",
+                purchaseToken))
+                .isZero();
+        // Bob is still a paying subscriber, and nothing touched his entitlement. (His BADGE reads
+        // UNLIMITED because buildAccount grants that so the fixtures can exceed the free tier —
+        // which is exactly the case the "Manage subscription" control must survive: an account with
+        // a paid subscription AND a higher operator grant is still being charged.)
+        JsonNode subscription = get(bob.token(), "/api/v1/users/me/plan", JsonNode.class)
+                .getBody().get("subscription");
+        assertThat(subscription.get("tier").asText()).isEqualTo("PRO");
+        assertThat(subscription.get("entitling").asBoolean()).isTrue();
+    }
+
+    @Test
+    void theJanitorCancelsAtGoogleAndClearsTheQueueForAnAccountThatStayedDeleted() {
+        Account alice = buildAccount(1, 1, 0);
+        String purchaseToken = "fake-active-pro-" + UUID.randomUUID();
+        buy(alice.token(), purchaseToken, "whereis_pro_annual");
+        awaitQuietJanitorWindow();
+        deleteAccount(alice);
+        ((FakePlaySubscriptionsApi) play).reset();
+        makeDue(purchaseToken);
+
+        janitor.runOnce();
+
+        assertThat(((FakePlaySubscriptionsApi) play).cancelledTokens())
+                .containsEntry(purchaseToken, "whereis_pro_annual");
+        assertThat(count("select count(*) from play_cancellation_queue where purchase_token = ?",
+                purchaseToken))
+                .isZero();
+    }
+
+    /**
+     * Backdates the queue row so one hand-driven sweep is deterministic. {@code next_attempt_at}
+     * defaults to the DATABASE's {@code now()} and the janitor compares against the JVM's, and the
+     * Testcontainers clock can sit a moment ahead of the host's — irrelevant in production, where
+     * the sweep runs every five minutes, but enough to make a single pass flaky here.
+     */
+    private void makeDue(String purchaseToken) {
+        jdbc.update("update play_cancellation_queue set next_attempt_at = now() - interval '1 minute'"
+                + " where purchase_token = ?", purchaseToken);
+    }
+
+    private ResponseEntity<JsonNode> buy(String token, String purchaseToken, String productId) {
+        return post(token, "/api/v1/users/me/plan/purchases",
+                new az.technest.whereis.plan.dto.PurchaseVerificationRequest(purchaseToken, productId),
+                JsonNode.class);
     }
 
     private long measureDeletion(Account account, Statistics statistics) {

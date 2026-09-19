@@ -46,6 +46,8 @@ class AccountDeletionServiceTest {
     private ItemService itemService;
     @Mock
     private AssistantMessageService assistantMessageService;
+    @Mock
+    private az.technest.whereis.plan.SubscriptionCancellationService subscriptionCancellations;
     private AccountDeletionService service;
 
     private final UUID userId = UUID.randomUUID();
@@ -54,7 +56,8 @@ class AccountDeletionServiceTest {
     void setUp() {
         // Real verifier, not a mock: the test must prove the service refuses on a genuine BCrypt mismatch.
         service = new AccountDeletionService(userRepository, new PasswordVerifier(encoder),
-                spaceService, locationService, itemService, assistantMessageService);
+                spaceService, locationService, itemService, assistantMessageService,
+                subscriptionCancellations);
     }
 
     private User user() {
@@ -94,15 +97,21 @@ class AccountDeletionServiceTest {
         // cannot go); the user last (refresh_tokens cascade). A unit test cannot see the FK
         // reasons, so this ordering assertion is the cheap guard that makes any future reorder
         // fail the build without Docker.
-        InOrder order = inOrder(spaceService, assistantMessageService, itemService, locationService, userRepository);
+        InOrder order = inOrder(spaceService, subscriptionCancellations, assistantMessageService,
+                itemService, locationService, userRepository);
         order.verify(spaceService).lockAllSpacesOfUser(userId);
+        // FIRST of the writes: stop the money before dismantling the account, and before the rows
+        // it reads cascade away with the users row. Google Play does NOT cancel a subscription when
+        // a user deletes their app account.
+        order.verify(subscriptionCancellations).enqueueFor(userId);
         order.verify(assistantMessageService).deleteAllForUser(userId);
         order.verify(itemService).deleteAllForUser(userId);
         order.verify(locationService).deleteAllForUser(userId);
         order.verify(spaceService).deleteAllForUser(userId);
         order.verify(userRepository).delete(user);
         // The summary line counts them from the returned value, never from a second query.
-        assertThat(output.getOut()).contains("7 assistant messages").contains("3 items").contains("5 locations");
+        assertThat(output.getOut()).contains("7 assistant messages").contains("3 items").contains("5 locations")
+                .contains("subscription cancellations enqueued");
     }
 
     @Test

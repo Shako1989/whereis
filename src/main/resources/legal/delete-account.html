@@ -63,14 +63,42 @@
     <li>əşyaların tam hərəkət tarixçəsi;</li>
     <li>köməkçiyə yazdığınız hər bir cümlə, modelin şərhi ilə birlikdə;</li>
     <li>bütün əşya fotolarının məlumatları (metadata);</li>
+    <li>Google Play abunəliyinizin bu tətbiqdəki qeydi — məhsul, səviyyə, vəziyyət və bitmə tarixi;</li>
     <li>bütün aktiv sessiyalar və yeniləmə tokenləri — bütün cihazlardan çıxış edilir.</li>
   </ul>
   <p>Fotoların özləri obyekt yaddaşından <strong>asinxron şəkildə, hesab silindikdən qısa müddət sonra</strong>
     silinir. Hesab silinən andan etibarən onlara heç bir yeni giriş linki yaradıla bilməz.</p>
 
+  <h3>Google Play abunəliyi</h3>
+  <p>whereis abunəliklərinin ödənişini <strong>whereis yox, Google Play</strong> aparır. whereis
+    hesabını silmək Google hesabını silmək demək deyil, əksi də doğru deyil — buna görə hesabınızı
+    silərkən aşağıdakılar baş verir:</p>
+  <ul>
+    <li>Hesabınız silinən kimi whereis Google-a <strong>abunəliyin dayandırılması sorğusu
+      göndərir</strong>; adətən bu, avtomatik yenilənməni söndürür və növbəti dövr üçün sizdən pul
+      tutulmur. Sorğu dərhal keçməzsə, uğurlu olana qədər təkrarlanır, lakin ən çoxu
+      <strong>{{CANCELLATION_RETRY_DAYS}} gün</strong> ərzində. Yalnız bunun üçün Google-un
+      satınalma nişanı (purchase token) və məhsul kodu müvəqqəti saxlanılır; sorğu uğurla
+      tamamlandıqda — və ya həmin müddət bitdikdə — onlar da silinir.</li>
+    <li><strong>Sorğu heç vaxt uğurlu olmaya da bilər.</strong> Bu halda abunəlik Google tərəfində
+      açıq qalır və sizdən pul tutulmağa davam edə bilər; hesabınız artıq silindiyi üçün sizinlə
+      əlaqə saxlamağın yolu qalmır. Onu yalnız siz dayandıra bilərsiniz: Google Play →
+      <em>Ödənişlər və abunəliklər → Abunəliklər</em>.</li>
+    <li><strong>Artıq ödənilmiş dövrün pulu geri qaytarılmır</strong> və hesab silindiyi üçün
+      ondan istifadə edə bilməzsiniz. Geri ödənişi yalnız Google Play verir:
+      <a href="https://support.google.com/googleplay/answer/2479637">Google Play — geri ödəniş
+      sorğusu</a>.</li>
+    <li>Abunəliyin həqiqətən dayandığına əmin olmaq üçün <strong>hesabı silməzdən əvvəl</strong>
+      onu özünüz ləğv etməyiniz tövsiyə olunur: Google Play → <em>Ödənişlər və abunəliklər →
+      Abunəliklər</em>. Abunəliyin vəziyyətini göstərən yeganə etibarlı mənbə oradır.</li>
+    <li>Sonradan eyni e-poçt ilə yenidən qeydiyyatdan keçsəniz, ləğv edilmiş abunəlik yeni hesaba
+      keçmir və avtomatik bərpa olunmur.</li>
+  </ul>
+
   <div class="warn">
     <strong>Geri qaytarılmaz.</strong> Gözləmə müddəti yoxdur, bərpa imkanı yoxdur. Silinmədən sonra
-    eyni e-poçt ilə yenidən qeydiyyatdan keçə bilərsiniz, lakin bu tamamilə boş, yeni hesab olacaq.
+    eyni e-poçt ilə yenidən qeydiyyatdan keçə bilərsiniz, lakin bu tamamilə boş, yeni hesab olacaq —
+    və fəal Google Play abunəliyi ora keçmir (yuxarıdakı bölməyə baxın).
   </div>
 
   <h3>Saxlanma müddəti</h3>
@@ -121,14 +149,42 @@
     <li>the complete movement history of every item;</li>
     <li>every sentence you typed to the assistant, with its interpretation;</li>
     <li>all photo metadata;</li>
+    <li>the record of your Google Play subscription in this app — product, tier, state and expiry date;</li>
     <li>every active session and refresh token — you are signed out on all devices.</li>
   </ul>
   <p>The photo files themselves are removed from object storage <strong>asynchronously, shortly after
     the account is deleted</strong>. From the moment of deletion no new access link to them can be issued.</p>
 
+  <h3>Google Play subscriptions</h3>
+  <p>whereis subscriptions are billed by <strong>Google Play, not by whereis</strong>. Deleting your
+    whereis account is not the same as deleting your Google account, and the reverse is also true —
+    so when you delete your account:</p>
+  <ul>
+    <li>whereis <strong>sends Google a request to cancel the subscription</strong> as soon as the
+      account is deleted, which normally turns auto-renewal off so you are not charged for the next
+      period. If that request does not get through immediately it is retried until it does, for at
+      most <strong>{{CANCELLATION_RETRY_DAYS}} days</strong>. The only things kept for that are
+      Google's purchase token and the product code; they are deleted as soon as the cancellation
+      succeeds, or when that period ends.</li>
+    <li><strong>The request may never succeed.</strong> If it does not, the subscription stays open on
+      Google's side and you may keep being charged — and because your account is gone, there is no
+      way left for us to tell you. Only you can stop it, in Google Play →
+      <em>Payments &amp; subscriptions → Subscriptions</em>.</li>
+    <li><strong>The period you have already paid for is not refunded</strong>, and you cannot use it,
+      because the account is gone. Refunds are issued by Google Play only:
+      <a href="https://support.google.com/googleplay/answer/2479637">Google Play — request a
+      refund</a>.</li>
+    <li>To be certain the subscription has stopped, <strong>cancel it yourself before deleting the
+      account</strong>, in Google Play → <em>Payments &amp; subscriptions → Subscriptions</em>. That
+      is the only authoritative place to see its status.</li>
+    <li>If you register again later with the same e-mail, a cancelled subscription does not carry
+      over to the new account and is not restored automatically.</li>
+  </ul>
+
   <div class="warn">
     <strong>Irreversible.</strong> There is no grace period and no recovery. You may register again with
-    the same e-mail afterwards, but that will be a completely empty, new account.
+    the same e-mail afterwards, but that will be a completely empty, new account — and an active
+    Google Play subscription does not move to it (see the section above).
   </div>
 
   <h3>Retention</h3>

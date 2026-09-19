@@ -37,7 +37,15 @@ public class StorageJanitor {
         }
     }
 
-    static Duration backoff(int attempts) {
+    /**
+     * The ONE retry schedule in this codebase: 2, 4, 8, 16, 32 minutes, capped at 60. (Called with
+     * {@code attempts} ALREADY incremented, which is why the first wait is 2 and not 1.)
+     *
+     * <p>Public, and referenced rather than copied, because {@code PlayCancellationJanitor} needs
+     * the identical shape for the identical problem — commit with the database, then act on an
+     * external system. Two copies of a retry schedule drift.
+     */
+    public static Duration backoff(int attempts) {
         long minutes = Math.min(1L << Math.min(attempts, 10), MAX_BACKOFF_MINUTES);
         return Duration.ofMinutes(minutes);
     }

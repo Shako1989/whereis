@@ -16,6 +16,7 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.DynamicUpdate;
 import org.hibernate.annotations.UuidGenerator;
 
 /**
@@ -27,12 +28,21 @@ import org.hibernate.annotations.UuidGenerator;
  * {@code obfuscatedExternalAccountId} cross-check at verification time). The second claimant gets
  * 409 {@code PLAN_PURCHASE_NOT_OWNED} and the first account's entitlement is untouched.
  *
- * <p>{@code lastEventTime} is deliberately NOT written by the verify endpoint — see the column
- * comment in V10. It is the RTDN handler's high-water mark and {@code null} means "no notification
- * has ever been applied to this row".
+ * <p>{@code lastEventTime} is deliberately NOT written by the verify endpoint or the reconciler —
+ * see the column comment in V10. It is the RTDN handler's high-water mark and {@code null} means
+ * "no notification has ever been applied to this row".
+ *
+ * <p><strong>{@code @DynamicUpdate} is load-bearing, not a micro-optimisation.</strong> Four
+ * writers touch this row — the verify endpoint, the RTDN handler, the reconciler and the voided
+ * sweep — and each one deliberately leaves some columns alone ({@code voided_at} is write-once,
+ * {@code last_event_time} moves only for a notification, {@code superseded_by} only for a link).
+ * Without {@code @DynamicUpdate} Hibernate emits a FULL-COLUMN UPDATE, so a writer that only meant
+ * to change {@code state} rewrites all three from whatever its own in-memory snapshot happened to
+ * hold — and a chargeback applied by a concurrent revoke is silently undone by the next reconcile.
  */
 @Entity
 @Table(name = "user_subscriptions")
+@DynamicUpdate
 @Getter
 @Setter
 @Builder
@@ -56,6 +66,20 @@ public class UserSubscription extends AuditedEntity {
 
     @Column(name = "product_id", length = 64)
     private String productId;
+
+    /**
+     * The product this subscription becomes when the current term ends — Google's
+     * {@code lineItem.deferredItemReplacement.productId}, re-read on every refresh (V11).
+     *
+     * <p>Stored as GOOGLE'S PRODUCT ID and not as a tier, which is the exact opposite of the choice
+     * made for {@link #tier} and deliberately so: {@code tier} is frozen at verification time
+     * because re-pointing configuration must never re-tier a purchase somebody already paid for,
+     * while this is a statement about a FUTURE that has not been paid for yet. The tier behind it
+     * is resolved at READ time through {@code PlanCatalog#tierOf}, so an id this deployment does
+     * not configure reports a null {@code pendingTier} rather than a wrong one.
+     */
+    @Column(name = "pending_product_id", length = 64)
+    private String pendingProductId;
 
     /**
      * The tier this purchase bought, resolved from the catalog ONCE at verification time and frozen

@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 class LegalPagesTest {
 
     private static LegalProperties filled() {
-        return new LegalProperties("help@example.com", "A Person", "1 Street, City", "2026-09-19", "14");
+        return new LegalProperties("help@example.com", "A Person", "1 Street, City", "2026-09-19", "14", "7");
     }
 
     @Test
@@ -51,7 +51,7 @@ class LegalPagesTest {
     @Test
     void aMissingValueFailsStartupRatherThanServingTheMarker() {
         LegalProperties blankEmail =
-                new LegalProperties("  ", "A Person", "1 Street, City", "2026-09-19", "14");
+                new LegalProperties("  ", "A Person", "1 Street, City", "2026-09-19", "14", "7");
 
         assertThatThrownBy(() -> new LegalPages(blankEmail))
                 .isInstanceOf(IllegalStateException.class)
@@ -62,7 +62,7 @@ class LegalPagesTest {
     @Test
     void aNullValueIsTreatedTheSameAsABlankOne() {
         LegalProperties noAddress =
-                new LegalProperties("help@example.com", "A Person", null, "2026-09-19", "14");
+                new LegalProperties("help@example.com", "A Person", null, "2026-09-19", "14", "7");
 
         assertThatThrownBy(() -> new LegalPages(noAddress))
                 .isInstanceOf(IllegalStateException.class)

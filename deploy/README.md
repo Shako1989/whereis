@@ -29,9 +29,11 @@ unless that stack was started with `-p`. **Confirm before you start:** `docker n
 
 ## Step 0 — Gate: the integration suite must pass first
 
-The Testcontainers suite (61 tests as of 2026-09-19, including `MvpJourneyIT`) is the only place
-transaction boundaries, the MinIO deletion outbox, the location advisory locks and the free-tier
-guard are covered at all. Run this on a machine with working Docker before deploying anything:
+The Testcontainers suite (151 tests across 21 classes as of 2026-09-19, including `MvpJourneyIT`) is
+the only place transaction boundaries, the MinIO deletion outbox, the location advisory locks, the
+tier guard and the whole billing lifecycle — RTDN ordering, refunds, the reconciler, tier changes and
+account deletion with a live subscription — are covered at all. Run this on a machine with working
+Docker before deploying anything:
 
 ```sh
 ./gradlew build && ./gradlew integrationTest
@@ -354,17 +356,25 @@ Data deletion URL : https://$WHEREIS_API_HOST/legal/delete-account
 Privacy policy URL: https://$WHEREIS_API_HOST/legal/privacy
 ```
 
-Both pages ship with **placeholders that must be replaced before a submission** — a page showing a
-literal `{{SUPPORT_EMAIL}}` will fail review. Edit the two files under
-`src/main/resources/legal/`. They are no longer edited at all — set the five `WHEREIS_LEGAL_*` values in `.env` and the app renders them at startup:
+The two files under `src/main/resources/legal/` are no longer edited at all — set the **six**
+`WHEREIS_LEGAL_*` values in `.env` and the app renders them at startup. A missing value FAILS
+STARTUP rather than serving a literal `{{SUPPORT_EMAIL}}` to a reviewer:
 
-| Placeholder | Meaning |
+| Variable | Meaning |
 |---|---|
-| `{{SUPPORT_EMAIL}}` | mailbox that receives e-mail deletion requests (identity is verified before anything is removed) |
-| `{{LEGAL_ENTITY}}` | the legal name of the data controller |
-| `{{LEGAL_ADDRESS}}` | its postal address |
-| `{{EFFECTIVE_DATE}}` | the date the notice takes effect |
+| `WHEREIS_LEGAL_SUPPORT_EMAIL` | mailbox that receives e-mail deletion requests (identity is verified before anything is removed) |
+| `WHEREIS_LEGAL_ENTITY` | the legal name of the data controller |
+| `WHEREIS_LEGAL_ADDRESS` | its postal address |
+| `WHEREIS_LEGAL_EFFECTIVE_DATE` | the date the notice takes effect |
 | `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS` | how long deleted data can persist in backups. `14`, matching the rotation in `deploy/db_backup.sh`. Change both together or the page lies. |
+| `WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS` | how long a Google purchase token is kept after deletion, while the Play cancellation is retried. `7`. **`PlayCancellationJanitor` reads the same property as its give-up deadline**, so the code and the page cannot drift. |
+
+**Both pages changed in the V11 release and both must be re-read before submission.** They now
+state what happens to a Google Play subscription when the account is deleted — including that the
+cancellation request may never succeed, in which case the person may keep being charged and only
+they can stop it — and `privacy.html` names Google as the billing processor and discloses the
+purchase token. The two pages used to contradict each other about that retention period, which is a
+compliance defect on its own; `LegalPagesIT` now asserts both halves in both languages.
 
 ```sh
 # Nothing to grep any more. The pages moved out of src/main/resources/static/ to
@@ -518,6 +528,27 @@ is deliberate: the fake's tokens are guessable literals (`fake-active-max`), so 
 running it would hand the top tier to anyone who posted one. Do not "fix" a boot failure by
 switching to `fake`.
 
+Four more variables are required from this wave on, for the Pub/Sub push endpoint. `PLAY_RTDN_VERIFIER`
+has its **own** prod refusal, deliberately not keyed on `PLAY_PROVIDER`, so a deployment running
+`provider=google` with the verifier left unset is not silently unguarded:
+
+```sh
+WHEREIS_PLAY_RTDN_VERIFIER=google
+WHEREIS_PLAY_RTDN_SHARED_SECRET="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+WHEREIS_PLAY_RTDN_AUDIENCE=whereis-rtdn
+WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL=whereis-rtdn@<project>.iam.gserviceaccount.com
+```
+
+Plus one legal value, which is read by **both** the public page and `PlayCancellationJanitor` so the
+two cannot drift:
+
+```sh
+WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS=7
+```
+
+Everything about the Console and Cloud side of those four — and the one Caddy line that stops the
+shared secret being written to disk — is **Step 11**.
+
 ### GATE before promoting a build past closed testing
 
 > **1. The wall's door is new and unfinished.** `POST /users/me/plan/purchases` verifies a Play
@@ -535,25 +566,139 @@ switching to `fake`.
 >
 > Shipping a paid wall with no way to pay is a Play policy problem as well as a product one.
 >
-> **2. REFUNDS ARE NOT SWEPT YET.** `voided_at` is never written until the RTDN
-> `voidedPurchaseNotification` handler ships (next wave), so a refunded annual purchase keeps
-> entitling for **up to a year**. Acceptable only while the track is closed and there is no real
-> revenue. (Trap for whoever builds it: `purchases.voidedpurchases.list` defaults to `type=0`,
-> one-time products, and must be called with `type=1` for subscriptions or the sweep silently finds
-> nothing.)
+> **2. REFUNDS ARE SWEPT NOW — but only if Step 11 is done.** `voidedPurchaseNotification` revokes
+> immediately and a six-hourly sweep of `purchases.voidedpurchases.list` is the backstop. Both need
+> the Pub/Sub subscription and the service account from **Step 11**; with neither in place, a
+> refunded annual purchase still entitles for up to a year, because nothing tells this server about
+> it. Check `SELECT count(*) FROM play_notifications;` after the first tester purchase: a table that
+> is still empty a day later means the push subscription is not wired.
 >
-> **3. UNACKNOWLEDGED PURCHASES HAVE A 5-MINUTE FUSE ON A CLOSED TRACK.** Google auto-refunds and
-> revokes a purchase that is not acknowledged within 3 days — and within **5 minutes** for a test
-> purchase, which is every purchase a license tester makes. The endpoint acknowledges synchronously
-> with a short retry, re-verifies any entitling row it finds with `acknowledged = false`, and reports
-> that flag to the client so the next foreground repairs it. There is still **no server-side
-> reconciler**: if the app is not reopened, a failed acknowledgement is not retried. Watch for
-> `Could not acknowledge purchase` at WARN after any tester purchase.
+> **3. UNACKNOWLEDGED PURCHASES HAVE A 5-MINUTE FUSE ON A CLOSED TRACK, and the reconciler now
+> retries them.** Google auto-refunds and revokes a purchase that is not acknowledged within 3 days —
+> and within **5 minutes** for a test purchase, which is every purchase a license tester makes. The
+> verify endpoint acknowledges synchronously with a short retry AND `SubscriptionReconciler` sweeps
+> unacknowledged rows every 15 minutes ahead of everything else, so a failed acknowledgement no
+> longer depends on the app being reopened. Watch for `Could not acknowledge purchase` at WARN, and
+> for `Reconcile acknowledged subscription` at INFO — the second line means the first problem
+> happened and was repaired.
 >
-> **4. RTDN IS NOT CONSUMED.** The `play_notifications` ledger exists and is empty; nothing reads the
-> Pub/Sub topic. Expiries are handled by the fail-closed `entitled_until > now()` predicate, so
-> entitlement lapses on its own — but pauses, holds, refunds and upgrades are not reflected until
-> their notification is applied.
+> **4. THE THREE PRODUCT IDS AND THE BASE PLAN ID `annual` ARE STILL ASSUMPTIONS.** Unchanged from
+> the previous wave, and still the only gate nothing in this repository can close.
+>
+> **5. UPGRADE AND DOWNGRADE BEHAVIOUR IS UNVERIFIED AGAINST A REAL CONSOLE.**
+> `CHARGE_PRORATED_PRICE` for upgrades and `DEFERRED` for downgrades are product decisions, and
+> whether a deferred downgrade issues a NEW purchase token or retains the old one is not settled by
+> the available documentation. The server is deliberately correct either way — it refreshes from
+> Google and resolves `linkedPurchaseToken`, with no branch on replacement mode — but whoever gets
+> Console access should run ONE real upgrade and ONE real downgrade on the closed track and confirm
+> the resulting token shape against `docs/ANDROID_APP_PROMPT.md`.
+>
+> **6. ACCOUNT DELETION CANCELS AT GOOGLE AND REFUNDS NOTHING.** That is what the public
+> account-deletion page now says, in both languages, and it is a COMMERCIAL decision rather than a
+> technical limit: `purchases.subscriptionsv2.revoke` exists in the pinned client and would refund
+> the user and end access immediately. A human should sign that choice off before the page is
+> submitted to Play.
+>
+> **7. NOTHING NOTICES IF RTDN STOPS ARRIVING.** A ledger with no rows for 48 hours is
+> indistinguishable from a quiet week at this user count, and the reconciler papers over it. A
+> log-based alert on "no `play_notifications` row in N hours" is the obvious follow-up and is
+> deliberately not built.
+
+## Step 11 — Google Play real-time developer notifications (Pub/Sub)
+
+Everything in this step is **Console and Cloud work that no code in this repository can do or
+verify**. The handler, the ledger, the reconciler, the refund sweep and the cancellation janitor all
+ship; they receive nothing until this is done.
+
+### 11a. The Pub/Sub topic and push subscription
+
+1. In the Google Cloud project that owns the Play service account, create a Pub/Sub **topic**
+   (e.g. `whereis-play-rtdn`) and grant `service-cloudpubsub@system.gserviceaccount.com` the
+   **Pub/Sub Publisher** role on it. Play publishes as that account; without the grant the Console
+   refuses to save the topic name.
+2. In the Play Console → **Monetisation setup** → *Real-time developer notifications*, paste the full
+   topic name and use **Send test notification**. A `TEST` row in `play_notifications` with
+   `outcome = 'IGNORED'` is the confirmation, and the app logs
+   `RTDN test notification received — the Pub/Sub push path is working` at INFO.
+3. Create a **push** subscription on that topic with these settings. Every one of them is assumed by
+   the handler:
+
+   | setting | value | why |
+   |---|---|---|
+   | Delivery type | **Push** | the handler is an HTTPS endpoint, not a puller |
+   | Endpoint URL | `https://<WHEREIS_API_HOST>/play/rtdn?key=<WHEREIS_PLAY_RTDN_SHARED_SECRET>` | check 1 |
+   | Enable authentication | **on**, with a service account | check 2 |
+   | **Audience** | **an explicit opaque string, e.g. `whereis-rtdn`** | see the warning below |
+   | Acknowledgement deadline | **600 s** | the handler may make one Google call per message |
+   | Retry policy | **exponential backoff**, min 10 s, max 600 s | a 500 from us must back off, not hammer |
+   | Message retention | **7 days** | the longest outage the design survives without the reconciler |
+   | Dead-letter topic | **none** | `play_notifications` IS the dead-letter store, and it is queryable |
+
+> ### ⚠️ THE AUDIENCE FIELD IS OPTIONAL IN THE CONSOLE AND MUST NOT BE LEFT BLANK.
+>
+> When the audience is omitted, Cloud Pub/Sub sets the OIDC token's `aud` claim to **the full push
+> endpoint URL — query string and shared secret included**. The app requires `aud` to equal
+> `PLAY_RTDN_AUDIENCE`, so leaving it blank gives you two bad options: every genuine push is rejected
+> on `aud` (401 → Pub/Sub retries → **entitlements quietly stop tracking Google**, which is the worst
+> outcome this design has), or you "fix" it by pasting the URL into `PLAY_RTDN_AUDIENCE` — which
+> writes the shared secret into `.env`, into the container's environment, and into every startup log
+> that echoes bound properties, collapsing two independent checks into one compromised value.
+>
+> The app therefore **refuses to boot** if `PLAY_RTDN_AUDIENCE` starts with `http` or contains `?` or
+> `key=`, with a message naming this trap.
+
+4. The same service account needs the **Pub/Sub Subscriber** role, and its e-mail goes in
+   `WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL`. That claim is what stops any Google-issued OIDC token
+   for any project from passing: without it, the first four checks (signature, expiry, issuer,
+   audience) are satisfiable by anyone with a Google Cloud account.
+
+### 11b. Caddy must not log the shared secret
+
+`deploy/Caddyfile.whereis` carries `log_skip @rtdn` for `/play/rtdn`. **Apply it.** The secret lives
+in the URL's query string, Caddy's access log records the full URI by default, and the nightly backup
+archives that log. If this is left undone the endpoint still works and still authenticates — check 2
+is unaffected — so nothing breaks loudly, which is exactly why it is written down.
+
+### 11c. What to watch in the logs
+
+| line | level | what it means | action |
+|---|---|---|---|
+| `RTDN test notification received` | INFO | the push path works | none — this is the Step 11a confirmation |
+| `Rejected an RTDN push … the shared secret did not match` | WARN | a probe, or `?key=` drifted from `.env` | compare the subscription's endpoint URL with `.env` |
+| `Rejected an RTDN push … the push token did not verify` | WARN | `aud`/`email` mismatch, or the JWKS is unreachable | re-check 11a; **this one silently stops entitlement tracking** |
+| `REVOKED subscription <digest> of user <id>` | WARN | a refund or chargeback was applied | none normally; this line is what makes an ERRONEOUS revoke findable |
+| `Subscription reconcile is falling behind` | WARN | the sweep can no longer keep up (~1,200 live subscriptions) | raise `WHEREIS_PLAY_RECONCILE_BATCH_SIZE` or lower the delay |
+| `Voided-purchase sweep stopped at its N-page cap` | WARN | more than ~20,000 refunds in a week | a business event before it is an engineering one |
+| `GAVE UP cancelling Play subscription <digest> (<product>)` | **ERROR** | **a deleted account may still be being charged** | **see below — a human must act** |
+| `RTDN <id> failed N times; giving up` | ERROR | a message hit the retry ceiling | the reconciler is the repair; check `processing_error` in the ledger |
+
+**The `GAVE UP cancelling` alert is the one case in this wave where a human must act.** The account
+and its e-mail address are gone, so there is no channel left to tell the user, and the public page
+told them they might keep being charged. Cancel the subscription by hand in the Play Console using
+the product id and the token digest from the log line:
+
+```sh
+docker exec -i autoparts-postgres psql -U whereis -d whereis -c "SELECT purchase_token, product_id, attempts, last_error FROM play_cancellation_queue ORDER BY created_at;"
+```
+
+### 11d. Undoing a WRONG revocation — the only sanctioned way
+
+A revocation is the one thing this system applies from a notification with **no Google
+corroboration**: `voided_at` is write-once, a refresh may never clear it, the reconciler refuses to
+run against a voided row, and the sweep only ever sets it. So a mistaken revoke — a crafted
+notification, a Google-side error, a bug in a product filter — is permanent unless it is undone by
+hand. Find it from the `REVOKED subscription` WARN line, then:
+
+```sh
+docker exec -i autoparts-postgres psql -U whereis -d whereis -c "
+UPDATE user_subscriptions
+   SET voided_at = NULL, verified_at = '1970-01-01Z'
+ WHERE purchase_token = '<the token>' AND voided_at IS NOT NULL;"
+```
+
+Clearing `verified_at` as well is the point: it puts the row at the head of the reconciler's queue,
+so **Google's answer — not the operator — restores the true state** within fifteen minutes. This is
+the only sanctioned way `voided_at` is ever cleared; do not set it to a value of your own.
 
 ## Redeploy and rollback
 

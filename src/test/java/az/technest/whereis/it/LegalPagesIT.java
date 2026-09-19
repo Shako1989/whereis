@@ -55,6 +55,41 @@ class LegalPagesIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void theDeleteAccountPageStatesWhatHappensToAGooglePlaySubscriptionInBothLanguages() {
+        // A compliance regression nothing else would catch: this paragraph is the only place a user
+        // is told that deleting the account does not stop Google billing them, and that the
+        // cancellation can FAIL — at which point their account, and their e-mail address, are gone
+        // and only they can stop the charges.
+        String body = anonymousGet("/legal/delete-account").getBody();
+
+        assertThat(body).contains("Google Play abunəliyi").contains("Google Play subscriptions");
+        // The retry window is RENDERED from whereis.legal.cancellation-retry-days — the same
+        // property PlayCancellationJanitor gives up after — never a literal in the HTML.
+        assertThat(body).contains("7 gün").contains("7 days");
+        // The failure outcome, stated rather than promised away.
+        assertThat(body).contains("may keep being charged")
+                .contains("pul tutulmağa davam edə bilər");
+        // And the self-service route, in both languages.
+        assertThat(body).contains("Payments &amp; subscriptions").contains("Ödənişlər və abunəliklər");
+    }
+
+    @Test
+    void thePrivacyPageAgreesWithItAboutTheRetainedPurchaseToken() {
+        // The two pages are the URLs Play cross-checks for the Data-safety form. privacy.html used
+        // to say deletion removes everything IMMEDIATELY while delete-account.html said a purchase
+        // token survives for up to seven days — two public legal pages contradicting each other on
+        // a retention period, which is a compliance defect on its own.
+        String body = anonymousGet("/legal/privacy").getBody();
+
+        assertThat(body).contains("purchase token").contains("satınalma nişanı");
+        assertThat(body).contains("7 days").contains("7 gün");
+        // Google is named as a processor: the server transmits the token and product id to it, and
+        // a transmission the notice's own processor section omits is the kind of mismatch that gets
+        // a listing rejected.
+        assertThat(body).contains("Google LLC");
+    }
+
+    @Test
     void theHtmlFormOfTheUrlIsServedToo() {
         // The clean URL forwards to the .html resource; the target must be permitted as well.
         assertHtmlPage(anonymousGet("/legal/delete-account.html"));

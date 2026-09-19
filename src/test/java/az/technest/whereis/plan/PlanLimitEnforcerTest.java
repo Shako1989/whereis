@@ -64,6 +64,7 @@ class PlanLimitEnforcerTest {
     void noSubscriptionsUnlessATestSaysOtherwise() {
         // Without this every case NPEs on an unstubbed finder rather than failing its assertion.
         lenient().when(subscriptionRepository.entitlingOf(eq(userId), any())).thenReturn(List.of());
+        lenient().when(subscriptionRepository.manageableOf(eq(userId))).thenReturn(List.of());
         enforcer = new PlanLimitEnforcer(userRepository, spaceRepository, itemRepository,
                 subscriptionRepository, CATALOG);
     }
@@ -391,6 +392,103 @@ class PlanLimitEnforcerTest {
         assertThat(status.usage().activeItems()).isEqualTo(412L);
         assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
                 .isInstanceOf(PlanLimitReachedException.class);
+    }
+
+    // ------------------------------------------------------------------ manageableOf (wave 2)
+
+    @Test
+    void anOnHoldSubscriberReportsFreeAndStillGetsTheSubscriptionToManage() {
+        // THE ONE RULE THE PLAN SCREEN HANGS ON. The badge describes the ENTITLEMENT, the strip
+        // describes the SUBSCRIPTION, and neither is derived from the other. Wave 1 reported
+        // subscription = null here, which takes away the only control that can fix a failed
+        // payment — from an account that is still being charged.
+        granted(Plan.FREE);
+        UserSubscription onHold = row(Plan.PRO);
+        onHold.setState(SubscriptionState.ON_HOLD);
+        when(subscriptionRepository.entitlingOf(eq(userId), any())).thenReturn(List.of());
+        when(subscriptionRepository.manageableOf(userId)).thenReturn(List.of(onHold));
+        when(spaceRepository.countByUserId(userId)).thenReturn(0L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        assertThat(status.plan()).isEqualTo(Plan.FREE);
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(1, 100));
+        assertThat(status.subscription()).isNotNull();
+        assertThat(status.subscription().tier()).isEqualTo(Plan.PRO);
+        assertThat(status.subscription().state()).isEqualTo(SubscriptionState.ON_HOLD);
+        assertThat(status.subscription().entitling()).isFalse();
+    }
+
+    @Test
+    void aLiveButNonEntitlingRowCanNeverInfluenceThePlanTheLimitsOrTheUsage() {
+        // The first crack in "one finder", pinned so it stays a crack and not a hole: an entitling
+        // STANDARD row beside a live ON_HOLD MAX row must badge STANDARD. A single reduction over
+        // both would make the badge claim a tier the wall would refuse.
+        granted(Plan.FREE);
+        UserSubscription entitlingStandard = row(Plan.STANDARD);
+        UserSubscription onHoldMax = row(Plan.MAX);
+        onHoldMax.setState(SubscriptionState.ON_HOLD);
+        when(subscriptionRepository.entitlingOf(eq(userId), any()))
+                .thenReturn(List.of(entitlingStandard));
+        lenient().when(subscriptionRepository.manageableOf(userId))
+                .thenReturn(List.of(entitlingStandard, onHoldMax));
+        when(spaceRepository.countByUserId(userId)).thenReturn(0L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        assertThat(status.plan()).isEqualTo(Plan.STANDARD);
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(3, 300));
+        // The entitling row is also the one reported, so the badge and the strip agree.
+        assertThat(status.subscription().tier()).isEqualTo(Plan.STANDARD);
+        assertThat(status.subscription().entitling()).isTrue();
+        assertThat(enforcer.effectiveTierOf(userId)).isEqualTo(Plan.STANDARD);
+    }
+
+    @Test
+    void theSecondFinderIsNotEvenConsultedWhenSomethingEntitles() {
+        // An entitling row is always manageable (manageableOf's predicate is strictly weaker), so
+        // the common case costs no extra statement.
+        granted(Plan.FREE);
+        subscribed(Plan.PRO);
+        when(spaceRepository.countByUserId(userId)).thenReturn(0L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
+
+        enforcer.statusOf(userId);
+
+        verify(subscriptionRepository, org.mockito.Mockito.never()).manageableOf(any());
+    }
+
+    @Test
+    void aPendingDowngradeIsReportedAsAProductIdAndATierResolvedAtReadTime() {
+        granted(Plan.FREE);
+        UserSubscription pro = row(Plan.PRO);
+        pro.setPendingProductId("whereis_standard_annual");
+        when(subscriptionRepository.entitlingOf(eq(userId), any())).thenReturn(List.of(pro));
+        when(spaceRepository.countByUserId(userId)).thenReturn(0L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        assertThat(status.plan()).isEqualTo(Plan.PRO);
+        assertThat(status.subscription().pendingProductId()).isEqualTo("whereis_standard_annual");
+        assertThat(status.subscription().pendingTier()).isEqualTo(Plan.STANDARD);
+    }
+
+    @Test
+    void aPendingProductThisDeploymentDoesNotConfigureReportsANullTierRatherThanAWrongOne() {
+        granted(Plan.FREE);
+        UserSubscription pro = row(Plan.PRO);
+        pro.setPendingProductId("whereis_retired_annual");
+        when(subscriptionRepository.entitlingOf(eq(userId), any())).thenReturn(List.of(pro));
+        when(spaceRepository.countByUserId(userId)).thenReturn(0L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        assertThat(status.subscription().pendingProductId()).isEqualTo("whereis_retired_annual");
+        assertThat(status.subscription().pendingTier()).isNull();
     }
 
     @Test

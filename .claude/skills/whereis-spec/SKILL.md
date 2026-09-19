@@ -195,6 +195,42 @@ plan/      the tier ladder and Play purchase verification. `Plan` (FREE|STANDARD
            `PlanCatalogController` (GET /plans — the ladder, zero statements, UNLIMITED omitted).
            `LegacyLimitsPropertyGuard` refuses to boot while a retired `whereis.limits.free.*` key
            is still set anywhere.
+           WAVE 2 (V11, BR-13) adds the lifecycle. `SubscriptionSnapshots` maps Google's answer onto
+           a Snapshot for the two REFRESH paths (handler + reconciler) and is where the one decision
+           lives that a review had to correct: a refresh matching NO offered line item KEEPS the
+           row's frozen tier and product instead of throwing PlayProductMismatchException.
+           `SubscriptionLinkResolver` resolves linkedPurchaseToken with the userId-SCOPED finder
+           (V10's hard contract) and sets superseded_by; called from all THREE entry points so an
+           upgrade is stitched whichever sees it first. `SubscriptionCancellationService` +
+           `PlayCancellationQueueEntry`/`Repository` are the account-deletion outbox.
+           `PurchaseTokens.digest` is the ONE log-safe token form, lifted out of
+           PurchaseVerificationService when it gained three more callers.
+           `SubscriptionWriter` grew four guarded writes — `applyNotification` (lock, strict-`>`
+           watermark AND compare-and-set on verified_at, then advance the watermark as a SEPARATE
+           statement), `markVoided` (write-once, NOT watermark-guarded, nullable eventTimeMillis =
+           "from the sweep"), `markSuperseded`, `reconcile` (CAS, refuses a voided/superseded row,
+           never writes last_event_time) — and `UserSubscription` gained `@DynamicUpdate`, which is
+           load-bearing: without it a full-column UPDATE rewrites voided_at/superseded_by/
+           last_event_time from a stale snapshot and silently un-refunds a chargeback.
+           `plan/rtdn/`: `RtdnController` (POST /play/rtdn, the two auth checks BEFORE anything is
+           parsed, a controller-local @ExceptionHandler so nothing reaches GlobalExceptionHandler),
+           `RtdnService` (no @Transactional, the whole ack decision table, catches EVERYTHING),
+           `PlayNotificationLedger` (persist not save; a conditional-UPDATE LEASE so two concurrent
+           deliveries cannot both process), `PlayNotification`/`Repository`,
+           `PlayNotificationKind`/`Outcome`, `SubscriptionNotificationType` (the state machine:
+           REFRESH for everything except SUBSCRIPTION_REVOKED, and REFRESH is also the DEFAULT so a
+           type Google adds later is re-read rather than ignored), `RtdnEnvelope`,
+           `DeveloperNotification` (four SIBLING fields, voided first), `RtdnProperties`,
+           `PlayRtdnConfig` (the @Order(0) chain with NO oauth2ResourceServer, the prod refusal of
+           the fake verifier, and the boot failure on a URL-shaped audience),
+           `PlayPushAuthenticator` port + Google/Fake.
+           `plan/reconcile/`: `SubscriptionReconciler` (drift + the acknowledgement retry;
+           unacknowledged first; per-row catch(RuntimeException) so nothing can halt a batch),
+           `VoidedPurchaseSweeper` (fixed 7-day look-back, type=1), `PlayCancellationJanitor`
+           (re-checks the token before cancelling, deletes on 404 ONLY, shares
+           StorageJanitor#backoff), `ReconcileProperties`. All three are plain @Scheduled with an
+           `enabled` flag AND an initialDelay, and each exposes `runOnce()` so the ITs can drive one
+           pass with the flag off.
 common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler; CurrentUser
            (JWT subject → UUID); CorrelationIdFilter (X-Correlation-Id → MDC); Names — the ONE
            normalizer used by every writer, lookup, and the AI resolution path. clean() is the
@@ -205,7 +241,7 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
            diacritics; only the key is folded, display is untouched.
 ```
 
-## 4. Database invariants (Flyway V1–V9)
+## 4. Database invariants (Flyway V1–V11)
 
 - `users.email` unique on `lower(email)`; `refresh_tokens.token_hash` **varchar(64)** — NEVER
   char(N) anywhere: Hibernate 6.6 validate treats bpchar as a type mismatch and the app won't boot.
@@ -252,18 +288,57 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
   write it** (verifying applies no notification; seeding it with now() would make the handler discard
   every notification already in flight). Entitlement is one partial index
   `(user_id, entitled_until DESC) WHERE voided_at IS NULL AND superseded_by IS NULL`.
-- `play_notifications` (V10): the RTDN ledger, keyed on the Pub/Sub message id so a redelivery is a
-  PK collision. No FK and no `user_id` — a notification can arrive for a token this server has never
-  seen. `attempts`/`last_attempt_at` plus a work-queue index excluding `attempts >= 10`, so a failure
-  is recordable while still pending and a poison message falls out instead of blocking the queue.
-  Deliberately UNMAPPED this wave, therefore NOT validated by Hibernate at all. `notification_kind`
-  has no CHECK on purpose: the Java enum that would pin it ships with the handler.
+- `play_notifications` (V10, completed by V11): the RTDN ledger, keyed on the Pub/Sub message id so a
+  redelivery is a PK collision. No FK and no `user_id` — a notification can arrive for a token this
+  server has never seen. `attempts`/`last_attempt_at` plus a work-queue index excluding
+  `attempts >= 10`, so a failure is recordable while still pending and a poison message falls out
+  instead of blocking the queue. **V11 makes it a MAPPED entity** (`PlayNotification`, so Hibernate
+  `validate` now checks it; `payload` is `Map<String,Object>` behind `@JdbcTypeCode(SqlTypes.JSON)`
+  and NEVER a String — V8's double-encoded-scalar lesson verbatim), pins `notification_kind` and the
+  new `outcome` with CHECKs, and adds the invariant BETWEEN them: the four SUCCEEDED outcomes set
+  `processed_at`, MALFORMED and FAILED must not, because the fallback watermark is
+  `max(event_time_millis) WHERE purchase_token = ? AND processed_at IS NOT NULL` and a message that
+  applied nothing must not advance anybody's watermark.
+  **V11 also DROPS NOT NULL from `event_time_millis` and `package_name`**, guarded by
+  `ck_play_notifications_decoded_unless_malformed` so only a MALFORMED row may omit them. That was a
+  review blocker, not tidying: MALFORMED is defined as exactly the three cases where those values do
+  not exist (data not base64, notification not JSON, eventTimeMillis unparseable), so under V10 the
+  one row the ledger exists to preserve could not be INSERTED — the violation became a 409, Pub/Sub
+  nacked, and the same garbage was redelivered for the full 7-day retention with nothing recorded.
+  For that outcome `payload` holds the RAW PUB/SUB ENVELOPE (it parsed, or there would be no
+  messageId and hence no row) rather than the decoded notification.
+- `user_subscriptions.pending_product_id` (V11): Google's `lineItem.deferredItemReplacement.productId`
+  — the product this subscription BECOMES at term end. Stored as Google's id and NOT as a tier,
+  deliberately the opposite choice from `tier`: `tier` is frozen at verification time so re-pointing
+  configuration cannot re-tier a paid purchase, while this is a statement about a future nobody has
+  paid for, re-read on every refresh and resolved through `PlanCatalog#tierOf` at READ time (so an
+  unconfigured id reports a null `pendingTier` instead of a wrong one). No CHECK and no FK: Google
+  may name a product we have retired.
+- `ix_user_subscriptions_reconcile` (V11): `(acknowledged, verified_at)` partial on
+  `voided_at IS NULL AND superseded_by IS NULL AND purchase_token IS NOT NULL` — the reconciler's one
+  hot query. The LEADING column is `acknowledged` because that is the leading sort key; an index on
+  `(verified_at)` alone (the first draft) could not supply the ordering at all.
+- `play_cancellation_queue` (V11): the outbox that stops Google charging a deleted account. A
+  line-for-line sibling of `storage_deletion_queue`, deliberately — one answer for "commit with the
+  database, then act on an external system". **NO `user_id` and NO FK**: the user row is gone by the
+  time the janitor reads it, and an FK would make the queue undrainable in exactly that case.
+  `UNIQUE(purchase_token)` is written through `INSERT … SELECT … ON CONFLICT DO NOTHING`, because the
+  insert lives inside `AccountDeletionService`'s single `@Transactional` method and a unique violation
+  there would roll the whole cascade back and answer 409 on the Play-mandated deletion endpoint. The
+  collision is sequential and reachable: A enqueues T and is deleted (freeing T), the janitor has not
+  drained, the same person re-registers as B and the client re-posts T, B deletes. The enqueue
+  predicate is ONLY `purchase_token IS NOT NULL AND product_id IS NOT NULL` — every narrower version
+  was rejected, including `voided_at IS NULL` (a refund of one payment without revocation leaves
+  auto-renew ON).
 - Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java
   enums; each has a test that computes the effective constraint across migrations (`PlanTest`,
   `SubscriptionStateTest`, `SubscriptionTierTest`, `PurchaseProvenanceTest`, `AssistantOutcomeTest`).
-- **Account deletion order is assistant messages → items → locations → spaces → user, with the
-  storage_deletion_queue rows enqueued BEFORE the item cascade** (assistant messages go first so their
-  item_id/space_id SET NULL triggers never fire inside the two bulk deletes and the summary count is exact) (`item_files` cascades from `items`, which erases the object keys).
+- **Account deletion order is play_cancellation_queue → assistant messages → items → locations →
+  spaces → user, with the storage_deletion_queue rows enqueued BEFORE the item cascade** (the Play
+  cancellations go FIRST because stopping the money comes before dismantling the account, and because
+  the `user_subscriptions` rows they read cascade away with the `users` row at the end; assistant
+  messages go next so their item_id/space_id SET NULL triggers never fire inside the two bulk deletes
+  and the summary count is exact) (`item_files` cascades from `items`, which erases the object keys).
   Items must go first because `items.current_location_id` is RESTRICT (checked immediately); the whole
   location forest then goes in ONE statement because the self-FK `fk_locations_parent_same_space` is
   NO ACTION (checked at end of statement); spaces go after their locations; `refresh_tokens` cascade
@@ -293,10 +368,18 @@ the item limit. No other response carries a plan or quota field: the ONE place t
 {spaces,activeItems}, source, subscription}`. **`limits` is ALWAYS AN OBJECT and a null MEMBER means
 no ceiling on THAT allowance** — BR-11's "limits is null for UNLIMITED" is SUPERSEDED, because MAX
 ("10 spaces, unlimited items") cannot be expressed by a whole-object null. `source` is
-NONE|GRANT|SUBSCRIPTION and is for COPY ONLY; `subscription` is non-null exactly when an entitling
-row exists REGARDLESS of which side won the max(), because a paid subscription must always be
-manageable, and it carries `acknowledged` (false = Google will auto-refund unless the client
-re-posts). `usage` is present on every tier, is never clamped (usage 5 against limit 3 after a
+NONE|GRANT|SUBSCRIPTION and is for COPY ONLY; `subscription` is non-null whenever a LIVE Play
+purchase exists — **V11 WIDENED this from "exactly when an entitling row exists"**, via the second
+finder `manageableOf` (`purchase_token IS NOT NULL AND voided_at IS NULL AND superseded_by IS NULL
+AND state NOT IN (EXPIRED, PENDING_PURCHASE_CANCELED)`), because an ON_HOLD subscriber is NOT
+entitled and reporting null took away the only control that could fix their failed payment from an
+account still being charged. It carries `acknowledged` (false = Google will auto-refund unless it is
+retried — the reconciler now does, every 15 minutes, ahead of everything else) plus V11's
+`entitling`, `pendingProductId` and `pendingTier` (resolved at READ time, null rather than wrong).
+**The BADGE describes the entitlement and the STRIP describes the subscription; neither is derived
+from the other** — `plan: FREE` beside `subscription.tier: PRO, state: ON_HOLD` is the honest body,
+not a contradiction. `plan`/`limits`/`usage` still come from `entitlingOf` ALONE and a unit test pins
+that `manageableOf` can never influence them. FIVE statements now, not four. `usage` is present on every tier, is never clamped (usage 5 against limit 3 after a
 downgrade is a valid body), and `activeItems` excludes archived rows. `plan` is the EFFECTIVE
 ENTITLEMENT from `PlanLimitEnforcer#effectiveTierOf`, never a copy of `users.plan`. Four statements.
 · **GET /plans** — the four-tier ladder in ladder order with real numbers and product ids, pure
@@ -312,7 +395,23 @@ PLAY_PRODUCT_UNKNOWN(400), PLAY_PRODUCT_MISMATCH(400), PLAN_PURCHASE_NOT_OWNED(4
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
 Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
-the Play Store data-deletion and privacy URLs).
+the Play Store data-deletion and privacy URLs) · **POST /play/rtdn** (V11, BR-13) — the Cloud Pub/Sub
+PUSH endpoint for Google Play real-time developer notifications. Outside `/api/v1` because it is not
+part of the client contract, is not CORS-exposed and has no JWT, ever. TWO INDEPENDENT auth checks
+and both must pass: a shared secret in the `?key=` of the registered push URL (constant-time compare;
+BLANK REJECTS) and Google's OIDC push token through the `PlayPushAuthenticator` port. Neither the
+body nor the query parameter is parsed before both pass — the handler takes
+`@RequestParam(required=false)` + `@RequestHeader(required=false)` and reads the body itself, capped,
+because a `@RequestBody` DTO would run Jackson during argument resolution and turn an
+unauthenticated probe into a structured 400. A rejection is **401 with a zero-length body** and NO
+ledger row. Its own `@Order(0)` SecurityFilterChain with **no `oauth2ResourceServer`**: on the main
+chain the bearer filter would hand Google's RS256 token to our HS256 decoder and answer 401 before
+the controller ran, and `permitAll` does not help because it governs authorization, not decoding.
+THE STATUS CODE IS THE ACK DECISION (Pub/Sub retries anything not 2xx): 200 for every terminal
+disposition including MALFORMED and the retry ceiling, 500 only while `attempts < max-attempts`, 503
+when disabled (we want the backlog, not silence). Nothing may escape to `GlobalExceptionHandler`,
+which would turn PlayApiException into 502 and PlayPurchaseInvalidException into 400 — statuses the
+table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
 
 ## 6. Guardrails (review-confirmed; do not regress)
 
@@ -339,7 +438,37 @@ the Play Store data-deletion and privacy URLs).
 - Never let a purchase decide the tier from the request body: tier, state, expiry, acknowledgement,
   test flag and promo marker all come from Google's response. The port fake must be structurally
   unavailable in production, not merely unselected — its tokens are guessable literals, so selecting
-  it there is a self-service entitlement escalation.
+  it there is a self-service entitlement escalation. **The same applies to the RTDN push verifier,
+  with its OWN `Environment#acceptsProfiles` check rather than a mirror of `whereis.play.provider`:
+  otherwise a deployment running `provider=google` with `rtdn.verifier` unset has no guard at all.**
+- **A notification is a trigger and an ordering token, never a fact.** Every RTDN type except
+  `SUBSCRIPTION_REVOKED` re-reads `subscriptionsv2.get` and writes what GOOGLE says, through the same
+  `SubscriptionWriter.Snapshot` the verify endpoint builds. A revocation is the one exception, and it
+  makes NO Google call, because a refund must never be blocked by a Play API outage.
+- **Nothing is ever revoked on the strength of a Google ERROR.** A 404
+  (`PlayPurchaseUnknownException`) ends the message; a 400 (`PlayPurchaseInvalidException`) is retried
+  with a ceiling, because a 400 can be our own bug. The reconciler bumps `verified_at` and nothing
+  else. `entitled_until > now()` ends a bogus row on its own.
+- **A revoke is NOT watermark-guarded, and every other notification write is.** A refund and its
+  accompanying `SUBSCRIPTION_CANCELED` are emitted milliseconds apart with no ordering guarantee; if
+  the cancellation lands first, a watermark-guarded revoke is discarded and the row reads CANCELED
+  with a future expiry — an ENTITLING state. Write-once `voided_at` already gives redelivery safety.
+- **`last_event_time` is written ONLY by a notification**, as a separate statement and never as a
+  `Snapshot` component, and `max(existing, event)` rather than an assignment. The verify endpoint
+  runs on every app foreground and the reconciler applies no notification; either writing it would
+  push the high-water mark ahead of notifications still in flight and the handler would discard them
+  all, silently and unrecoverably.
+- **A void is decided by the TOKEN, not by `productType`.** `productType != 1` fails OPEN — an absent
+  field makes it true and every refund is silently ignored. A hit in `user_subscriptions` IS a
+  subscription void by construction. (And note the inversion: the notification's `productType` is
+  1 = subscription, while `voidedpurchases.list`'s `type` parameter is 1 = one-time AND subscriptions.
+  Same numbers, opposite meanings, one comment at each site.)
+- **`@Transactional` on a Play-calling orchestrator is NOT caught by the ArchUnit rule** —
+  `noTransactionalMethodCallsThePlayPort` reads each method's OWN annotations, so a CLASS-level one
+  slips straight past it while holding a connection across a Google round trip.
+  `NoTransactionAroundThePlayPortTest` asserts the absence directly for all six orchestrators;
+  mutation check: put `@Transactional` on `SubscriptionReconciler` and that test must fail (ArchUnit
+  will not).
 - Bulk `@Modifying` updates: think before `clearAutomatically` — it detaches managed entities
   the caller still mutates (this exact bug shipped once and was caught in review).
 - Login is enumeration-safe (dummy BCrypt verify + uniform INVALID_CREDENTIALS).
@@ -347,20 +476,26 @@ the Play Store data-deletion and privacy URLs).
   NaN-proof (`x >= min && x <= max`, never `!(x < min)`).
 - Batch, never per-row: location paths and primary images resolve in one query per page.
 - Never log credentials, tokens, or user messages above DEBUG.
-- Account deletion: outbox rows before the item cascade; assistant messages → items → locations → spaces
-  → user; per-space
-  advisory locks taken first in ascending id order; zero MinIO calls and no afterCommit sweep in the
-  request path (the janitor drains the outbox); `RefreshTokenRevoker` is NOT called (REQUIRES_NEW would
+- Account deletion: **Play cancellations enqueued FIRST**, then outbox rows before the item cascade;
+  assistant messages → items → locations → spaces → user; per-space
+  advisory locks taken first in ascending id order; zero MinIO calls, zero PLAY calls and no
+  afterCommit sweep in the request path (two janitors drain the two outboxes);
+  `RefreshTokenRevoker` is NOT called (REQUIRES_NEW would
   survive a rollback — the users→refresh_tokens cascade is the revocation). Pinned by
   `AccountDeletionServiceTest` (InOrder) and `AccountDeletionIT`.
 
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 334 unit tests — must stay green without Docker OR network
-./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO) — needs Docker
+./gradlew build              # compile + 472 unit tests — must stay green without Docker OR network
+./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 151 tests — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
+
+**VERIFY WITH FORCED RE-RUNS.** Gradle's up-to-date checks will report `BUILD SUCCESSFUL` having
+executed ZERO tests — this has already produced a wave whose "green" first run proved nothing. Use
+`./gradlew clean build` and `./gradlew integrationTest --rerun-tasks`, and read the counts out of
+`build/test-results/*/*.xml` rather than trusting the console.
 
 `live-ai` is excluded from the `test` task alongside `integration`, so `build` never calls a paid
 API even on a machine with the key exported. `ClaudeLiveApiTest` is the ONLY test that leaves the
@@ -772,23 +907,118 @@ Suites: **unit 334** (+113), **integration 109 across 17 classes** (+40: `PlanPu
 `com.google.auth:google-auth-library-oauth2-http:1.52.0` — compiled, never exercised by `test` or
 `integrationTest`, which both run the fake.
 
-**OUT OF SCOPE and therefore still broken** (all four are promotion gates in `deploy/README.md`
-Step 10): the RTDN webhook handler (`play_notifications` exists and is empty), the acknowledgement
-reconciler, the voided-purchase sweep (so a refunded annual purchase keeps entitling for up to a
-year), and upgrade/downgrade proration. Also still open: Play Console does not exist, so the three
-product ids and the base plan id `annual` are assumptions nothing verifies; there is no Play service
-account or Pub/Sub topic; and `user_subscriptions` storing a Google purchase token is not mentioned
-by the privacy page.
+**OUT OF SCOPE at the time, and all four CLOSED the next day by V11 / BR-13** (see the entry below):
+the RTDN webhook handler, the acknowledgement reconciler, the voided-purchase sweep, and
+upgrade/downgrade proration. Still open from this wave: Play Console does not exist, so the three
+product ids and the base plan id `annual` are assumptions nothing verifies.
+
+**2026-09-19 — the billing lifecycle (V11, BR-13): RTDN, refunds, the reconciler, tier changes, and
+deletion with a live subscription.** The four gates BR-12 left open are closed, plus a fifth nobody
+had listed: `AccountDeletionService` had NO billing awareness, so `DELETE /users/me` left Google
+charging a card for an account that no longer existed, and neither legal page contained the word
+"subscription" in either language. Details in §3 `plan/`, §4 for V11, §5 for the endpoint and the
+widened `subscription` field, §6 for the new guardrails. The decisions worth keeping:
+
+* **The notification is a trigger and an ordering token, not a fact.** Every type except
+  `SUBSCRIPTION_REVOKED` re-reads Google and writes through the one writer, so the table is two rows
+  (REFRESH / REVOKE) instead of fifteen bespoke branches, a type added later is REFRESHED rather than
+  ignored, and the handler never learns which replacement mode the client used. Revocation is the
+  exception and makes no Google call: being unable to reach Google must not keep a refunded user
+  entitled.
+* **Refunds get TWO independent entry points**, because either alone loses money: the notification
+  can be lost and the sweep runs four times a day. They converge on ONE `markVoided`, so they cannot
+  disagree; the only difference is a nullable `eventTimeMillis`, where null means "from the sweep,
+  do not touch the watermark".
+* **`setType(1)` is the single most dangerous line in the wave** and has an OFFLINE test against the
+  real generated client (`GooglePlayVoidedRequestTest`), because the endpoint defaults to
+  one-time products and the failure is invisible: an empty list forever, every run green.
+* **Four mechanisms stop the handler and the reconciler fighting**, each closing a different way it
+  goes wrong: one writer/one mapping; compare-and-set on `verified_at` under `SELECT … FOR UPDATE`
+  (the handler needs it too — the reconciler moves no watermark, so without the CAS a stale Google
+  answer could resurrect an expired row and the watermark check would pass); `last_event_time`
+  written only by a notification; write-once `voided_at` that `reconcile` refuses to run against.
+  `@DynamicUpdate` on the entity is the fifth and least obvious: a full-column UPDATE rewrites
+  columns the writer never meant to touch.
+* **An erroneous revocation is the one permanent mistake here**, since `voided_at` is write-once, a
+  refresh may never clear it and the reconciler skips voided rows. So every applied revoke logs at
+  WARN with the digest, the userId and the source — that is what makes it FINDABLE — and
+  `deploy/README.md` Step 11d carries the only sanctioned repair, which clears `verified_at` too so
+  GOOGLE, not the operator, restores the true state.
+* **The cancellation enqueue predicate is deliberately the WIDEST safe one.** Cancelling twice is a
+  no-op at Google; not cancelling once costs the user a year of charges. That asymmetry rejected every
+  state/superseded/voided filter — including `voided_at IS NULL`, because a refund of one payment
+  without revocation leaves auto-renew ON.
+* **The janitor re-reads the token before cancelling.** The legal page invites the person to
+  re-register and the client re-posts the same token on the first foreground, so without the check it
+  would turn auto-renew off for somebody who did not ask, silently.
+* **`whereis.legal.cancellation-retry-days` is read by BOTH the public page and the janitor's
+  give-up deadline.** `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS` exists for exactly this reason and the
+  lesson transfers verbatim; re-introducing the un-rendered literal one section away from the
+  rendered one would have undone it.
+* **Both legal pages changed, and they now agree.** `privacy.html`'s Retention sections used to say
+  deletion removes everything immediately while `delete-account.html` would have said a purchase
+  token survives for up to seven days — two public legal pages contradicting each other on a
+  retention period, on the two URLs Play cross-checks. Google is also now named as the billing
+  processor. The deletion page states the FAILURE outcome ("you may keep being charged, and only you
+  can stop it") rather than promising the cancellation succeeds.
+
+Corrections made to the design BEFORE writing code, from an adversarial review, each of which was a
+real defect rather than a style note: the MALFORMED ledger row was UNWRITABLE against V10's NOT
+NULLs; nothing caught the exceptions the ack table assumes the controller owns; a `@RequestBody` DTO
+would have reached Jackson before authentication; `markVoided` could not be one method on both entry
+points; `pending_product_id` would have been wiped on every app foreground; the cancellation-queue
+UNIQUE could turn `DELETE /users/me` into a 409; `PlayPurchaseInvalidException` mapped 400 and 404
+together so the janitor would have discarded real cancellations; the reconcile index could not serve
+its own ORDER BY; the watermark guard on the revoke path could only lose refunds; `productType != 1`
+failed open; and the ArchUnit rule the design leaned on four times does not catch a class-level
+`@Transactional`.
+
+Four mutation checks were RUN, and one of them corrected the spec's own claim:
+
+| mutation | what actually fails |
+|---|---|
+| DELETE the watermark guard | `PlayRtdnIT#anOlderEventArrivingAfterANewerOneIsDiscardedAndCannotResurrectTheRow` |
+| relax strict `>` to `>=` (equal event times apply) | `SubscriptionLifecycleWriterTest#applyNotificationRefusesAnEventThatIsNotStrictlyNewerThanTheWatermark` — **NOT the out-of-order IT**, which the spec claimed: that IT sends a strictly OLDER event, so a non-strict guard still discards it. The strictness exists for two concurrent deliveries of the SAME message, which is a unit-level fact |
+| delete the `verified_at` CAS from `applyNotification` | `SubscriptionLifecycleWriterTest#applyNotificationRefusesWhenAnotherWriterMovedVerifiedAtDuringTheGoogleRoundTrip` |
+| delete `setType(1)` | `GooglePlayVoidedRequestTest` |
+| add a CLASS-level `@Transactional` to `SubscriptionReconciler` | `NoTransactionAroundThePlayPortTest` — and `OwnershipScopingArchTest` stays GREEN, which is the whole point of adding the explicit test |
+
+Suites: **unit 472** (+138), **integration 151 across 21 classes** (+42: `PlayRtdnIT` 17,
+`SubscriptionReconcileIT` 7, `PlayVoidedPurchaseIT` 6, `PlanTierChangeIT` 6, `AccountDeletionIT` +4,
+`LegalPagesIT` +2). The ITs get their RTDN configuration and their scheduler-off flags from
+`AbstractIntegrationTest`'s SHARED `@DynamicPropertySource` — not from `@TestPropertySource`, which
+would fork the shared Testcontainers context three more times — and drive each scheduled component
+through `runOnce()` so one pass is assertable. Docs: `docs/BACKEND_REQUESTS.md` BR-13,
+`docs/ANDROID_APP_PROMPT.md` §3.8a + §3.8d, `deploy/README.md` Step 11 (Pub/Sub runbook, the log
+table, the operator repair) and its rewritten promotion gates, `deploy/Caddyfile.whereis`
+(`log_skip` for `/play/rtdn`), `deploy/.env.example` and `docker-compose.prod.yml`.
+
+**Still open, and now all of it is Console/Cloud work rather than missing code:** the Pub/Sub topic
+and push subscription (with an EXPLICIT audience — left blank, Google sets `aud` to the full push URL
+including the shared secret, and the app refuses to boot on a URL-shaped audience for exactly that
+reason), the 600 s ack deadline, the 10 s/600 s backoff, the 7-day retention, and the Caddy
+`log_skip`. Also: the three product ids and `annual` are still assumptions; the replacement modes are
+unverified against real Play behaviour and whether a DEFERRED downgrade issues a NEW token is not
+settled (the server is correct either way); account deletion refunds nothing, which is a COMMERCIAL
+decision now stated on a public page and wants a human sign-off (`subscriptionsv2.revoke` DOES exist
+in the pinned client — an earlier draft claimed otherwise); nothing notices if RTDN stops arriving;
+the reconciler's ceiling is ~1,200 live subscriptions and it WARNs rather than failing when it falls
+behind; and `play_notifications` is deliberately not deleted by account deletion (no `user_id`,
+because a notification can arrive for a token this server has never seen), which is the one billing
+retention question the privacy page still does not answer.
 
 ## 9. Future extension points (design for, do not build)
 
 pgvector/semantic search behind the SearchService port · shared household accounts · QR/NFC
 tags · reminders · real image object detection · notifications · Elasticsearch only if scale
-demands. **Subscriptions (Play Billing + RTDN)**: the ladder, the schema, the port and the verify endpoint
-SHIPPED 2026-09-19 (BR-12). Still to build, in this order: the RTDN webhook handler (the ledger and
-its ordering guarantees already exist), the acknowledgement reconciler, the voided-purchase sweep
-(`purchases.voidedpurchases.list` defaults to `type=0`, one-time products — subscriptions need
-`type=1`), and upgrade/downgrade proration (`linked_purchase_token` and `superseded_by` are there;
-the replacement mode is a pricing decision). The next wave's hard contract: resolve
-`linkedPurchaseToken` with a userId-SCOPED finder, never the global `findByPurchaseToken`, or the
-composite self-FK turns a cross-account link into a 500 on account deletion. Prefer simplicity; no premature microservices or event sourcing.
+demands. **Subscriptions (Play Billing + RTDN)**: COMPLETE as of 2026-09-19 — the ladder, schema, port and
+verify endpoint (BR-12), then the RTDN handler, the refund paths, the reconciler, tier changes and
+account-deletion cancellation (V11, BR-13). What is left is not code: the Pub/Sub subscription, the
+audience, and the product ids (see §8). The obvious follow-ups, deliberately NOT built: an alert on
+"no `play_notifications` row in N hours" (a quiet ledger is indistinguishable from a quiet week, and
+the reconciler papers over it); `pausedStateContext.autoResumeTime` so a PAUSED strip can show a
+resume date (a third column, and "Paused in Google Play" is honest without it); demoting a token
+Google has repeatedly forgotten (needs a counter column, and the risk of revoking a paying user on a
+transient 400 is judged larger); and a `pg_try_advisory_lock` guard for the scheduled jobs if whereis
+is ever scaled out (it does not fit cleanly around jobs that must not hold a transaction across an
+external call). Prefer simplicity; no premature microservices or event sourcing.

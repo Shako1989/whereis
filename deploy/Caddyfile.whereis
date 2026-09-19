@@ -8,6 +8,28 @@
 # ---- whereis API ----
 {$WHEREIS_API_HOST} {
     encode zstd gzip
+
+    # THE RTDN PUSH ENDPOINT'S ACCESS LOG MUST NOT CARRY ITS QUERY STRING.
+    #
+    # POST /play/rtdn?key=<32 random bytes> is Google Pub/Sub's push URL, and that `key` is one of
+    # the endpoint's TWO authentication checks (the other is Google's OIDC push token, verified in
+    # the app). A URL query string is the single most commonly logged secret there is: Caddy's
+    # default access log records the full URI, so without this block the shared secret is written
+    # to disk on every notification, then archived by the nightly backup, then read by anyone who
+    # can read a log.
+    #
+    # `log_skip` drops the request from the access log entirely, which is the only option that
+    # cannot leak the value by accident (a redaction filter that stops matching after a Caddy
+    # upgrade fails silently and in the wrong direction). Nothing of value is lost: the ledger table
+    # play_notifications records every notification the app actually received, with what it decided,
+    # which is strictly more useful than an access-log line.
+    #
+    # IF THIS IS LEFT UNDONE the endpoint still works and still authenticates — check 2 is
+    # unaffected — so nothing breaks loudly. That is exactly why it is written here rather than
+    # left to be remembered.
+    @rtdn path /play/rtdn
+    log_skip @rtdn
+
     reverse_proxy whereis-api:8080 {
         header_up X-Forwarded-Proto {scheme}
         header_up X-Forwarded-Host {host}
