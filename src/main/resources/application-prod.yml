@@ -30,3 +30,13 @@ logging:
     # Never DEBUG in prod: assistant messages and tokens are only ever logged at DEBUG,
     # and they must not reach a production log.
     az.technest.whereis: INFO
+
+# No defaults on purpose: an unresolvable placeholder fails startup, which is the only acceptable
+# outcome for the privacy notice and the account-deletion page. Set them in deploy/.env.
+whereis:
+  legal:
+    support-email: ${WHEREIS_LEGAL_SUPPORT_EMAIL}
+    legal-entity: ${WHEREIS_LEGAL_ENTITY}
+    legal-address: ${WHEREIS_LEGAL_ADDRESS}
+    effective-date: ${WHEREIS_LEGAL_EFFECTIVE_DATE}
+    backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS}

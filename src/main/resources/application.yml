@@ -94,3 +94,16 @@ ai:
     max-output-tokens: ${AI_CLAUDE_MAX_OUTPUT_TOKENS:4096}
     # One retry, not the SDK default of two: /assistant/remember is synchronous.
     max-retries: ${AI_CLAUDE_MAX_RETRIES:1}
+
+# The five facts the public legal pages state. Deployment configuration, not source: the repository
+# is public, and these are rendered into the pages at startup rather than committed into them.
+# The defaults below are deliberately UNUSABLE (.invalid is reserved by RFC 2606 for exactly this)
+# so a build that reaches a user with them still in place is obvious. application-prod.yml declares
+# every one with no default, so the prod profile cannot start without real values.
+whereis:
+  legal:
+    support-email: ${WHEREIS_LEGAL_SUPPORT_EMAIL:support@example.invalid}
+    legal-entity: ${WHEREIS_LEGAL_ENTITY:whereis (development build)}
+    legal-address: ${WHEREIS_LEGAL_ADDRESS:not set in a development build}
+    effective-date: ${WHEREIS_LEGAL_EFFECTIVE_DATE:1970-01-01}
+    backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS:0}

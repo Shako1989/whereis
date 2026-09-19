@@ -73,6 +73,17 @@ services:
       AI_CLAUDE_TEMPERATURE: ${WHEREIS_AI_CLAUDE_TEMPERATURE-0.0}
       AI_CLAUDE_MAX_OUTPUT_TOKENS: ${WHEREIS_AI_CLAUDE_MAX_OUTPUT_TOKENS:-4096}
       AI_CLAUDE_BASE_URL: ${WHEREIS_AI_CLAUDE_BASE_URL:-}
+
+      # The five facts the public legal pages state. `:?` on every one of them is deliberate:
+      # compose refuses to start the stack rather than hand the app a value it would then fail
+      # startup on anyway, and the error names the missing variable instead of a Spring stack
+      # trace. WHEREIS_LEGAL_BACKUP_RETENTION_DAYS is a promise to the user about how long deleted
+      # data survives — it must match what the backup job on this box actually rotates.
+      WHEREIS_LEGAL_SUPPORT_EMAIL: ${WHEREIS_LEGAL_SUPPORT_EMAIL:?set WHEREIS_LEGAL_SUPPORT_EMAIL in .env}
+      WHEREIS_LEGAL_ENTITY: ${WHEREIS_LEGAL_ENTITY:?set WHEREIS_LEGAL_ENTITY in .env}
+      WHEREIS_LEGAL_ADDRESS: ${WHEREIS_LEGAL_ADDRESS:?set WHEREIS_LEGAL_ADDRESS in .env}
+      WHEREIS_LEGAL_EFFECTIVE_DATE: ${WHEREIS_LEGAL_EFFECTIVE_DATE:?set WHEREIS_LEGAL_EFFECTIVE_DATE in .env}
+      WHEREIS_LEGAL_BACKUP_RETENTION_DAYS: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS:?set WHEREIS_LEGAL_BACKUP_RETENTION_DAYS in .env}
       AI_CLAUDE_WORKSPACE_ID: ${WHEREIS_AI_CLAUDE_WORKSPACE_ID:-}
       AI_CLAUDE_MAX_RETRIES: ${WHEREIS_AI_CLAUDE_MAX_RETRIES:-1}
 

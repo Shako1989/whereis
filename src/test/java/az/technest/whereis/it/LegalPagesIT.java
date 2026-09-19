@@ -38,7 +38,9 @@ class LegalPagesIT extends AbstractIntegrationTest {
         // The in-app route is spelled out in both languages…
         assertThat(body).contains("Parametrlər").contains("Hesabı sil").contains("Settings");
         // …and the e-mail fallback is a mailto link to the (still placeholder) support address.
-        assertThat(body).contains("mailto:{{SUPPORT_EMAIL}}");
+        // The dev-profile value from application.yml. Asserting the RENDERED address rather than
+        // the marker is the whole point of this change: the marker reaching a reader was the bug.
+        assertThat(body).contains("mailto:support@example.invalid");
         // Photos are removed asynchronously — the page must not promise "instantly".
         assertThat(body).contains("asynchronously").contains("asinxron");
     }
@@ -57,6 +59,32 @@ class LegalPagesIT extends AbstractIntegrationTest {
         // The clean URL forwards to the .html resource; the target must be permitted as well.
         assertHtmlPage(anonymousGet("/legal/delete-account.html"));
         assertHtmlPage(anonymousGet("/legal/privacy.html"));
+    }
+
+    @Test
+    void noServedPageCarriesATemplateMarker() {
+        // The one assertion that would have caught the original defect. Both pages, both URL
+        // forms, because the .html form used to be served straight off the classpath by the static
+        // resource handler — which is why the source files no longer live under static/.
+        for (String path : new String[] {
+                "/legal/privacy", "/legal/privacy.html",
+                "/legal/delete-account", "/legal/delete-account.html"}) {
+            ResponseEntity<String> page = anonymousGet(path);
+            assertThat(page.getStatusCode()).as("%s", path).isEqualTo(HttpStatus.OK);
+            assertThat(page.getBody()).as("%s must not be a template", path).doesNotContain("{{");
+        }
+    }
+
+    @Test
+    void aHeadRequestIsAnsweredToo() {
+        // Link checkers and store tooling probe with HEAD; a GET-only matcher answered those 401,
+        // which reads as a broken privacy URL to whoever is checking.
+        // Accept is set explicitly: TestRestTemplate derives one from the Void response type,
+        // which matches nothing a text/html-only endpoint can produce. A real checker sends */*.
+        HttpHeaders headers = new HttpHeaders();
+        headers.setAccept(java.util.List.of(MediaType.ALL));
+        assertThat(rest.exchange("/legal/privacy", HttpMethod.HEAD, new HttpEntity<>(headers), Void.class)
+                .getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 
     @Test

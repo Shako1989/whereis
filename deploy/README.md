@@ -297,6 +297,21 @@ metadata rows, so both must be captured together. Add to root's crontab:
 15 3 * * * docker exec autoparts-postgres pg_dump -U autoparts -Fc whereis \
              > /var/backups/whereis-$(date +\%F).dump 2>/dev/null
 30 3 * * * find /var/backups -name 'whereis-*.dump' -mtime +14 -delete
+
+> **CORRECTED 2026-09-19 — this step was documented but never carried out.** The box runs
+> `/root/db_backup.sh` from root's crontab at 03:00, and that script dumps **only the `autoparts`
+> database**: `pg_dump -U autoparts autoparts`. It predates whereis (written 2026-06-15) and was
+> never extended. Verified on the box: the dumps in `/root/backups/` contain none of
+> `spaces`, `items`, `locations` or `assistant_messages`.
+>
+> So **whereis is not backed up at all** — neither PostgreSQL nor the MinIO bucket. If the volume
+> is lost, every item, space, photo reference and assistant message goes with it. Retention for
+> `autoparts` is 14 days (`-mtime +14` in that script), which is where the 14 in this document came
+> from; it says nothing about whereis.
+>
+> This also decides `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS`. Until the script covers whereis, the
+> honest value is **0** — deleted data survives in no backup because there is no backup. Do not
+> write 14 into the privacy notice while that is true.
 ```
 
 Copy `/var/backups` and the `minio-data` volume off the box — a backup that only lives on the
@@ -323,10 +338,15 @@ literal `{{SUPPORT_EMAIL}}` will fail review. Edit the two files under
 | `{{LEGAL_ENTITY}}` | the legal name of the data controller |
 | `{{LEGAL_ADDRESS}}` | its postal address |
 | `{{EFFECTIVE_DATE}}` | the date the notice takes effect |
-| `{{BACKUP_RETENTION_DAYS}}` | how long a deleted account can persist in backups — Step 8 rotates dumps after **14** days; confirm the real box before writing the number |
+| `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS` | how long deleted data can persist in backups. See the correction under Step 8: while whereis is not backed up at all, the honest value is `0`. |
 
 ```sh
-grep -R "{{" src/main/resources/static && echo "PLACEHOLDERS LEFT — do not submit" || echo "ok"
+# Nothing to grep any more. The pages moved out of src/main/resources/static/ to
+# src/main/resources/legal/ precisely so the static resource handler could not serve an
+# unrendered one, and the values now arrive from .env at startup. A missing value FAILS
+# STARTUP (LegalPages), and LegalPagesIT asserts no served page contains "{{" on either URL
+# form. Verify the live pages instead:
+curl -s https://$WHEREIS_API_HOST/legal/privacy | grep -o "{{[A-Z_]*}}" && echo "PLACEHOLDERS LEFT" || echo "ok"
 ```
 
 Verify after deploy (no token on any of these):

@@ -10,6 +10,8 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -64,6 +66,23 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiError> handleAccessDenied(AccessDeniedException ex, HttpServletRequest request) {
         return respond(HttpStatus.FORBIDDEN, ErrorCode.CONFLICT, "Access denied", request);
+    }
+
+    /**
+     * Content negotiation failed. Unmapped, these fell through to {@link #handleUnexpected} and
+     * answered 500 while being logged as "Unhandled exception" — for a request that is merely
+     * unserveable, not broken. Found on the legal pages, which produce only {@code text/html}: a
+     * probe asking for something else got a 500 and an error-level log line.
+     */
+    @ExceptionHandler({
+            HttpMediaTypeNotAcceptableException.class,
+            HttpMediaTypeNotSupportedException.class
+    })
+    public ResponseEntity<ApiError> handleMediaType(Exception ex, HttpServletRequest request) {
+        HttpStatus status = ex instanceof HttpMediaTypeNotAcceptableException
+                ? HttpStatus.NOT_ACCEPTABLE
+                : HttpStatus.UNSUPPORTED_MEDIA_TYPE;
+        return respond(status, ErrorCode.VALIDATION_ERROR, "Unsupported media type", request);
     }
 
     @ExceptionHandler(NoResourceFoundException.class)

@@ -74,8 +74,12 @@ public class SecurityConfig {
                             .requestMatchers("/api/v1/auth/**").permitAll()
                             .requestMatchers("/error").permitAll()
                             // Play Store requires the account-deletion and privacy pages to be
-                            // reachable without an account. GET only; nothing under /api is touched.
-                            .requestMatchers(HttpMethod.GET, "/legal/**").permitAll();
+                            // reachable without an account. GET and HEAD only; nothing under /api
+                            // is touched. HEAD is included because link checkers and store tooling
+                            // probe with it, and a GET-only matcher answers those 401 — which reads
+                            // as a broken privacy URL to whoever is checking.
+                            .requestMatchers(HttpMethod.GET, "/legal/**").permitAll()
+                            .requestMatchers(HttpMethod.HEAD, "/legal/**").permitAll();
                     // The OpenAPI surface is public only where springdoc itself is enabled;
                     // the prod profile turns both off together so the docs are never anonymous.
                     if (apiDocsEnabled) {
