@@ -145,6 +145,8 @@ The public pages Play links to are served by the same host, unauthenticated:
 `PUT` is a **full replace** — always send all three fields.
 DELETE returns **409 `SPACE_NOT_EMPTY`** while the space still has locations.
 Duplicate name for the same user → **409 `DUPLICATE_NAME`**.
+A free account may hold **one** space; a second POST is **409 `PLAN_LIMIT_REACHED`** — see §3.8.
+(Re-sending the name of the space you already own is still `DUPLICATE_NAME`, not the plan limit.)
 
 ### 3.3 Locations
 
@@ -177,7 +179,7 @@ Errors: **409 `LOCATION_NOT_EMPTY`** (has children or items), **400 `CYCLE_DETEC
 
 | Method | Path | Body / Query | Success |
 |---|---|---|---|
-| POST | `/items` | `{name, description?, category?, locationId}` | 201 `Item` |
+| POST | `/items` | `{name, description?, category?, locationId}` | 201 `Item`, **409 `PLAN_LIMIT_REACHED`** (§3.8) |
 | GET | `/items` | `?locationId=uuid?&page=0&size=20&sort=updatedAt,desc&includeArchived=false` | 200 **Spring `Page<Item>`** |
 | GET | `/items/search` | `?q=…&limit=20` | 200 `SearchResult[]` |
 | GET | `/items/{itemId}` | — | 200 `Item` |
@@ -264,7 +266,7 @@ formatter so the UI looks uniform.
 
 | Method | Path | Request | Success |
 |---|---|---|---|
-| POST | `/assistant/remember` | `{message}` (≤ 1000), optional `spaceId` **or** `locationId` | 200 `RememberResponse` |
+| POST | `/assistant/remember` | `{message}` (≤ 1000), optional `spaceId` **or** `locationId` | 200 `RememberResponse`, **409 `PLAN_LIMIT_REACHED`** (§3.8) |
 | POST | `/assistant/search` | `{query}` (≤ 500) | 200 `{answer, items:SearchResult[]}` |
 | POST | `/assistant/images/analyze` | multipart, part `file` | 200 `{suggestions:[{name,category}], note}` |
 
@@ -331,8 +333,8 @@ formatter so the UI looks uniform.
 `VALIDATION_ERROR`, `USER_NOT_FOUND`, `SPACE_NOT_FOUND`, `LOCATION_NOT_FOUND`, `ITEM_NOT_FOUND`,
 `FILE_NOT_FOUND`, `EMAIL_IN_USE`, `DUPLICATE_NAME`, `INVALID_CREDENTIALS`, `TOKEN_INVALID`,
 `TOKEN_EXPIRED`, `INVALID_LOCATION_HIERARCHY`, `CYCLE_DETECTED`, `LOCATION_NOT_EMPTY`,
-`SPACE_NOT_EMPTY`, `FILE_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`, `STORAGE_ERROR`, `AI_UNAVAILABLE`,
-`AI_NOT_IMPLEMENTED`, `CONFLICT`, `INTERNAL_ERROR`.
+`SPACE_NOT_EMPTY`, `PLAN_LIMIT_REACHED`, `FILE_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`,
+`STORAGE_ERROR`, `AI_UNAVAILABLE`, `AI_NOT_IMPLEMENTED`, `CONFLICT`, `INTERNAL_ERROR`.
 
 Map every one of these to a specific, human, localized string. Never surface a raw `code` or the
 server `message` verbatim to the user; never show a stack trace or an HTTP number.
@@ -340,6 +342,45 @@ server `message` verbatim to the user; never show a stack trace or an HTTP numbe
 **Ownership misses return 404, not 403 — deliberately.** A resource that belongs to someone else is
 indistinguishable from one that does not exist. Your UI must respect that: on 404 say
 *"This item is no longer available"* and pop back to the list. Never say "you don't have permission".
+
+### 3.8 Plan limits — the free tier (409 `PLAN_LIMIT_REACHED`)
+
+A `FREE` account may hold **1 space** and **100 ACTIVE items**. Beyond either, the three creation
+calls above answer **409** with `code: "PLAN_LIMIT_REACHED"` and a `message` that names what was hit
+and what the limit is. There is no "what plan am I on?" endpoint and no quota in any response: the
+client learns it has hit the wall by being refused. That is deliberate — the limits are a
+server-side product rule, and a client that tracks its own counters will disagree with the server
+the first time an item is created on another device.
+
+**Server-side facts the client can rely on**
+
+* Only **ACTIVE** items count. Archiving an item (`PUT /items/{id}` with `archived: true`) frees
+  room immediately; the item is not deleted and still shows under
+  `GET /items?includeArchived=true`. Deleting a space or an item frees room the same way.
+* **Locations are not limited** at any depth or number.
+* Nothing existing is ever taken away by the limits. Only creation is refused — an account that
+  already holds more than the free tier (e.g. after an `UNLIMITED` grant was removed) keeps
+  everything and can still read, edit, move, archive and delete.
+* Ownership still wins: a foreign or unknown `locationId` is `404 LOCATION_NOT_FOUND` even at the
+  limit. Handle the 404 first.
+* A refused `/assistant/remember` creates **nothing** — no item and none of the locations the
+  sentence implied. Do not optimistically insert a row and then reconcile.
+
+**What the UI must do**
+
+1. Show the limit, not the error. Render your own localized copy — you have the number in the
+   server `message`, and §3.7's rule still applies (never surface a raw `code`). For the item limit
+   the honest wording is *"You've reached 100 items on the free plan"*.
+2. **Offer the action that works today: archive something.** For the item limit, deep-link to a list
+   the user can archive from. For the space limit there is no such action — say what the plan allows
+   and stop.
+3. **There is NO paywall yet.** Billing is a later backend change: no Play Billing product, no
+   purchase flow, no subscription endpoint. Do **not** ship a "Subscribe" button that opens nothing,
+   a placeholder purchase screen, or a Play Billing SDK integration against an imagined contract.
+   When the subscription contract lands it will arrive as its own BR entry.
+4. During closed testing, accounts that need more room are granted `UNLIMITED` by the operator
+   directly in the database. A tester who hits the wall is a working test, not a bug — there is
+   nothing the app can do about it, and nothing it should pretend to do.
 
 ---
 

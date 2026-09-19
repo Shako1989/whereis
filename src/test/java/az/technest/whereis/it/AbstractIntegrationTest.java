@@ -118,6 +118,22 @@ public abstract class AbstractIntegrationTest {
         }
     }
 
+    /**
+     * Grants the account unlimited use, exactly as an operator does after a deploy
+     * (deploy/README.md) — one UPDATE on {@code users.plan}, no endpoint and no application code.
+     *
+     * <p>Needed by any scenario that exceeds the free tier: with {@code whereis.limits.free.spaces}
+     * = 1 a FREE account cannot own a second space, so the tests that legitimately span two spaces
+     * (the MVP journey's cross-space move among them) are tests of a granted account. The ITs
+     * deliberately run with the REAL production limits rather than inflated test ones.
+     */
+    protected void grantUnlimited(UUID userId) {
+        int updated = jdbc.update("update users set plan = 'UNLIMITED' where id = ?", userId);
+        if (updated != 1) {
+            throw new IllegalStateException("Expected to grant exactly one account, updated " + updated);
+        }
+    }
+
     protected HttpHeaders bearer(String token) {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(token);

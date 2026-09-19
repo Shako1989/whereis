@@ -4,12 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import az.technest.whereis.item.dto.CreateItemRequest;
 import az.technest.whereis.item.dto.ItemResponse;
 import az.technest.whereis.item.dto.MoveItemRequest;
 import az.technest.whereis.location.Location;
@@ -17,6 +19,8 @@ import az.technest.whereis.location.LocationNotFoundException;
 import az.technest.whereis.location.LocationService;
 import az.technest.whereis.location.LocationTreeDao;
 import az.technest.whereis.location.LocationType;
+import az.technest.whereis.plan.PlanLimitEnforcer;
+import az.technest.whereis.plan.PlanLimitReachedException;
 import az.technest.whereis.storage.FileStorageService;
 import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import java.util.List;
@@ -48,6 +52,8 @@ class ItemServiceTest {
     private LocationTreeDao treeDao;
     @Mock
     private FileStorageService fileStorageService;
+    @Mock
+    private PlanLimitEnforcer planLimits;
 
     private ItemService itemService;
 
@@ -56,7 +62,7 @@ class ItemServiceTest {
     @BeforeEach
     void setUp() {
         itemService = new ItemService(itemRepository, historyRepository, locationService,
-                treeDao, fileStorageService, new ItemMapperImpl());
+                treeDao, fileStorageService, planLimits, new ItemMapperImpl());
     }
 
     private Location location(UUID id, String name) {
@@ -326,5 +332,48 @@ class ItemServiceTest {
         assertThat(summary.items()).isEqualTo(2);
         assertThat(summary.filesEnqueued()).isEqualTo(5);
         verifyNoMoreInteractions(fileStorageService);
+    }
+
+    // ------------------------------------------------------------------ free-tier item limit
+
+    @Test
+    void createAtRefusesAtThePlanLimitAndWritesNothing() {
+        UUID locationId = UUID.randomUUID();
+        when(locationService.requireOwned(userId, locationId)).thenReturn(location(locationId, "Top Drawer"));
+        doThrow(PlanLimitReachedException.activeItems(100)).when(planLimits).requireRoomForAnotherItem(userId);
+
+        assertThatThrownBy(() -> itemService.createAt(userId, locationId, "Passport", null, null, null))
+                .isInstanceOf(PlanLimitReachedException.class)
+                .hasMessageContaining("100 active items");
+
+        // Neither the item nor its open history record exists — the refusal is before every write,
+        // so the assistant's chain path has nothing to roll back either.
+        verifyNoInteractions(itemRepository, historyRepository);
+    }
+
+    @Test
+    void theManualCreateEndpointGoesThroughTheSameGuard() {
+        UUID locationId = UUID.randomUUID();
+        when(locationService.requireOwned(userId, locationId)).thenReturn(location(locationId, "Top Drawer"));
+        doThrow(PlanLimitReachedException.activeItems(100)).when(planLimits).requireRoomForAnotherItem(userId);
+
+        // create() delegates to createAt(), which is why one guard covers all three creation paths.
+        assertThatThrownBy(() -> itemService.create(userId,
+                new CreateItemRequest("Passport", null, null, locationId)))
+                .isInstanceOf(PlanLimitReachedException.class);
+        verifyNoInteractions(itemRepository);
+    }
+
+    @Test
+    void aForeignLocationIsStill404EvenWhenThePlanHasNoRoomLeft() {
+        UUID locationId = UUID.randomUUID();
+        when(locationService.requireOwned(userId, locationId)).thenThrow(new LocationNotFoundException());
+
+        assertThatThrownBy(() -> itemService.createAt(userId, locationId, "Passport", null, null, null))
+                .isInstanceOf(LocationNotFoundException.class);
+
+        // Ownership is decided first on purpose: a 409 here would answer a request whose location
+        // id is not even the caller's, and 404 is the established contract for that.
+        verifyNoInteractions(planLimits);
     }
 }

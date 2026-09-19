@@ -125,6 +125,8 @@ class AssistantMessageIT extends AbstractIntegrationTest {
     void needsConfirmationWritesOnlyTheMessageRowAndTheConfirmationWritesASecondOne() {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
+        // Ambiguity needs two spaces, which is beyond the free tier: granted account.
+        grantUnlimited(userId);
         createSpace(token, "Home", SpaceType.HOME);
         SpaceResponse office = createSpace(token, "Office", SpaceType.OFFICE);
         int spacesBefore = count("select count(*) from spaces where user_id = ?", userId);

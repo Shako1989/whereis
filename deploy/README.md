@@ -29,9 +29,9 @@ unless that stack was started with `-p`. **Confirm before you start:** `docker n
 
 ## Step 0 — Gate: the integration suite must pass first
 
-Per the project spec, the 17 Testcontainers tests including `MvpJourneyIT` have never run
-green. Transaction boundaries, the MinIO deletion outbox, and the location advisory locks are
-all only covered there. Run this on a machine with working Docker before deploying anything:
+The Testcontainers suite (61 tests as of 2026-09-19, including `MvpJourneyIT`) is the only place
+transaction boundaries, the MinIO deletion outbox, the location advisory locks and the free-tier
+guard are covered at all. Run this on a machine with working Docker before deploying anything:
 
 ```sh
 ./gradlew build && ./gradlew integrationTest
@@ -389,6 +389,67 @@ within minutes (50 objects per 60 s sweep) — `select count(*) from storage_del
 trend to zero after a deletion. Note for whoever signs the privacy statement: a deleted account
 genuinely persists in the Step 8 dumps until they rotate out; there is no process that scrubs a
 user from an existing dump.
+
+## Step 10 — Free-tier limits: grant UNLIMITED (do this right after the first deploy)
+
+`V9` gives every account `users.plan = 'FREE'`, which allows **1 space** and **100 ACTIVE items**.
+The migration deliberately contains **no `UPDATE`** — nothing is grandfathered, including the
+account that already exists on this box. Nothing is deleted or hidden, but until it is granted that
+account **cannot create a 5th space** (it currently holds 4 spaces and 19 active items).
+
+So do this immediately after the deploy, for your own account and for every tester who should not
+hit the wall. There is no endpoint and no admin API for it, by design — it is one statement:
+
+```sh
+docker exec -i autoparts-postgres psql -U whereis -d whereis -c "UPDATE users SET plan = 'UNLIMITED' WHERE lower(email) = lower('you@example.com');"
+```
+
+Expect `UPDATE 1`. `UPDATE 0` means the e-mail does not match a row — check it, do not guess:
+
+```sh
+docker exec -i autoparts-postgres psql -U whereis -d whereis -c "SELECT email, plan FROM users ORDER BY created_at;"
+```
+
+To revoke a grant, set it back to `'FREE'`. Revoking takes nothing away: the account keeps every
+space and item it already has and can still read, edit, move, archive and delete them — only
+creation is refused from then on.
+
+**Why by hand.** `UNLIMITED` is a *grant* for specific accounts (you, testers, close
+acquaintances), not a fact about when an account was created, which is exactly what a migration
+could not express. It is also **not** subscription state and must never be merged with it: when
+billing lands, a Play RTDN reporting an expiry will write "no longer subscribed" somewhere, and if
+that somewhere were this column it would silently erase the grants you made here. The entitlement
+rule becomes `plan = 'UNLIMITED' OR active subscription` inside one method
+(`PlanLimitEnforcer#hasUnlimitedEntitlement`); this column stays operator-only.
+
+Tuning the limits needs no code change: both are `@ConfigurationProperties`
+(`whereis.limits.free.spaces` / `.items`, defaulting to 1 and 100 in `application.yml`). To override
+one here, add the passthrough to the `environment:` block of `docker-compose.prod.yml` — it is
+deliberately NOT there today, because the defaults ARE the product rule and an unused knob in the
+compose file invites drift:
+
+```yaml
+      WHEREIS_LIMITS_FREE_SPACES: ${WHEREIS_LIMITS_FREE_SPACES:-1}
+      WHEREIS_LIMITS_FREE_ITEMS: ${WHEREIS_LIMITS_FREE_ITEMS:-100}
+```
+
+### GATE before promoting a build past closed testing
+
+> **The wall has no door yet.** Billing is not implemented — no Play Billing product, no purchase
+> flow, no subscription endpoint. A `FREE` account that reaches 1 space or 100 active items is
+> refused with `409 PLAN_LIMIT_REACHED` and **cannot pay to get past it**. The only ways forward are
+> archiving an item (which frees room) or an operator grant.
+>
+> That is intentional for closed testing — testers are meant to exercise the wall. It must **not**
+> reach an open track or production that way. Before promoting a build to open testing or
+> production, one of these must be true:
+>
+> 1. billing is implemented and a purchase actually grants unlimited use; **or**
+> 2. the limits are raised high enough to be unreachable (`WHEREIS_LIMITS_FREE_*`) so no user is
+>    refused a creation they cannot resolve; **or**
+> 3. the accounts on the track are all granted `UNLIMITED`.
+>
+> Shipping a paid wall with no way to pay is a Play policy problem as well as a product one.
 
 ## Redeploy and rollback
 

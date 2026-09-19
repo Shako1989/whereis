@@ -107,3 +107,13 @@ whereis:
     legal-address: ${WHEREIS_LEGAL_ADDRESS:not set in a development build}
     effective-date: ${WHEREIS_LEGAL_EFFECTIVE_DATE:1970-01-01}
     backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS:0}
+
+  # Free-tier ceilings. Product rules rather than deployment secrets, so they are plain values here
+  # instead of .env placeholders — relaxed binding still lets WHEREIS_LIMITS_FREE_SPACES /
+  # WHEREIS_LIMITS_FREE_ITEMS override one during closed testing without a code change. Only ACTIVE
+  # items count towards `items` (archiving frees room); locations are deliberately not limited.
+  # An account with users.plan = 'UNLIMITED' ignores both (see deploy/README.md for the grant).
+  limits:
+    free:
+      spaces: 1
+      items: 100

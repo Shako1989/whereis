@@ -5,6 +5,7 @@ import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.common.util.Names;
 import az.technest.whereis.location.LocationRepository;
 import az.technest.whereis.location.LocationTreeDao;
+import az.technest.whereis.plan.PlanLimitEnforcer;
 import az.technest.whereis.space.dto.CreateSpaceRequest;
 import az.technest.whereis.space.dto.SpaceResponse;
 import az.technest.whereis.space.dto.UpdateSpaceRequest;
@@ -22,6 +23,7 @@ public class SpaceService {
     private final SpaceRepository spaceRepository;
     private final LocationRepository locationRepository;
     private final LocationTreeDao treeDao;
+    private final PlanLimitEnforcer planLimits;
     private final SpaceMapper mapper;
 
     @Transactional
@@ -31,6 +33,9 @@ public class SpaceService {
         if (spaceRepository.existsByUserIdAndNormalizedName(userId, normalizedName)) {
             throw new ConflictException(ErrorCode.DUPLICATE_NAME, "A space with this name already exists");
         }
+        // After the name check on purpose: a user resending the name of the space they already have
+        // is better told DUPLICATE_NAME (the space exists) than PLAN_LIMIT_REACHED (buy more).
+        planLimits.requireRoomForAnotherSpace(userId);
         Space space = Space.builder()
                 .userId(userId)
                 .name(name)

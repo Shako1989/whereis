@@ -18,6 +18,9 @@ public interface SpaceRepository extends JpaRepository<Space, UUID> {
 
     boolean existsByUserIdAndNormalizedName(UUID userId, String normalizedName);
 
+    /** Free-tier guard: the number of spaces the account has, counted in the database. */
+    long countByUserId(UUID userId);
+
     /** Ids only (no entity hydration), ascending so advisory locks are always taken in one order. */
     @Query("select s.id from Space s where s.userId = :userId order by s.id")
     List<UUID> findAllIdsByUserIdOrderByIdAsc(@Param("userId") UUID userId);

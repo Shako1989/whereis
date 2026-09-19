@@ -39,6 +39,12 @@ public interface ItemRepository extends JpaRepository<Item, UUID> {
     boolean existsByCurrentLocationId(UUID currentLocationId);
 
     /**
+     * Free-tier guard: the number of ACTIVE items the account has, counted in the database.
+     * Archived rows are excluded on purpose — archiving is how a user at the limit frees room.
+     */
+    long countByUserIdAndArchivedFalse(UUID userId);
+
+    /**
      * Row-locks every item of the user in ONE statement — the batch analogue of {@link #findForUpdate}.
      * Native so that {@code FOR UPDATE} is guaranteed on the wire and no entities are hydrated for a
      * large account; ids only. A concurrent photo upload inserting {@code item_files} needs

@@ -26,8 +26,10 @@ class MvpJourneyIT extends AbstractIntegrationTest {
 
     @Test
     void registerRememberSearchMoveHistory() {
-        // 1. User registers and creates "Home".
+        // 1. User registers and creates "Home". Granted UNLIMITED because step 5 moves the item
+        // into a SECOND space: the documented journey crosses spaces, and the free tier allows one.
         String token = registerAndGetToken();
+        grantUnlimited(subjectOf(token));
         SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
 
         // 2. Natural-language registration: interpretation -> validation -> resolution -> creation.
@@ -92,6 +94,8 @@ class MvpJourneyIT extends AbstractIntegrationTest {
     @Test
     void hallucinationSafety_unknownSpaceNeverCreatesAnything() {
         String token = registerAndGetToken();
+        // Two spaces are what makes the space ambiguous at all; beyond the free tier, so granted.
+        grantUnlimited(subjectOf(token));
         createSpace(token, "Home", SpaceType.HOME);
         createSpace(token, "Office", SpaceType.OFFICE);
 

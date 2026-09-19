@@ -133,6 +133,8 @@ class AccountDeletionIT extends AbstractIntegrationTest {
         TokenPairResponse tokens = register();
         String token = tokens.accessToken();
         UUID userId = subjectOf(token);
+        // Two spaces: beyond the free tier, so this is a granted account (see grantUnlimited).
+        grantUnlimited(userId);
         SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
         SpaceResponse office = createSpace(token, "Office", SpaceType.OFFICE);
         LocationResponse bedroom = createLocation(token, home.id(), "Bedroom", LocationType.ROOM, null);
@@ -161,6 +163,8 @@ class AccountDeletionIT extends AbstractIntegrationTest {
         TokenPairResponse tokens = register();
         String token = tokens.accessToken();
         UUID userId = subjectOf(token);
+        // Granted: callers ask for several spaces and dozens of items, which the free tier refuses.
+        grantUnlimited(userId);
         List<UUID> spaceIds = new ArrayList<>();
         List<UUID> nodes = new ArrayList<>();
         for (int s = 0; s < spaceCount; s++) {

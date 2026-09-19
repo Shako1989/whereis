@@ -21,6 +21,7 @@ import az.technest.whereis.common.error.BadRequestException;
 import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.common.error.NotFoundException;
 import az.technest.whereis.item.dto.ItemResponse;
+import az.technest.whereis.plan.PlanLimitReachedException;
 import az.technest.whereis.search.SearchService;
 import az.technest.whereis.search.dto.ItemSearchResult;
 import az.technest.whereis.space.Space;
@@ -665,5 +666,53 @@ class AssistantServiceTest {
                 .hasMessageContaining("not both");
 
         verifyNoInteractions(aiAssistant, spaceRepository, executor, messages);
+    }
+
+    // ------------------------------------------------------- free-tier limit on both remember paths
+
+    /**
+     * The item limit is enforced inside {@code ItemService.createAt}, i.e. inside the executor's
+     * transaction, so from here a refusal is indistinguishable from any other rolled-back placement:
+     * FAILED, with the refusal's own error code. That is the answer to "what does a limit refusal
+     * record" — FAILED / PLAN_LIMIT_REACHED, never CREATED and never a silent NOT_UNDERSTOOD.
+     */
+    @Test
+    void aChainPlacementRefusedByThePlanLimitRecordsFailedWithThatCodeAndRethrows() {
+        Space home = space("Home");
+        when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Home", 0.93));
+        when(spaceRepository.findByUserIdAndNormalizedName(userId, "home")).thenReturn(Optional.of(home));
+        when(executor.place(eq(userId), eq(home.getId()), any(), eq(AssistantService.PLACEMENT_NOTE)))
+                .thenThrow(PlanLimitReachedException.activeItems(100));
+
+        assertThatThrownBy(() ->
+                service.remember(userId, "I put my passport in the bedroom drawer at home", null, null))
+                .isInstanceOf(PlanLimitReachedException.class)
+                .hasMessageContaining("100 active items");
+
+        RecordedRow row = recordedRow(AssistantOutcome.FAILED);
+        assertThat(row.result().errorCode()).isEqualTo(ErrorCode.PLAN_LIMIT_REACHED.name());
+        assertThat(row.result().itemId()).isNull();
+        // The space was resolved before the executor ran, so that half of the diagnosis survives.
+        assertThat(row.result().spaceId()).isEqualTo(home.getId());
+        assertThat(row.draft().message()).isEqualTo("I put my passport in the bedroom drawer at home");
+    }
+
+    @Test
+    void aPinnedPlacementRefusedByThePlanLimitRecordsFailedWithThatCodeAndRethrows() {
+        UUID pinned = UUID.randomUUID();
+        when(executor.placeAt(eq(userId), eq(pinned), anyString(), eq(null), anyString()))
+                .thenThrow(PlanLimitReachedException.activeItems(100));
+
+        assertThatThrownBy(() -> service.remember(userId, "kabel 20A", null, pinned))
+                .isInstanceOf(PlanLimitReachedException.class);
+
+        RecordedRow row = recordedRow(AssistantOutcome.FAILED);
+        assertThat(row.result().errorCode()).isEqualTo(ErrorCode.PLAN_LIMIT_REACHED.name());
+        // Same shape as any other pinned failure: no provider ran, so no interpretation and no
+        // space link (the executor's own lookup is what would have revealed the space).
+        assertThat(row.draft().ai()).isEqualTo(AiMetadata.NONE);
+        assertThat(row.draft().interpretation()).isNull();
+        assertThat(row.result().spaceId()).isNull();
+        verifyNoInteractions(aiAssistant);
     }
 }

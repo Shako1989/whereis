@@ -3,14 +3,18 @@ package az.technest.whereis.space;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import az.technest.whereis.common.error.ConflictException;
 import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.location.LocationRepository;
+import az.technest.whereis.plan.PlanLimitEnforcer;
+import az.technest.whereis.plan.PlanLimitReachedException;
 import az.technest.whereis.space.dto.CreateSpaceRequest;
 import az.technest.whereis.space.dto.SpaceResponse;
 import java.util.List;
@@ -33,6 +37,8 @@ class SpaceServiceTest {
     private LocationRepository locationRepository;
     @Mock
     private az.technest.whereis.location.LocationTreeDao treeDao;
+    @Mock
+    private PlanLimitEnforcer planLimits;
     @Spy
     private SpaceMapper mapper = new SpaceMapperImpl();
     @InjectMocks
@@ -99,5 +105,34 @@ class SpaceServiceTest {
         order.verify(treeDao).lockSpace(lower);
         order.verify(treeDao).lockSpace(higher);
         assertThat(locked).containsExactly(lower, higher);
+    }
+
+    // ----------------------------------------------------------------- free-tier space limit
+
+    @Test
+    void createRefusesAtThePlanLimitAndSavesNothing() {
+        when(spaceRepository.existsByUserIdAndNormalizedName(userId, "office")).thenReturn(false);
+        doThrow(PlanLimitReachedException.spaces(1)).when(planLimits).requireRoomForAnotherSpace(userId);
+
+        assertThatThrownBy(() -> spaceService.create(userId,
+                new CreateSpaceRequest("Office", null, SpaceType.OFFICE)))
+                .isInstanceOf(PlanLimitReachedException.class)
+                .hasMessageContaining("1 space");
+
+        verify(spaceRepository, never()).save(any(Space.class));
+    }
+
+    @Test
+    void aDuplicateNameIsReportedBeforeThePlanLimitIsEvenConsulted() {
+        when(spaceRepository.existsByUserIdAndNormalizedName(userId, "home")).thenReturn(true);
+
+        assertThatThrownBy(() -> spaceService.create(userId,
+                new CreateSpaceRequest("Home", null, SpaceType.HOME)))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("already exists");
+
+        // Resending the name of the space you already have is better answered "it exists" than
+        // "buy more" — the more specific error wins, so the guard runs after the name check.
+        verifyNoInteractions(planLimits);
     }
 }

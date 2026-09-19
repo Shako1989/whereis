@@ -9,6 +9,7 @@ import az.technest.whereis.item.dto.UpdateItemRequest;
 import az.technest.whereis.location.Location;
 import az.technest.whereis.location.LocationService;
 import az.technest.whereis.location.LocationTreeDao;
+import az.technest.whereis.plan.PlanLimitEnforcer;
 import az.technest.whereis.storage.FileStorageService;
 import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import java.time.Instant;
@@ -38,6 +39,7 @@ public class ItemService {
     private final LocationService locationService;
     private final LocationTreeDao treeDao;
     private final FileStorageService fileStorageService;
+    private final PlanLimitEnforcer planLimits;
     private final ItemMapper mapper;
 
     @Transactional
@@ -49,11 +51,20 @@ public class ItemService {
     /**
      * Shared creation path for the REST API and the AI assistant.
      * Writes the item and its initial open history record in one transaction.
+     *
+     * <p>This is also the ONE place the free-tier item limit is enforced, which is why every item
+     * in the system is created here: {@link #create} delegates to it, and so do both of
+     * {@code PlacementExecutor}'s paths (the resolved chain and the pinned BR-7 destination). The
+     * guard sits AFTER the ownership lookup so that a foreign or unknown location is still the
+     * established 404 rather than a 409, and BEFORE every write so that a refusal leaves nothing
+     * behind — on the assistant's chain path the locations resolved a moment earlier are part of
+     * the same transaction and roll back with it.
      */
     @Transactional
     public ItemResponse createAt(UUID userId, UUID locationId, String name, String description,
                                  String category, String note) {
         Location location = locationService.requireOwned(userId, locationId);
+        planLimits.requireRoomForAnotherItem(userId);
         String cleanName = Names.clean(name);
         Item item = itemRepository.save(Item.builder()
                 .userId(userId)

@@ -511,3 +511,77 @@ directions, a foreign location 404 that leaks neither the item name nor the loca
 404 / malformed 400 / empty-value unfiltered, sort and clamp, archived hidden unless asked).
 `ItemListCoverPhotoIT#theQueryCountOfALocationFilteredPageDoesNotGrowWithPageSize` extends BR-3's
 mutation-checked statement-count guard onto the filtered path.
+
+---
+
+## BR-10 — Free-tier limits: 1 space, 100 active items — **IMPLEMENTED 2026-09-19**
+
+### Why
+
+Nothing capped what one account could create. Storage, MinIO objects and (on a Claude/OpenAI
+provider) per-request AI cost all scale with the number of items, and the app is about to enter
+closed testing with no ceiling of any kind. This is the enforcement half of a paid tier; **billing
+itself is a later change** — there is no Play Billing integration, no subscription table and no
+purchase endpoint in this change.
+
+### The rule
+
+A `FREE` account may hold **1 space** and **100 ACTIVE items**. Creation beyond either is refused;
+nothing existing is deleted, hidden or archived by the change. An `UNLIMITED` account is exempt.
+
+* **Only ACTIVE items count.** Archiving an item frees room, which is what makes the item limit a
+  wall the user can get past rather than a dead end. Archived rows keep existing and stay readable
+  through `GET /items?includeArchived=true`.
+* **Locations are not limited.** Any depth, any number, inside the space the user has.
+* Deleting a space or an item frees room the same way.
+
+### The contract
+
+Three endpoints can now answer `409`:
+
+```
+POST /api/v1/spaces               409 { "code": "PLAN_LIMIT_REACHED", "message": "Free plan limit reached: 1 space. Subscribe for unlimited spaces." }
+POST /api/v1/items                409 { "code": "PLAN_LIMIT_REACHED", "message": "Free plan limit reached: 100 active items. Archive an item to free room, or subscribe for unlimited items." }
+POST /api/v1/assistant/remember   409 { "code": "PLAN_LIMIT_REACHED", ... }   // both the chain path and a pinned locationId (BR-7)
+```
+
+* **409, not 402.** The client branches on `code`, not on the status, this API already answers every
+  other guard violation with 409 (`SPACE_NOT_EMPTY`, `DUPLICATE_NAME`), and a 402 would advertise a
+  payment path that does not exist yet.
+* The `message` names what was hit and what the limit is, and is meant to be shown to the user —
+  it is the text that precedes a paywall.
+* Ownership still wins: a foreign or unknown `locationId` on `POST /items` or on a pinned
+  `/assistant/remember` is the established `404 LOCATION_NOT_FOUND`, even for an account at its
+  limit.
+* Re-sending the name of the space you already own is still `409 DUPLICATE_NAME`, not
+  `PLAN_LIMIT_REACHED` — the more specific answer wins.
+* A refused `/assistant/remember` leaves **no partial data**: no item, and none of the locations the
+  chain resolver had just created (one transaction, one rollback). It does leave one
+  `assistant_messages` row with `outcome = 'FAILED'` and `error_code = 'PLAN_LIMIT_REACHED'` (that
+  table is still write-only — no endpoint reads it).
+
+### Granting
+
+`users.plan` is `FREE` or `UNLIMITED`, defaults to `FREE`, and **nothing was grandfathered** —
+migration `V9` adds the column with `DEFAULT 'FREE'` and contains no `UPDATE`. UNLIMITED is a grant
+an operator makes for a specific account (internal users, testers, acquaintances) with one SQL
+statement; the SQL is in `deploy/README.md`. There is no endpoint and no admin API for it, by
+design. The column is written by the migration or an operator and by nothing else: when billing
+lands, an RTDN expiry writing this column would silently erase a hand-made grant, so the rule
+becomes `plan = 'UNLIMITED' OR active subscription` inside
+`PlanLimitEnforcer#hasUnlimitedEntitlement`, and the subscription half gets its own state.
+
+### What the client must do
+
+See `docs/ANDROID_APP_PROMPT.md` §3.8. Short version: on `409 PLAN_LIMIT_REACHED`, show the
+`message`, and for the item limit offer "archive something" as the action that actually works today.
+**There is no paywall to open yet** — do not ship a button that leads nowhere.
+
+### Tests
+
+`PlanLimitEnforcerTest` (7 cases: both boundaries, the message content, 409/`PLAN_LIMIT_REACHED`,
+UNLIMITED bypassing without even counting, a vanished account defaulting to FREE, only the
+archived-excluding finder being consulted, and a configured limit below 1 refusing at startup),
+`PlanTest` (the V9 CHECK vs the enum, and that V9 grants nothing), `ItemServiceTest` +3,
+`SpaceServiceTest` +2, `AssistantServiceTest` +2 (the FAILED/`PLAN_LIMIT_REACHED` row on both
+remember paths), and `PlanLimitIT` (8 cases, run against the REAL production limits).

@@ -30,6 +30,10 @@ Photos live in MinIO; PostgreSQL holds only metadata.
 5. Deleting a location fails while it has children or items; deleting a space fails while it has locations.
 6. MinIO binaries are eventually deleted when their metadata rows go away (outbox + janitor);
    PostgreSQL and MinIO never pretend to share a transaction.
+7. A FREE account may hold 1 space and 100 ACTIVE items (`whereis.limits.free.*`); beyond either,
+   CREATION is refused with 409 PLAN_LIMIT_REACHED and nothing existing is touched. Archiving frees
+   room; locations are never limited. `users.plan = 'UNLIMITED'` is exempt and is an OPERATOR GRANT,
+   never billing state.
 
 **MVP journey (covered end-to-end by `MvpJourneyIT`):** register → create "Home" →
 "I put my passport in the bedroom wardrobe top drawer" auto-creates the chain and the item →
@@ -141,6 +145,20 @@ assistant/ fixed pipeline: read the user's spaces → AiAssistant.interpret(mess
            WRITE-ONLY in this change: no read endpoint and nothing on `ItemResponse` — read the rows
            from the database; a scoped history endpoint and an item-detail `sourceMessage` are a
            deliberate follow-up, not shipped.
+plan/      the free tier. `Plan` (FREE|UNLIMITED, varchar+CHECK in V9), `FreeTierLimits`
+           (`whereis.limits.free.spaces`=1 / `.items`=100 as @ConfigurationProperties — config, not
+           constants), `PlanLimitReachedException` (409), and `PlanLimitEnforcer`: the ONE guard,
+           two `require*` methods called from `SpaceService.create` and `ItemService.createAt`.
+           Those two sites cover all THREE creation paths, because `ItemService.create` delegates to
+           `createAt` and so do both `PlacementExecutor` paths (chain and pinned BR-7). Counts are
+           `count` queries, userId-scoped, ACTIVE-only (`countByUserIdAndArchivedFalse`) — archiving
+           frees room. The guard sits AFTER the location ownership lookup (a foreign id stays 404,
+           not 409) and BEFORE every write, so a refusal inside the assistant's transaction rolls
+           back the just-created chain too. `hasUnlimitedEntitlement` is the one method whose BODY
+           is meant to grow into `plan = 'UNLIMITED' OR active subscription`; the COLUMN must not —
+           an RTDN expiry writing it would erase a hand-made grant. `users.plan` has no setter on
+           the entity and no endpoint: the migration's default or an operator's UPDATE, nothing else.
+           A vanished account reads as FREE (a guard's default is the restrictive one).
 common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler; CurrentUser
            (JWT subject → UUID); CorrelationIdFilter (X-Correlation-Id → MDC); Names — the ONE
            normalizer used by every writer, lookup, and the AI resolution path. clean() is the
@@ -151,7 +169,7 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
            diacritics; only the key is folded, display is untouched.
 ```
 
-## 4. Database invariants (Flyway V1–V8)
+## 4. Database invariants (Flyway V1–V9)
 
 - `users.email` unique on `lower(email)`; `refresh_tokens.token_hash` **varchar(64)** — NEVER
   char(N) anywhere: Hibernate 6.6 validate treats bpchar as a type mismatch and the app won't boot.
@@ -172,6 +190,14 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
   `user_id` → users ON DELETE CASCADE (backstop only — deletion deletes them explicitly first). Indexes:
   `(user_id, created_at DESC)`, partial `(item_id)`, partial `(space_id)` (the SET NULL triggers need it).
   Rows are kept for the life of the account; no purge job (decision, 2026-09-16).
+- `users.plan` (V9): `varchar(20) NOT NULL DEFAULT 'FREE'` + `ck_users_plan CHECK (plan IN ('FREE',
+  'UNLIMITED'))` matching `Plan` byte for byte (`PlanTest` parses the SQL). **V9 contains no
+  `UPDATE` and that absence is the design** — nothing is grandfathered, every pre-existing row
+  (including the one production account, at 4 spaces / 19 active items) starts FREE, and until it is
+  granted it cannot create a 5th space. Existing data is untouched; only creation is refused.
+  Granting is an operator action (`UPDATE users SET plan = 'UNLIMITED' WHERE lower(email) = …`,
+  deploy/README.md Step 10), not a migration and not an endpoint. No index: the column is read by
+  primary key.
 - Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java enums.
 - **Account deletion order is assistant messages → items → locations → spaces → user, with the
   storage_deletion_queue rows enqueued BEFORE the item cascade** (assistant messages go first so their
@@ -194,6 +220,14 @@ a foreign or unknown one is 404 LOCATION_NOT_FOUND, never an empty page), GET /i
 /items/{id}/files, DELETE /{fileId}, GET /{fileId}/url (presigned) · assistant:
 POST /assistant/remember {message, spaceId? XOR locationId? — locationId means no AI call and the text is the item name}, /assistant/search {query}, /assistant/images/analyze
 (the `assistant_messages` rows V8 writes have NO endpoint — write-only for now) ·
+Free tier: POST /spaces, POST /items and POST /assistant/remember (both paths) answer
+**409 PLAN_LIMIT_REACHED** when a FREE account is at 1 space / 100 active items. 409 and not 402 —
+the client branches on `code`, this API answers every other guard violation with 409
+(SPACE_NOT_EMPTY, DUPLICATE_NAME), and 402 would advertise a payment path that does not exist yet.
+The message names what was hit and the limit, because the client shows it. DUPLICATE_NAME still
+wins over the space limit (the more specific answer), and LOCATION_NOT_FOUND (404) still wins over
+the item limit. There is NO plan/quota field in any response and no endpoint to ask: the client
+learns it by being refused. ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
 Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
@@ -211,6 +245,8 @@ the Play Store data-deletion and privacy URLs).
   after-commit point. `AssistantServiceTest` pins the propagation declaration by reflection and the
   swallow on both the CREATED and the NEEDS_CONFIRMATION path; a runtime proof across a real
   transaction boundary is still a gap.
+- Free-tier enforcement stays in `PlanLimitEnforcer` and its two call sites; never inline a second
+  copy of the rule, never count by loading rows, and never write `users.plan` from application code.
 - Bulk `@Modifying` updates: think before `clearAutomatically` — it detaches managed entities
   the caller still mutates (this exact bug shipped once and was caught in review).
 - Login is enumeration-safe (dummy BCrypt verify + uniform INVALID_CREDENTIALS).
@@ -228,7 +264,7 @@ the Play Store data-deletion and privacy URLs).
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 175 unit tests — must stay green without Docker OR network
+./gradlew build              # compile + 214 unit tests — must stay green without Docker OR network
 ./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO) — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
@@ -489,8 +525,62 @@ rotates — the two must change together or the page lies to the user.
 Still open: every copy is on the box's only disk, so this covers a dropped table or a bad deploy but
 not losing the VM. Off-box needs a destination and credentials.
 
+**2026-09-19 — the free tier (V9 `users.plan`).** 1 space and 100 ACTIVE items for a FREE account,
+refused with 409 `PLAN_LIMIT_REACHED` on all three creation paths. Details in §3 `plan/`, §4 for V9
+and §5 for the error; the decisions worth keeping:
+
+* **Nothing is grandfathered.** An earlier cut stamped existing rows `LEGACY` in the migration; that
+  was dropped because what is actually needed is a way to give SPECIFIC accounts unlimited access
+  (internal users, testers, acquaintances), which is a GRANT, not a historical fact about when an
+  account was created — and a migration that stamps rows could never express "these four testers
+  unlimited, those eight limited". So V9 adds the column with `DEFAULT 'FREE'` and no `UPDATE` at
+  all, and granting is `UPDATE users SET plan = 'UNLIMITED' WHERE lower(email) = …`
+  (deploy/README.md Step 10). Named `UNLIMITED` rather than `INTERNAL`/`STAFF`/`COMP` so it
+  describes the effect and the reason can change without a rename.
+* **The grant must stay separate from future subscription state.** This is the part most likely to
+  be got wrong later: when billing lands, RTDN reports expiries and sets accounts back to limited,
+  and if that wrote `users.plan` it would silently erase a hand-made grant. The entitlement check is
+  therefore ONE method whose body can grow (`PlanLimitEnforcer#hasUnlimitedEntitlement`, javadoc
+  says so) and the eventual rule is `plan = 'UNLIMITED' OR active subscription`. **Billing itself is
+  NOT built here** — no Play Billing, no subscription columns, no endpoints.
+* Only ACTIVE items count (archiving frees room, so the wall is manageable); locations are never
+  limited; DUPLICATE_NAME beats the space limit and LOCATION_NOT_FOUND beats the item limit.
+* **A limit refusal on either assistant path records `FAILED` + `error_code = 'PLAN_LIMIT_REACHED'`**
+  — verified, not assumed. The guard throws inside `ItemService.createAt`, i.e. inside the executor's
+  transaction, so from `AssistantService` it is indistinguishable from any other rolled-back
+  placement; `errorCodeOf` contributes the code because it is an `ApiException`. A chain refusal
+  keeps `space_id` (resolved before the executor ran) and a pinned refusal does not (only the
+  executor's own lookup knew it). The row survives the rollback (REQUIRES_NEW), the item does not,
+  and neither do the locations the chain resolver had just created. This closes the §8 2026-09-17
+  gap on two counts: `FAILED` is now exercised end to end, and the REQUIRES_NEW recorder now has a
+  runtime proof across a real transaction boundary.
+* Account deletion is unaffected — it bulk-deletes and never passes a creation path
+  (`AccountDeletionIT`'s statement-count test is unchanged).
+* The ITs run with the REAL production limits — no `@TestPropertySource`, which would fork the
+  shared context. The consequence is that every scenario spanning two spaces is now explicitly a
+  granted account via `AbstractIntegrationTest#grantUnlimited`: `MvpJourneyIT` (the documented MVP
+  journey MOVES the item into a second space, so the journey as written is not free-tier feasible —
+  a real product consequence of "1 space", flagged rather than redesigned), `AssistantMessageIT`'s
+  ambiguity case (ambiguity needs two spaces) and both `AccountDeletionIT` builders.
+* Two mutation checks were run rather than assumed: deleting the `createAt` guard fails 4
+  `PlanLimitIT` cases, and moving the space guard before the duplicate-name check fails
+  `reusingTheNameOfTheOnlySpaceIsStillADuplicateRatherThanAPlanLimit`.
+
+Suites: **unit 214** (+16: `PlanLimitEnforcerTest` 7, `PlanTest` 2, `ItemServiceTest` +3,
+`SpaceServiceTest` +2, `AssistantServiceTest` +2), **integration 61 across 13 classes**
+(`PlanLimitIT` 8). Docs: `docs/BACKEND_REQUESTS.md` BR-10, `docs/ANDROID_APP_PROMPT.md` §3.8,
+`deploy/README.md` Step 10.
+
+**Open, and it must not reach production this way: the wall has no door.** Billing does not exist,
+so a FREE account at either limit cannot pay to get past it — only archive an item or receive a
+grant. That is intentional for closed testing (testers are meant to exercise the wall) and is
+recorded as a GATE in `deploy/README.md` Step 10, where whoever promotes a build will see it.
+
 ## 9. Future extension points (design for, do not build)
 
 pgvector/semantic search behind the SearchService port · shared household accounts · QR/NFC
 tags · reminders · real image object detection · notifications · Elasticsearch only if scale
-demands. Prefer simplicity; no premature microservices or event sourcing.
+demands. **Subscriptions (Play Billing + RTDN)**: designed for, not built — the entitlement check is
+already one method (`PlanLimitEnforcer#hasUnlimitedEntitlement`) so the rule can become
+`plan = 'UNLIMITED' OR active subscription`; give the subscription its OWN state and never let an
+expiry write `users.plan`. Prefer simplicity; no premature microservices or event sourcing.
