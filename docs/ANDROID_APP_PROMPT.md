@@ -337,7 +337,10 @@ formatter so the UI looks uniform.
 `FILE_NOT_FOUND`, `EMAIL_IN_USE`, `DUPLICATE_NAME`, `INVALID_CREDENTIALS`, `TOKEN_INVALID`,
 `TOKEN_EXPIRED`, `INVALID_LOCATION_HIERARCHY`, `CYCLE_DETECTED`, `LOCATION_NOT_EMPTY`,
 `SPACE_NOT_EMPTY`, `PLAN_LIMIT_REACHED`, `FILE_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`,
-`STORAGE_ERROR`, `AI_UNAVAILABLE`, `AI_NOT_IMPLEMENTED`, `CONFLICT`, `INTERNAL_ERROR`.
+`STORAGE_ERROR`, `AI_UNAVAILABLE`, `AI_NOT_IMPLEMENTED`, `CONFLICT`, `INTERNAL_ERROR`,
+plus the billing codes of §3.8c: `PLAY_UNAVAILABLE`, `PLAY_PURCHASE_INVALID`,
+`PLAY_PURCHASE_NOT_ACTIVE`, `PLAY_PRODUCT_UNKNOWN`, `PLAY_PRODUCT_MISMATCH`,
+`PLAY_BILLING_NOT_CONFIGURED`, `PLAN_PURCHASE_NOT_OWNED`.
 
 Map every one of these to a specific, human, localized string. Never surface a raw `code` or the
 server `message` verbatim to the user; never show a stack trace or an HTTP number.
@@ -505,13 +508,36 @@ request** — tier, state, expiry, acknowledgement, test flag and promo marker a
 | none of the purchase's products is ours | 400 | `PLAY_PRODUCT_MISMATCH` | drop the token |
 | Google does not know the token | 400 | `PLAY_PURCHASE_INVALID` | drop the token |
 | Google unreachable / 5xx / timeout | 502 | `PLAY_UNAVAILABLE` | retry with backoff; **do not** start the 24-hour clock |
+| **billing is not configured on this server** | **501** | **`PLAY_BILLING_NOT_CONFIGURED`** | **keep the token, stop asking this session.** NOT an error to show as a failure and NOT a reason to drop the token — see below |
 | body missing or malformed | 400 | `VALIDATION_ERROR` | client bug |
 | anonymous / expired token | 401 | standard | §4.1 |
 
-**Six new `ApiErrorCode` values** (`PLAY_UNAVAILABLE`, `PLAY_PURCHASE_INVALID`,
+**Seven `ApiErrorCode` values** (`PLAY_UNAVAILABLE`, `PLAY_PURCHASE_INVALID`,
 `PLAY_PURCHASE_NOT_ACTIVE`, `PLAY_PRODUCT_UNKNOWN`, `PLAY_PRODUCT_MISMATCH`,
-`PLAN_PURCHASE_NOT_OWNED`) must be added to the client enum **in the same wave**. Without them every
-branch above collapses into `UNKNOWN` and the retry policy is unimplementable.
+`PLAY_BILLING_NOT_CONFIGURED`, `PLAN_PURCHASE_NOT_OWNED`) must be in the client enum. Without them
+every branch above collapses into `UNKNOWN` and the retry policy is unimplementable.
+
+**501 `PLAY_BILLING_NOT_CONFIGURED` — the state the server is deployed in right now
+(2026-09-20).** The backend runs with `whereis.play.provider=disabled` until the Google Cloud
+service account and the Pub/Sub topic exist, so **every** purchase POST answers 501 today,
+whatever the token. The client contract:
+
+* **Keep the purchase token.** It is not invalid — nobody has looked at it. It will be accepted
+  unchanged once billing is switched on, and `queryPurchasesAsync` will keep reporting it on every
+  foreground, which is the natural re-post point.
+* **Do not retry within the session**, and do not start the 24-hour clock either. No amount of
+  retrying creates a Google Cloud project. The next cold start is soon enough.
+* **Do not show a payment failure.** Nothing was charged and nothing failed on the user's side.
+  Treat it exactly like the `501 AI_NOT_IMPLEMENTED` precedent: a feature this deployment does not
+  offer. "Subscriptions aren't available yet" is the honest string.
+* **It can never be a grant.** 501 carries an `ApiError`, never a `PlanStatus`, so there is no
+  branch in which this response raises a tier. The plan screen keeps rendering from
+  `GET /users/me/plan`, which is unaffected.
+
+Everything non-billing is unaffected by this mode — `GET /users/me/plan`, `GET /plans`, the
+per-tier limits, `usage`, and 409 `PLAN_LIMIT_REACHED` all behave exactly as documented. The
+upgrade screen should still render; whether it hides the purchase button behind a 501 it has
+already seen is a client decision, and a one-line feature flag either way.
 
 **`obfuscatedAccountId` — the bytes are the contract.** Set
 `BillingFlowParams.setObfuscatedAccountId(sha256Hex(userId))`; the server recomputes the same value
@@ -995,6 +1021,11 @@ space preselected. Never loop more than once.
   caches on `primaryFileId`; the URL expires in ~10 minutes.
 - **Assistant image analysis returns 501 on both real providers (`openai`, `claude`).** Feature-flag
   the UI. Only `ai.provider=mock` answers it, with canned suggestions.
+- **Purchases return 501 `PLAY_BILLING_NOT_CONFIGURED` on the deployed server (2026-09-20).** Play
+  Billing is switched off until the Google Cloud service account and the Pub/Sub topic exist.
+  Keep the token, do not retry in-session, do not show a payment failure — §3.8c. Nothing else
+  about the plan surface changes, and switching it on later is an environment change with no new
+  API shape.
 
 ---
 

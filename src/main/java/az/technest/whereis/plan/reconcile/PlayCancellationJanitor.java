@@ -6,6 +6,7 @@ import az.technest.whereis.plan.PlayCancellationQueueRepository;
 import az.technest.whereis.plan.PurchaseTokens;
 import az.technest.whereis.plan.UserSubscriptionRepository;
 import az.technest.whereis.plan.play.PlayPurchaseUnknownException;
+import az.technest.whereis.plan.play.PlayProperties;
 import az.technest.whereis.plan.play.PlaySubscriptionsApi;
 import az.technest.whereis.storage.StorageJanitor;
 import java.time.Duration;
@@ -37,6 +38,7 @@ public class PlayCancellationJanitor {
     private final UserSubscriptionRepository subscriptions;
     private final PlaySubscriptionsApi play;
     private final ReconcileProperties properties;
+    private final PlayProperties playProperties;
     private final LegalProperties legal;
 
     /**
@@ -46,11 +48,24 @@ public class PlayCancellationJanitor {
      * would drain whatever the test just enqueued before the test could look at it, making
      * {@code AccountDeletionIT} order-dependent. The flag is also the single-instance mitigation:
      * the operator's answer to "we are now running two" is to turn the sweeps off on all but one.
+     *
+     * <p><strong>A third gate joins them, and it answers a different question again.</strong>
+     * {@code billingConfigured()} is "is there a Play API to call at all?" — under
+     * {@code whereis.play.provider=disabled} every
+     * call refuses, so a tick would throw {@code PlayBillingNotConfiguredException} on the first
+     * row, every five minutes, forever. Silent rather than logged for exactly that reason: the
+     * mode is announced ONCE at startup by {@code PlayConfig}, and a scheduled job that WARNs about a
+     * deliberate configuration is log noise that trains an operator to ignore the log. The
+     * {@code enabled} flag is the separate, pre-existing "we are running two containers" answer.
+     *
+     * <p>The guard reads {@code PlayProperties#billingConfigured()} rather than comparing the
+     * string here, so all four readers of "billing is off" share one normalisation.
      */
     @Scheduled(fixedDelayString = "${whereis.play.cancellation.delay:PT5M}",
             initialDelayString = "${whereis.play.cancellation.initial-delay:PT2M}")
     public void sweep() {
-        if (!Boolean.TRUE.equals(properties.cancellation().enabled())) {
+        if (!playProperties.billingConfigured()
+                || !Boolean.TRUE.equals(properties.cancellation().enabled())) {
             return;
         }
         runOnce();

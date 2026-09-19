@@ -24,6 +24,9 @@ public enum ErrorCode {
     PLAY_PURCHASE_NOT_ACTIVE,
     PLAY_PRODUCT_UNKNOWN,
     PLAY_PRODUCT_MISMATCH,
+    // Billing is switched off in this deployment (whereis.play.provider=disabled): Google was
+    // never asked, so this says nothing about the purchase and can never imply a grant.
+    PLAY_BILLING_NOT_CONFIGURED,
     PLAN_PURCHASE_NOT_OWNED,
     FILE_TOO_LARGE,
     UNSUPPORTED_MEDIA_TYPE,

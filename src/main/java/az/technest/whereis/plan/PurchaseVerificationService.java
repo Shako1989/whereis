@@ -5,9 +5,11 @@ import az.technest.whereis.plan.dto.PurchaseVerificationRequest;
 import az.technest.whereis.plan.play.PlayAccountHash;
 import az.technest.whereis.plan.play.PlayLineItem;
 import az.technest.whereis.plan.play.PlayApiException;
+import az.technest.whereis.plan.play.PlayBillingNotConfiguredException;
 import az.technest.whereis.plan.play.PlayProductMismatchException;
 import az.technest.whereis.plan.play.PlayProductUnknownException;
 import az.technest.whereis.plan.play.PlayPurchaseInvalidException;
+import az.technest.whereis.plan.play.PlayProperties;
 import az.technest.whereis.plan.play.PlayPurchaseNotActiveException;
 import az.technest.whereis.plan.play.PlaySubscription;
 import az.technest.whereis.plan.play.PlaySubscriptionsApi;
@@ -67,6 +69,7 @@ public class PurchaseVerificationService {
     private final UserSubscriptionRepository subscriptions;
     private final SubscriptionWriter writer;
     private final PlaySubscriptionsApi play;
+    private final PlayProperties playProperties;
     private final PlanCatalog catalog;
     private final PlanLimitEnforcer planLimits;
     private final SubscriptionLinkResolver linkResolver;
@@ -74,7 +77,12 @@ public class PurchaseVerificationService {
     /**
      * The order of operations, with the transaction boundaries:
      * <ol>
-     *   <li>[no tx] bean validation (the controller's {@code @Valid}).</li>
+     *   <li>[no tx] bean validation (the controller's {@code @Valid}), then <strong>billing must
+     *       be configured at all</strong> — else 501 PLAY_BILLING_NOT_CONFIGURED, ahead of the
+     *       product check and before any query. Ahead of everything on purpose: every step below
+     *       answers a question about a PURCHASE, and with
+     *       {@code whereis.play.provider=disabled} there is no purchase to have a question
+     *       about.</li>
      *   <li>[no tx] the claimed product must be configured — else 400 PLAY_PRODUCT_UNKNOWN, with NO
      *       Google call.</li>
      *   <li>[tx, readOnly] look the token up. Another account's ⇒ 409 PLAN_PURCHASE_NOT_OWNED with
@@ -95,6 +103,26 @@ public class PurchaseVerificationService {
      * </ol>
      */
     public PlanStatusResponse verify(UUID callerId, PurchaseVerificationRequest request) {
+        // 1b. BILLING IS SWITCHED OFF IN THIS DEPLOYMENT. Refused here rather than left to
+        // DisabledPlaySubscriptionsApi (which would also throw, four steps later) for two reasons
+        // worth keeping:
+        //   * the answer becomes the SAME 501 for every request shape. Reaching step 2 first would
+        //     answer an unrecognised productId with 400 PLAY_PRODUCT_UNKNOWN — "drop the token" —
+        //     when the truth is that this server cannot look at any token at all.
+        //   * step 3's 60-second replay window could otherwise answer 200 with an entitling body,
+        //     from a row a previously google-configured process wrote. Nothing would be GRANTED (it
+        //     is a pure read of committed state), but a 200 on this endpoint is indistinguishable
+        //     from a successful purchase, and "never implies a grant" is the property this mode is
+        //     deployed on. Refusing first makes the whole flow zero statements and zero reads.
+        if (!playProperties.billingConfigured()) {
+            log.info("Refusing a purchase claim from user {}: Play Billing is not configured "
+                    + "(whereis.play.provider={})", callerId, playProperties.provider());
+            throw new PlayBillingNotConfiguredException("Play Billing is not configured in this "
+                    + "deployment, so this purchase cannot be verified. Keep the purchase token: it "
+                    + "will be accepted once billing is switched on. Nothing has been charged or "
+                    + "granted by this request.");
+        }
+
         String token = request.purchaseToken().trim();
         String claimedProductId = request.productId().trim();
 

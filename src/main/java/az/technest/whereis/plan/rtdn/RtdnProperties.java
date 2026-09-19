@@ -15,9 +15,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *
  * @param enabled            when false the endpoint answers 503, which Pub/Sub retries — we want
  *                           the backlog, not silence
- * @param verifier           {@code google} (default) verifies Google's OIDC push token, or
- *                           {@code fake} compares one configured literal. The fake is REFUSED under
- *                           the prod profile. The default is deliberately NOT a mirror of
+ * @param verifier           {@code google} (default) verifies Google's OIDC push token,
+ *                           {@code fake} compares one configured literal, or {@code disabled}
+ *                           rejects everything. The fake is REFUSED under the prod profile;
+ *                           {@code disabled} is PERMITTED there, because denying every caller
+ *                           cannot grant anything. The default is deliberately NOT a mirror of
  *                           {@code whereis.play.provider}: a deployment running
  *                           {@code provider=google} with this unset must still be protected
  * @param sharedSecret       check 1. The {@code ?key=} query parameter of the registered push URL,
@@ -43,6 +45,15 @@ public record RtdnProperties(Boolean enabled, String verifier, String sharedSecr
 
     public static final String FAKE = "fake";
     public static final String GOOGLE = "google";
+
+    /**
+     * Billing is not configured in this deployment, so there is no Pub/Sub subscription and every
+     * caller of {@code POST /play/rtdn} is a stranger. Denies unconditionally — see
+     * {@link DisabledPlayPushAuthenticator} for why the route keeps answering 401 instead of
+     * disappearing. Must be paired with {@code whereis.play.provider=disabled}; mixing the two
+     * halves is a startup failure ({@code PlayBillingModeGuard}).
+     */
+    public static final String DISABLED = "disabled";
 
     static final String DEFAULT_JWK_SET_URI = "https://www.googleapis.com/oauth2/v3/certs";
     static final int DEFAULT_MAX_ATTEMPTS = 10;

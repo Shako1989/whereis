@@ -14,6 +14,14 @@ import org.springframework.security.web.SecurityFilterChain;
  * Selects the {@link PlayPushAuthenticator}, refuses every configuration that would leave the push
  * endpoint unprotected or silently broken, and keeps the JWT resource-server filter off
  * {@code /play/rtdn}.
+ *
+ * <p><strong>Three verifiers, and the prod refusal of {@code fake} is still keyed on THIS property
+ * alone.</strong> That independence from {@code whereis.play.provider} is the design (a deployment
+ * running {@code provider=google} with the verifier unset must still be guarded), and adding
+ * {@code disabled} does not touch it: the new value is a THIRD case in the same switch, permitted
+ * under prod because denying every caller cannot grant anything. The cross-property rule that
+ * {@code disabled} must be set on BOTH halves lives in {@code PlayBillingModeGuard}, which can only
+ * ever make MORE configurations refuse — never fewer.
  */
 @Configuration
 public class PlayRtdnConfig {
@@ -33,15 +41,62 @@ public class PlayRtdnConfig {
                     throw new IllegalStateException(
                             "whereis.play.rtdn.verifier=fake is refused under the prod profile: it accepts a "
                                     + "literal bearer value, and this endpoint can grant any account any tier. "
-                                    + "Set PLAY_RTDN_VERIFIER=google.");
+                                    + "Set PLAY_RTDN_VERIFIER=google once the Pub/Sub push subscription exists, "
+                                    + "or PLAY_RTDN_VERIFIER=disabled to reject every caller — that mode cannot "
+                                    + "grant anything.");
                 }
                 yield new FakePlayPushAuthenticator(properties);
             }
-            case RtdnProperties.GOOGLE -> new GooglePlayPushAuthenticator(properties);
+            case RtdnProperties.GOOGLE -> {
+                assertGoogleCredentialsArePresent(properties);
+                yield new GooglePlayPushAuthenticator(properties);
+            }
+            case RtdnProperties.DISABLED -> {
+                // PERMITTED UNDER prod, unlike the fake, and for the opposite reason: this one
+                // accepts nothing at all. Note that check 1 rejects first anyway in this mode (the
+                // shared secret is unset and blank rejects) — the two refusals are independent, so
+                // setting a secret without a verifier does not open the endpoint.
+                yield new DisabledPlayPushAuthenticator();
+            }
             default -> throw new IllegalStateException("Unknown whereis.play.rtdn.verifier '"
                     + properties.verifier() + "' (supported: " + RtdnProperties.FAKE + ", "
-                    + RtdnProperties.GOOGLE + ")");
+                    + RtdnProperties.GOOGLE + ", " + RtdnProperties.DISABLED + ")");
         };
+    }
+
+    /**
+     * <strong>The check {@code docker-compose.prod.yml} used to make, moved into the application
+     * because compose can no longer make it.</strong> {@code PLAY_RTDN_SHARED_SECRET},
+     * {@code PLAY_RTDN_AUDIENCE} and {@code PLAY_RTDN_SERVICE_ACCOUNT_EMAIL} were forwarded with
+     * {@code :?}, so the stack refused to start without them. They have to be allowed to be absent
+     * now — the {@code disabled} mode must deploy with no Google values whatsoever — and relaxing
+     * compose without adding this would have traded a loud failure for a silent one: every one of
+     * these blank REJECTS rather than skips, so a typo in the variable name would have produced a
+     * deployment that verifies purchases and then refuses every genuine notification Google sends.
+     * The spec calls that ("entitlements quietly stop tracking Google") the worst outcome in the
+     * design.
+     *
+     * <p>Same shape as {@link #assertAudienceIsNotTheUrl(RtdnProperties)} and
+     * {@code LegacyLimitsPropertyGuard}: one startup failure, naming the property, the environment
+     * variable, and what to do about it. It fires only inside the {@code google} branch, so the
+     * other two modes still bind with nothing set.
+     */
+    private static void assertGoogleCredentialsArePresent(RtdnProperties properties) {
+        requireConfigured("whereis.play.rtdn.shared-secret", "PLAY_RTDN_SHARED_SECRET",
+                properties.sharedSecret());
+        requireConfigured("whereis.play.rtdn.audience", "PLAY_RTDN_AUDIENCE", properties.audience());
+        requireConfigured("whereis.play.rtdn.service-account-email", "PLAY_RTDN_SERVICE_ACCOUNT_EMAIL",
+                properties.serviceAccountEmail());
+    }
+
+    private static void requireConfigured(String property, String variable, String value) {
+        if (value.isBlank()) {
+            throw new IllegalStateException(property + " (" + variable + ") must be set when "
+                    + "whereis.play.rtdn.verifier=google: a blank value REJECTS every push rather than "
+                    + "skipping the check, so this deployment would silently stop tracking Google. "
+                    + "Set it (deploy/README.md Step 11), or set PLAY_RTDN_VERIFIER=disabled if billing "
+                    + "is not configured yet.");
+        }
     }
 
     /**

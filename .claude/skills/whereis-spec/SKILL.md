@@ -179,7 +179,9 @@ plan/      the tier ladder and Play purchase verification. `Plan` (FREE|STANDARD
            codebase — its whole purpose is to discover that a token belongs to somebody else.
            `plan/play/`: the `PlaySubscriptionsApi` port, shaped exactly like `AiAssistant` —
            `FakePlaySubscriptionsApi` (token-string-driven, the DEFAULT, refused under the prod
-           profile because its tokens are guessable literals) and `GooglePlaySubscriptionsApi`
+           profile because its tokens are guessable literals), `DisabledPlaySubscriptionsApi`
+           (`provider=disabled`, PERMITTED under prod, every method throws
+           `PlayBillingNotConfiguredException`) and `GooglePlaySubscriptionsApi`
            (purchases.subscriptionsv2.get; purchases.subscriptions.get is DEPRECATED; acknowledge
            has no v2 method). `signupPromotion` and `latestSuccessfulOrderId` are LINE-ITEM fields,
            `basePlanId` is under `offerDetails`, and Google's state arrives as
@@ -194,7 +196,15 @@ plan/      the tier ladder and Play purchase verification. `Plan` (FREE|STANDARD
            `PlanController` (GET /users/me/plan, POST /users/me/plan/purchases) and
            `PlanCatalogController` (GET /plans — the ladder, zero statements, UNLIMITED omitted).
            `LegacyLimitsPropertyGuard` refuses to boot while a retired `whereis.limits.free.*` key
-           is still set anywhere.
+           is still set anywhere; `PlayBillingModeGuard` (same shape) refuses to boot when
+           `disabled` is set on only ONE of `whereis.play.provider` / `whereis.play.rtdn.verifier`.
+           **THE THIRD PROVIDER VALUE, `disabled`, IS WHAT PRODUCTION RUNS** until the Google
+           service account and the Pub/Sub topic exist: purchase verification is refused FIRST in
+           `PurchaseVerificationService` (501 `PLAY_BILLING_NOT_CONFIGURED`, zero statements, ahead
+           of even the product-id check so a client is never told to drop a token), the push
+           endpoint denies everything, the three scheduled jobs return early, and therefore NO
+           PATH CAN CREATE OR RAISE AN ENTITLEMENT. `PlayProperties#billingConfigured()` is the ONE
+           reading of it — four callers, one normalisation.
            WAVE 2 (V11, BR-13) adds the lifecycle. `SubscriptionSnapshots` maps Google's answer onto
            a Snapshot for the two REFRESH paths (handler + reconciler) and is where the one decision
            lives that a review had to correct: a refresh matching NO offered line item KEEPS the
@@ -222,9 +232,19 @@ plan/      the tier ladder and Play purchase verification. `Plan` (FREE|STANDARD
            type Google adds later is re-read rather than ignored), `RtdnEnvelope`,
            `DeveloperNotification` (four SIBLING fields, voided first), `RtdnProperties`,
            `PlayRtdnConfig` (the @Order(0) chain with NO oauth2ResourceServer, the prod refusal of
-           the fake verifier, and the boot failure on a URL-shaped audience),
-           `PlayPushAuthenticator` port + Google/Fake.
-           `plan/reconcile/`: `SubscriptionReconciler` (drift + the acknowledgement retry;
+           the fake verifier, the boot failure on a URL-shaped audience, and — since compose stopped
+           marking them `:?` — the boot failure when `verifier=google` has a blank shared-secret,
+           audience or service-account-email),
+           `PlayPushAuthenticator` port + Google/Fake/Disabled (`DisabledPlayPushAuthenticator`
+           returns false unconditionally; the ROUTE STAYS and answers 401 rather than disappearing,
+           because deleting the controller would delete the @Order(0) chain and move /play/rtdn onto
+           the main chain — changing which security configuration serves a path based on an
+           environment variable is a far bigger blast radius than swapping one port implementation).
+           `plan/reconcile/`: all three `@Scheduled` methods check `billingConfigured()` BEFORE their
+           own `enabled` flag and return SILENTLY (the mode is announced once, at startup, by
+           `PlayConfig`; a job that WARNs about a deliberate configuration every tick trains an
+           operator to ignore the log). `runOnce()` does NOT check it — the ITs need it to throw.
+           `SubscriptionReconciler` (drift + the acknowledgement retry;
            unacknowledged first; per-row catch(RuntimeException) so nothing can halt a batch),
            `VoidedPurchaseSweeper` (fixed 7-day look-back, type=1), `PlayCancellationJanitor`
            (re-checks the token before cancelling, deletes on 404 ONLY, shares
@@ -391,7 +411,15 @@ kept — so a state problem can never be answered with a drop-the-token 400), th
 GOOGLE's line item rather than the client's claim (a deferred downgrade keeps the OLD product on the
 token), and 400 PLAY_PRODUCT_MISMATCH is reserved for a purchase offering NONE of our products.
 Errors: PLAY_UNAVAILABLE(502), PLAY_PURCHASE_INVALID(400), PLAY_PURCHASE_NOT_ACTIVE(409),
-PLAY_PRODUCT_UNKNOWN(400), PLAY_PRODUCT_MISMATCH(400), PLAN_PURCHASE_NOT_OWNED(409). ·
+PLAY_PRODUCT_UNKNOWN(400), PLAY_PRODUCT_MISMATCH(400), PLAN_PURCHASE_NOT_OWNED(409), and
+**PLAY_BILLING_NOT_CONFIGURED(501)** when `whereis.play.provider=disabled` — which is what the
+deployed server answers today. 501 rather than 200 (that body IS a grant), rather than 400/404
+(both tell the client to DROP a token it may have paid for, and the token is the only redeemable
+thing), and rather than 502/503 (both mean "retry", and no retry creates a Google Cloud project).
+Same shape as the assistant's `501 AI_NOT_IMPLEMENTED`, which the client already renders as an
+absent feature. Client contract: keep the token, stop asking this session, do not show a payment
+failure. It is refused ahead of every other check, so it is the answer for EVERY request shape and
+costs zero statements. ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
 Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
@@ -441,6 +469,16 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
   it there is a self-service entitlement escalation. **The same applies to the RTDN push verifier,
   with its OWN `Environment#acceptsProfiles` check rather than a mirror of `whereis.play.provider`:
   otherwise a deployment running `provider=google` with `rtdn.verifier` unset has no guard at all.**
+  The third value `disabled` does NOT weaken either: it is a separate case in each switch, each
+  prod refusal is still keyed on its own property, and `PlayBillingModeGuard`'s cross-property
+  agreement check is purely ADDITIVE (it can only reject more combinations, never fewer).
+- **A property that is required only under one provider is checked in the APPLICATION, never only
+  in compose.** `${VAR:?}` cannot express a condition, so relaxing a `:?` without adding the
+  conditional refusal trades a loud failure for a silent one. Three such refusals exist and each
+  names the property, the variable and the fix: the Play service-account key under
+  `provider=google` (`PlayConfig`), the RTDN shared-secret/audience/service-account-email under
+  `verifier=google` (`PlayRtdnConfig` — all three blank REJECT rather than skip, so the failure
+  they prevent is the silent one), and half-disabled billing (`PlayBillingModeGuard`).
 - **A notification is a trigger and an ordering token, never a fact.** Every RTDN type except
   `SUBSCRIPTION_REVOKED` re-reads `subscriptionsv2.get` and writes what GOOGLE says, through the same
   `SubscriptionWriter.Snapshot` the verify endpoint builds. A revocation is the one exception, and it
@@ -487,8 +525,8 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 472 unit tests — must stay green without Docker OR network
-./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 151 tests — needs Docker
+./gradlew build              # compile + 491 unit tests — must stay green without Docker OR network
+./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 163 tests — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
 
@@ -502,6 +540,12 @@ API even on a machine with the key exported. `ClaudeLiveApiTest` is the ONLY tes
 machine; it is skipped, not failed, when the key is absent.
 
 Integration tests are `@Tag("integration")`, singleton containers in `AbstractIntegrationTest`.
+**One class forks the Spring context and must**: `BillingDisabledProdIT` runs `@ActiveProfiles("prod")`
+with NO `whereis.play.*` property set, which the shared registry (verifier=`fake`) makes unreachable
+by construction. It also takes its OWN database inside the same PostgreSQL container, because
+`StorageJanitor` has no `enabled` flag and fires at context startup — a second context on one
+database would put a second drainer on `storage_deletion_queue`, which `AccountDeletionIT` counts
+inside a window negotiated with the one janitor it knows about.
 If Docker Hub is unreachable (corporate proxy), override images from any reachable registry:
 `TESTCONTAINERS_RYUK_DISABLED=true ./gradlew integrationTest -Dit.postgres.image=... -Dit.minio.image=...`
 (MinIO also lives on quay.io: `quay.io/minio/minio`.) Local run: `docker compose up -d postgres minio`
@@ -1007,6 +1051,92 @@ behind; and `play_notifications` is deliberately not deleted by account deletion
 because a notification can arrive for a token this server has never seen), which is the one billing
 retention question the privacy page still does not answer.
 
+**2026-09-20 — `disabled`: billing switched off, deliberately, so whereis can deploy before Play
+Billing credentials exist.** The two billing waves left `deploy/docker-compose.prod.yml` with seven
+`:?`-required Play variables whose values **cannot exist yet** — no Google Cloud service account, no
+Pub/Sub topic, no Play Console product — so `docker compose up -d` took the whole application DOWN,
+free-tier users included, over a feature nobody could use. `fake` is correctly refused under prod
+and `google` needs the missing credentials, so there was no third state. Now there is one, on both
+`whereis.play.provider` and `whereis.play.rtdn.verifier`. Details in §3 `plan/`, §5 for the new
+error and §6 for the two guardrails. The decisions worth keeping:
+
+* **It is PERMITTED under prod, and that is the opposite of the `fake` rule rather than an
+  exception to it.** The fake is banned because it GRANTS (guessable literal tokens); this one
+  grants nothing to anyone under any input, which makes it strictly SAFER than either other value.
+  Each prod refusal of `fake` is untouched and still keyed on its own property.
+* **A purchase answers 501 `PLAY_BILLING_NOT_CONFIGURED`.** 200 was impossible (that body IS a
+  grant); 400/404 tell the client to DROP a token it may have paid for and which is the only
+  redeemable artefact; 502/503 mean "retry", and no retry creates a Google Cloud project. 501 is
+  "this server does not offer that", it is what `AI_NOT_IMPLEMENTED` already uses, and the client
+  already renders a 501 as an absent feature. **Refused FIRST in `PurchaseVerificationService`**,
+  ahead of the product-id check and the 60-second replay window — not left to the port, which would
+  also throw four steps later — so the answer is identical for every request shape (a client is
+  never told "unknown product", i.e. drop the token) and the whole flow costs zero statements.
+* **The RTDN route STAYS and answers 401; it does not disappear.** Deleting the controller would
+  delete the `@Order(0)` filter chain and move `/play/rtdn` onto the main chain — changing which
+  security configuration serves a path based on an environment variable, when that chain exists to
+  prevent "the single most likely way to break this endpoint silently". A deny-all
+  `PlayPushAuthenticator` swaps one implementation and leaves the topology identical, and 401 +
+  empty body + no ledger row is the already-tested rejection. The denial is DOUBLED: check 1's
+  shared secret is blank in this mode and blank rejects, so a caller never reaches check 2.
+* **`PlayProperties#billingConfigured()` is the one reading of the mode**, with four callers (the
+  verify flow and the three `@Scheduled` methods). The alternative — `@ConditionalOnExpression`
+  with a stringly comparison — was rejected because it would re-implement the trim/lowercase
+  normalisation and could disagree with the record about `" DISABLED"`.
+* **The scheduled jobs check it BEFORE their own `enabled` flag, and are SILENT.** They would
+  otherwise throw on every tick forever; the mode is announced ONCE at startup, by `PlayConfig`, in
+  a line that names all four consequences. `runOnce()` deliberately does not check it, which is what
+  lets an IT prove the guard is what stopped the job rather than an empty work queue.
+* **The check compose can no longer make now lives in the application — this was the main risk of
+  the change.** `${VAR:?}` cannot express "required only when another property has a value", so
+  relaxing compose alone would have turned a loud failure into a silent one: a typo in
+  `WHEREIS_PLAY_RTDN_AUDIENCE` would have produced a running, billing-shaped deployment whose push
+  endpoint rejects every genuine Google notification (blank REJECTS rather than skips) — the worst
+  outcome this design has. Three refusals, each naming the property, the variable and the fix:
+  `PlayConfig` (service-account key under `provider=google`, which already existed and is now
+  load-bearing rather than a second opinion), `PlayRtdnConfig` (shared-secret / audience /
+  service-account-email under `verifier=google`, new, in the same shape as the audience trap), and
+  `PlayBillingModeGuard` (new, `LegacyLimitsPropertyGuard`'s shape: `disabled` on BOTH halves or
+  neither). The last is additive to the `fake` guards and cannot weaken them.
+* **Half-disabled is a real failure, not tidiness.** `provider=google` + `verifier=disabled` means
+  a refunded subscriber keeps a paid tier (a revoke has no entry point but the notification and the
+  sweep); `provider=disabled` + `verifier=google` means a 500 per authenticated delivery, retried
+  for the whole Pub/Sub retention, that can never succeed.
+* **Switching on is `.env` + restart, no code change and no rebuild** (deploy/README.md Step 11e),
+  and switching back off is the same change in reverse — existing `user_subscriptions` rows keep
+  entitling until `entitled_until` passes, because the entitlement query asks Google nothing.
+
+**"Cannot grant anything" was verified, not asserted.** `BillingDisabledProdIT` boots the prod
+profile with zero `whereis.play.*` properties and posts `fake-active-max` — the literal that makes
+`provider=fake` an entitlement escalation — then asserts 501, `user_subscriptions` empty ACROSS THE
+WHOLE DATABASE, `users.plan` still FREE and `GET /users/me/plan` still FREE. It also pins the free
+tier hardest: the plan body in full, real usage numbers, and BOTH 409 walls (second space, 101st
+item). Five mutation checks were RUN:
+
+| mutation | what actually fails |
+|---|---|
+| delete the `billingConfigured()` refusal from `PurchaseVerificationService` | `PurchaseVerificationServiceTest` ×2 AND `BillingDisabledProdIT` ×2 — the unknown-product probe becomes 400 PLAY_PRODUCT_UNKNOWN, which is the drop-the-token answer |
+| delete the billing gate from `VoidedPurchaseSweeper.sweep()` | `PlayVoidedSweepTest#theScheduledSweepDoesNothing…` and `BillingDisabledProdIT#theThreeScheduledBillingJobsAreNoOps…` |
+| make `DisabledPlayPushAuthenticator.isGenuine` return true | `RtdnConfigurationTest` ×2 and `BillingDisabledProdIT#thePushVerifierItselfRejects…` — **and the endpoint-level 401 test stays GREEN**, because the blank shared secret rejects first. That is the proof the two checks are independent, and the reason the bean is asserted directly as well as through the endpoint |
+| delete `assertGoogleCredentialsArePresent` | `RtdnConfigurationTest#theGoogleVerifierRefusesToStartWhenAnyOfItsCredentialsIsBlank` ×3 |
+| let `PlayBillingModeGuard` accept a half-disabled configuration | `PlayBillingModeGuardTest` ×2 |
+
+Suites: **unit 491** (+19), **integration 163 across 22 classes** (+12: `BillingDisabledProdIT`).
+`RtdnConfigurationTest#theShippedConfigurationDeclaresEveryRtdnKeyWithNoDefaultUnderProd` was
+REPLACED rather than deleted — it asserted the very placeholders this change had to relax, and its
+successor pins the new invariant (safe defaults in `application-prod.yml` + the conditional
+refusal). Docs: `deploy/docker-compose.prod.yml` (which variables keep `:?` and why: the legal
+five do, because a missing one is a mistake rather than a fact about the world), `deploy/.env.example`,
+`deploy/README.md` Step 10 (deploy-now) and new Step 11e (switch-on, and switch-off as incident
+response), `docs/ANDROID_APP_PROMPT.md` §3.8c + the error-code list.
+
+**Still open:** everything the previous wave listed is unchanged, and this adds nothing to it —
+the Console and Cloud work is the same work, it simply no longer blocks a deploy. One thing worth
+recording: `PLAY_PROVIDER` explicitly set to the EMPTY string (rather than absent) still binds to
+`fake` and so fails startup under prod. Compose's `:-disabled` covers the realistic path and the
+failure is loud and fail-closed, so it was left alone rather than changing what blank means to
+`PlayProperties` — which would have altered the development default too.
+
 ## 9. Future extension points (design for, do not build)
 
 pgvector/semantic search behind the SearchService port · shared household accounts · QR/NFC
@@ -1014,7 +1144,10 @@ tags · reminders · real image object detection · notifications · Elasticsear
 demands. **Subscriptions (Play Billing + RTDN)**: COMPLETE as of 2026-09-19 — the ladder, schema, port and
 verify endpoint (BR-12), then the RTDN handler, the refund paths, the reconciler, tier changes and
 account-deletion cancellation (V11, BR-13). What is left is not code: the Pub/Sub subscription, the
-audience, and the product ids (see §8). The obvious follow-ups, deliberately NOT built: an alert on
+audience, and the product ids (see §8). **Since 2026-09-20 that missing Console/Cloud work no
+longer blocks a deploy**: production runs `whereis.play.provider=disabled`, which switches the
+whole of billing off without touching the free tier, and Step 11e switches it on with environment
+variables alone. The obvious follow-ups, deliberately NOT built: an alert on
 "no `play_notifications` row in N hours" (a quiet ledger is indistinguishable from a quiet week, and
 the reconciler papers over it); `pausedStateContext.autoResumeTime` so a PAUSED strip can show a
 resume date (a third column, and "Paused in Google Play" is honest without it); demoting a token

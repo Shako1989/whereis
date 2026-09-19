@@ -19,7 +19,9 @@ import az.technest.whereis.plan.SubscriptionState;
 import az.technest.whereis.plan.SubscriptionWriter;
 import az.technest.whereis.plan.UserSubscription;
 import az.technest.whereis.plan.UserSubscriptionRepository;
+import az.technest.whereis.plan.play.DisabledPlaySubscriptionsApi;
 import az.technest.whereis.plan.play.FakePlaySubscriptionsApi;
+import az.technest.whereis.plan.play.PlayProperties;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -56,7 +58,7 @@ class SubscriptionReconcilerTest {
         PlanCatalog catalog = catalog();
         reconciler = new SubscriptionReconciler(subscriptions, writer, new SubscriptionSnapshots(catalog),
                 new SubscriptionLinkResolver(subscriptions, writer),
-                new FakePlaySubscriptionsApi(catalog), properties(true));
+                new FakePlaySubscriptionsApi(catalog), properties(true), playProperties(PlayProperties.FAKE));
         when(writer.reconcile(any(), any(), any())).thenReturn(true);
         when(writer.find(any())).thenReturn(Optional.empty());
     }
@@ -67,7 +69,7 @@ class SubscriptionReconcilerTest {
         // turn the sweeps off on all but one.
         SubscriptionReconciler off = new SubscriptionReconciler(subscriptions, writer,
                 new SubscriptionSnapshots(catalog()), new SubscriptionLinkResolver(subscriptions, writer),
-                new FakePlaySubscriptionsApi(catalog()), properties(false));
+                new FakePlaySubscriptionsApi(catalog()), properties(false), playProperties(PlayProperties.FAKE));
 
         off.sweep();
 
@@ -144,7 +146,7 @@ class SubscriptionReconcilerTest {
         FakePlaySubscriptionsApi play = new FakePlaySubscriptionsApi(catalog());
         SubscriptionReconciler withFake = new SubscriptionReconciler(subscriptions, writer,
                 new SubscriptionSnapshots(catalog()), new SubscriptionLinkResolver(subscriptions, writer),
-                play, properties(true));
+                play, properties(true), playProperties(PlayProperties.FAKE));
         UserSubscription row = row("fake-active-pro", SubscriptionState.ACTIVE, false);
         givenCandidates(row);
 
@@ -159,7 +161,7 @@ class SubscriptionReconcilerTest {
         FakePlaySubscriptionsApi play = new FakePlaySubscriptionsApi(catalog());
         SubscriptionReconciler withFake = new SubscriptionReconciler(subscriptions, writer,
                 new SubscriptionSnapshots(catalog()), new SubscriptionLinkResolver(subscriptions, writer),
-                play, properties(true));
+                play, properties(true), playProperties(PlayProperties.FAKE));
         UserSubscription row = row("fake-active-pro", SubscriptionState.EXPIRED, false);
         row.setEntitledUntil(Instant.now().minus(Duration.ofDays(1)));
         givenCandidates(row);
@@ -188,6 +190,28 @@ class SubscriptionReconcilerTest {
                 .acknowledged(acknowledged)
                 .verifiedAt(Instant.now().minus(Duration.ofHours(20)))
                 .build();
+    }
+
+    /**
+     * <strong>The gate that lets whereis deploy before Play Billing exists.</strong> With
+     * {@code whereis.play.provider=disabled} every Play call refuses, so an unguarded tick would
+     * throw on the first candidate row every fifteen minutes forever. Note what this asserts
+     * beyond "it did nothing": the flag is ON, so only the billing gate can be what stopped it.
+     */
+    @Test
+    void theScheduledSweepDoesNothingWhenBillingIsNotConfiguredEvenWithTheFlagOn() {
+        SubscriptionReconciler off = new SubscriptionReconciler(subscriptions, writer,
+                new SubscriptionSnapshots(catalog()), new SubscriptionLinkResolver(subscriptions, writer),
+                new DisabledPlaySubscriptionsApi(), properties(true),
+                playProperties(PlayProperties.DISABLED));
+
+        off.sweep();
+
+        verify(subscriptions, never()).reconcileCandidates(any(), any(), any(), any());
+    }
+
+    private static PlayProperties playProperties(String provider) {
+        return new PlayProperties(provider, "az.technest.whereis", null, Duration.ofSeconds(10));
     }
 
     private static ReconcileProperties properties(boolean enabled) {

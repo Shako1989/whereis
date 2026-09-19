@@ -29,14 +29,19 @@ unless that stack was started with `-p`. **Confirm before you start:** `docker n
 
 ## Step 0 — Gate: the integration suite must pass first
 
-The Testcontainers suite (151 tests across 21 classes as of 2026-09-19, including `MvpJourneyIT`) is
+The Testcontainers suite (163 tests across 22 classes as of 2026-09-20, including `MvpJourneyIT`) is
 the only place transaction boundaries, the MinIO deletion outbox, the location advisory locks, the
 tier guard and the whole billing lifecycle — RTDN ordering, refunds, the reconciler, tier changes and
-account deletion with a live subscription — are covered at all. Run this on a machine with working
-Docker before deploying anything:
+account deletion with a live subscription — are covered at all. `BillingDisabledProdIT` is the one
+that covers **this** deployment: it boots the `prod` profile with no Play credentials at all and
+proves the plan endpoint, both 409 walls, the 501 purchase refusal and the dead push endpoint.
+
+Run this on a machine with working Docker before deploying anything, and **force the runs** — a
+bare `build` returns `BUILD SUCCESSFUL` from cache having executed zero tests, which has already
+produced one false green in this project:
 
 ```sh
-./gradlew build && ./gradlew integrationTest
+./gradlew clean build --rerun-tasks && ./gradlew integrationTest --rerun-tasks
 ```
 
 ## Step 1 — DNS
@@ -227,8 +232,9 @@ A 2 vCPU box builds this in a few minutes; watch `free -h` in another shell. Wit
 from step 2 this should hold, but if the build is still OOM-killed, `docker stop autoparts-api`
 for the duration and start it again afterwards.
 
-Healthy when the log shows `Started WhereisApplication` and Flyway reports 7 migrations
-applied. `depends_on` cannot cross compose projects, so if Postgres is briefly unavailable the
+Healthy when the log shows `Started WhereisApplication` and Flyway reports 11 migrations applied.
+You will also see one INFO line stating that Play Billing is not configured — that is the expected
+state until Step 11e, and it lists everything the mode switches off. `depends_on` cannot cross compose projects, so if Postgres is briefly unavailable the
 app retries via `flyway.connect-retries: 10` and then `restart: unless-stopped`.
 
 ## Step 7 — Verify
@@ -243,6 +249,8 @@ curl -s -o /dev/null -w '%{http_code}\n' \
      https://$WHEREIS_API_HOST/api/v1/spaces               # expect 401 — auth required
 curl -s -o /dev/null -w '%{http_code}\n' \
      https://$WHEREIS_MEDIA_HOST/whereis-item-images/x     # expect 403 — bucket is private
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+     https://$WHEREIS_API_HOST/play/rtdn                   # expect 401 — billing off denies all
 ```
 
 Then register a user, upload a photo, and confirm the returned presigned URL opens on a phone
@@ -511,46 +519,80 @@ the compose file invites drift:
 > a higher tier may never allow less — raise every tier above it too
 > ```
 
-### Play Billing configuration
+### Play Billing configuration — deploy now with billing OFF
 
-`PLAY_PROVIDER`, `PLAY_PACKAGE_NAME` and `PLAY_SERVICE_ACCOUNT_JSON` are now forwarded by
-`docker-compose.prod.yml` with `:?`, so a missing one stops the stack with a named error instead of
-a Spring placeholder trace. Set them in `.env`:
+**Set nothing. Deploy.** There is a third mode, `whereis.play.provider=disabled`, it is the default
+under the `prod` profile and in `docker-compose.prod.yml`, and it is what this deployment runs
+until the Google Cloud service account and the Pub/Sub topic exist:
 
-```sh
-WHEREIS_PLAY_PROVIDER=google
-WHEREIS_PLAY_PACKAGE_NAME=az.technest.whereis
-WHEREIS_PLAY_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
+| what | with billing `disabled` |
+|---|---|
+| `GET /users/me/plan`, `GET /plans`, limits, usage, 409 `PLAN_LIMIT_REACHED` | **unchanged** |
+| `POST /users/me/plan/purchases` | **501 `PLAY_BILLING_NOT_CONFIGURED`** — the client keeps the token |
+| `POST /play/rtdn` | **401, empty body, no ledger row**, for every caller |
+| reconciler / voided sweep / cancellation janitor | **do not run** (silently — one startup line states it) |
+| `users.plan` grants (Step 10 below) | **unchanged** — they never involved Play |
+
+Nothing can grant a tier by any route in this mode, which makes it strictly safer than either other
+provider rather than a way round them. `docker compose up -d` works with **no** `WHEREIS_PLAY_*`
+variable in `.env` at all.
+
+Why this exists: those six variables used to be `:?`-required in `docker-compose.prod.yml`, so a
+`docker compose up -d` without them took whereis **down** — for free-tier users too, who have
+nothing to do with billing — over a feature nobody could use, because the service account and the
+Pub/Sub topic are later steps in the launch plan. They are now optional there.
+
+`PLAY_PROVIDER=fake` is still **refused under the `prod` profile** and the container will not start.
+The fake's tokens are guessable literals (`fake-active-max`), so a production process running it
+would hand the top tier to anyone who posted one. **If you hit a boot failure, the answer is
+`disabled`, never `fake`** — the startup message says so.
+
+Confirm the mode from the log after `up -d`:
+
+```
+Play Billing is NOT configured (whereis.play.provider=disabled): purchase verification answers
+501 PLAY_BILLING_NOT_CONFIGURED, POST /play/rtdn rejects every caller, and the reconciler,
+voided-purchase sweep and cancellation janitor will not run. Free-tier limits,
+GET /users/me/plan and 409 PLAN_LIMIT_REACHED are unaffected.
 ```
 
-`PLAY_PROVIDER=fake` is **refused under the `prod` profile** and the container will not start. That
-is deliberate: the fake's tokens are guessable literals (`fake-active-max`), so a production process
-running it would hand the top tier to anyone who posted one. Do not "fix" a boot failure by
-switching to `fake`.
-
-Four more variables are required from this wave on, for the Pub/Sub push endpoint. `PLAY_RTDN_VERIFIER`
-has its **own** prod refusal, deliberately not keyed on `PLAY_PROVIDER`, so a deployment running
-`provider=google` with the verifier left unset is not silently unguarded:
-
-```sh
-WHEREIS_PLAY_RTDN_VERIFIER=google
-WHEREIS_PLAY_RTDN_SHARED_SECRET="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
-WHEREIS_PLAY_RTDN_AUDIENCE=whereis-rtdn
-WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL=whereis-rtdn@<project>.iam.gserviceaccount.com
-```
-
-Plus one legal value, which is read by **both** the public page and `PlayCancellationJanitor` so the
-two cannot drift:
+One legal value IS still required (it is `:?` in compose), because it is rendered into the public
+account-deletion page and read by `PlayCancellationJanitor` as its give-up deadline, so the two
+cannot drift:
 
 ```sh
 WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS=7
 ```
 
-Everything about the Console and Cloud side of those four — and the one Caddy line that stops the
-shared secret being written to disk — is **Step 11**.
+### The refusals that replaced compose's `:?`
+
+Relaxing compose without this would have traded a loud failure for a silent one, so the check moved
+into the application, where it can be conditional — which `${VAR:?}` cannot be. Each is a startup
+failure naming the property, the environment variable and the fix:
+
+| configuration | what refuses to start | why it matters |
+|---|---|---|
+| `provider=google`, blank `PLAY_SERVICE_ACCOUNT_JSON` | `PlayConfig` | otherwise every purchase 502s |
+| `rtdn.verifier=google`, blank `PLAY_RTDN_SHARED_SECRET` / `_AUDIENCE` / `_SERVICE_ACCOUNT_EMAIL` | `PlayRtdnConfig` | **blank REJECTS every push rather than skipping the check**, so the deployment would silently stop tracking Google — the worst failure mode in this design |
+| `PLAY_RTDN_AUDIENCE` that looks like the push URL | `PlayRtdnConfig` | pasting the URL puts the shared secret into config and logs |
+| `disabled` on only ONE of `PLAY_PROVIDER` / `PLAY_RTDN_VERIFIER` | `PlayBillingModeGuard` | a live Play API with a dead push endpoint lets a refunded subscriber keep a paid tier; a live push endpoint with no Play API behind it 500s on every delivery forever |
+
+A typo in one of those variable names is therefore still a stopped container, not a
+billing-shaped deployment with no credentials.
+
+Everything about the Console and Cloud side — and the one Caddy line that stops the shared secret
+being written to disk — is **Step 11**. **Switching billing on is Step 11e**, and it needs no code
+change and no image rebuild.
 
 ### GATE before promoting a build past closed testing
 
+> **0. BILLING IS OFF UNTIL STEP 11e IS DONE, and the deployed build says so.** With
+> `whereis.play.provider=disabled` — the default — `POST /users/me/plan/purchases` answers **501
+> `PLAY_BILLING_NOT_CONFIGURED`** and nothing can raise a tier except an operator grant. That is a
+> deliberate, deployable state, not a broken one, and it is why the free tier can ship today. It
+> also means gates 1–3 below do not apply yet: they become live the moment Step 11e is run, and
+> whoever runs it owns them.
+>
 > **1. The wall's door is new and unfinished.** `POST /users/me/plan/purchases` verifies a Play
 > purchase and raises the tier, but there is **no Play Console yet**: the three product ids in
 > `whereis.plans.*.product-id` are assumptions. If any of them differs from what is actually created,
@@ -699,6 +741,79 @@ UPDATE user_subscriptions
 Clearing `verified_at` as well is the point: it puts the row at the head of the reconciler's queue,
 so **Google's answer — not the operator — restores the true state** within fifteen minutes. This is
 the only sanctioned way `voided_at` is ever cleared; do not set it to a value of your own.
+
+### 11e. Switching billing ON — the whole procedure
+
+Billing ships **off** (`whereis.play.provider=disabled`, Step 10). Turning it on is an `.env`
+change and a restart: **no code change, no image rebuild.** Do 11a–11c first — all six values below
+come out of them.
+
+1. Confirm the four prerequisites exist, because the app cannot check them for you: the Play
+   service account and its JSON key, the Pub/Sub topic and push subscription with an **explicit
+   opaque audience** (11a), the `log_skip` line in Caddy (11b), and the three product ids actually
+   created in the Play Console (the GATE in Step 10 — still the one thing nothing in this
+   repository can verify).
+
+2. Set **all six together** in `.env`. Half of them is a startup failure, by design:
+
+   ```sh
+   WHEREIS_PLAY_PROVIDER=google
+   WHEREIS_PLAY_PACKAGE_NAME=az.technest.whereis
+   WHEREIS_PLAY_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
+
+   WHEREIS_PLAY_RTDN_VERIFIER=google
+   WHEREIS_PLAY_RTDN_SHARED_SECRET="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+   WHEREIS_PLAY_RTDN_AUDIENCE=whereis-rtdn
+   WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL=whereis-rtdn@<project>.iam.gserviceaccount.com
+   ```
+
+   The shared secret must be the `?key=` of the push URL registered on the subscription, and
+   `WHEREIS_PLAY_RTDN_AUDIENCE` must be the audience you set **explicitly** in the Console — never
+   the push URL, which would put the secret into configuration and every startup log. The app
+   refuses to boot on a URL-shaped value.
+
+3. Restart and read the log:
+
+   ```sh
+   cd ~/whereis/deploy
+   docker compose -f docker-compose.prod.yml --env-file .env up -d
+   docker compose -f docker-compose.prod.yml --env-file .env logs -f whereis-api
+   ```
+
+   The `Play Billing is NOT configured` line must be **gone**. If the container exits instead, the
+   message names the property and the variable — fix that, and do not fall back to
+   `PLAY_PROVIDER=fake`, which the prod profile refuses anyway.
+
+4. Prove it end to end, in this order — each step is the prerequisite for trusting the next:
+
+   ```sh
+   # a) the endpoint no longer says "not configured". 401 here (this curl carries no JWT) is the
+   #    PASS: what matters is that it is no longer 501.
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+        -H 'Content-Type: application/json' \
+        -d '{"purchaseToken":"x","productId":"whereis_pro_annual"}' \
+        https://$WHEREIS_API_HOST/api/v1/users/me/plan/purchases
+
+   # b) the push path works: Play Console -> Monetisation setup -> Send test notification,
+   #    then look for the TEST row
+   docker exec -i autoparts-postgres psql -U whereis -d whereis -c \
+     "SELECT message_id, notification_kind, outcome, created_at
+        FROM play_notifications ORDER BY created_at DESC LIMIT 5;"
+
+   # c) the scheduled jobs are alive again — they were silent no-ops until now
+   docker compose -f docker-compose.prod.yml --env-file .env logs whereis-api | grep -i reconcile
+   ```
+
+   If (b) is still empty a day after the first tester purchase, the push subscription is not wired
+   — that is GATE 2 in Step 10, and refunds are not being caught.
+
+5. **Switching back off is the same change in reverse**, and it is a legitimate incident response:
+   set `WHEREIS_PLAY_PROVIDER=disabled` and `WHEREIS_PLAY_RTDN_VERIFIER=disabled` (both, or the
+   container refuses to start) and restart. Existing `user_subscriptions` rows keep entitling until
+   `entitled_until` passes — the entitlement query is pure database state and asks Google nothing —
+   so nobody who paid loses access. What stops is new verification, notification handling and the
+   three sweeps. Nothing is deleted and nothing is downgraded.
+
 
 ## Redeploy and rollback
 

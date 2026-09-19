@@ -42,25 +42,44 @@ whereis:
     backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS}
     cancellation-retry-days: ${WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS}
 
-  # The Play Developer API. No defaults on purpose: prod must not be able to start half-configured,
-  # and it must NEVER run on the fake provider — PlayConfig refuses to construct the fake under this
-  # profile, so PLAY_PROVIDER=fake here is a loud startup failure rather than a silent entitlement
-  # escalation. Set all three in deploy/.env.
+  # The Play Developer API. THE DEFAULT HERE IS `disabled`, and it is the safe direction: billing
+  # off cannot grant a tier by any route, while everything non-billing — the free tier, the limits,
+  # GET /users/me/plan, 409 PLAN_LIMIT_REACHED — keeps working. That is what lets this application
+  # deploy to production before the Google Cloud service account and the Pub/Sub topic exist.
+  #
+  # These used to be `${PLAY_...}` with NO default, so an absent variable was an unresolvable
+  # placeholder and a startup failure. That check has MOVED rather than gone, because it could not
+  # coexist with a mode whose whole point is that these values are absent:
+  #   * provider=google with a blank service-account key  -> PlayConfig refuses to start
+  #   * verifier=google with a blank secret/audience/email -> PlayRtdnConfig refuses to start
+  #   * `disabled` on one half only                        -> PlayBillingModeGuard refuses to start
+  # A conditional requirement is exactly what a placeholder cannot express and what compose could
+  # not express either; see deploy/docker-compose.prod.yml, which no longer marks them `:?`.
+  #
+  # PLAY_PROVIDER=fake is still a loud startup failure under this profile (PlayConfig), because the
+  # fake's tokens are guessable literals. Do not "fix" a boot failure with it — use `disabled`.
   play:
-    provider: ${PLAY_PROVIDER}
-    package-name: ${PLAY_PACKAGE_NAME}
-    service-account-json: ${PLAY_SERVICE_ACCOUNT_JSON}
+    provider: ${PLAY_PROVIDER:disabled}
+    # Server config, never a request field. The default is this application's own id, which is what
+    # it must be; it is here so that switching billing on needs no more variables than it has to.
+    package-name: ${PLAY_PACKAGE_NAME:az.technest.whereis}
+    # Required ONLY when provider=google, and refused at startup when blank there.
+    service-account-json: ${PLAY_SERVICE_ACCOUNT_JSON:}
 
-    # The RTDN push endpoint, with no defaults for the same reason: it can hand any account any
-    # tier, so prod must refuse to start rather than start unprotected. PlayRtdnConfig ALSO refuses
-    # verifier=fake under this profile with its own Environment check — deliberately not keyed on
-    # whereis.play.provider, so a deployment running provider=google with the verifier left unset
-    # is not silently unguarded.
+    # The RTDN push endpoint. `disabled` denies EVERY caller — the endpoint stays on its own
+    # @Order(0) chain and answers 401 with an empty body and no ledger row — so this mode cannot
+    # become a route to an unverified notification. PlayRtdnConfig still refuses verifier=fake under
+    # this profile with its OWN Environment check, deliberately not keyed on whereis.play.provider,
+    # so a deployment running provider=google with the verifier left unset is not silently
+    # unguarded; PlayBillingModeGuard separately refuses a deployment that disables only one half.
     rtdn:
-      verifier: ${PLAY_RTDN_VERIFIER}
-      shared-secret: ${PLAY_RTDN_SHARED_SECRET}
+      verifier: ${PLAY_RTDN_VERIFIER:disabled}
+      # All three are required when verifier=google and a blank one is a startup failure there:
+      # blank REJECTS every push rather than skipping the check, so a typo would make this
+      # deployment silently stop tracking Google.
+      shared-secret: ${PLAY_RTDN_SHARED_SECRET:}
       # An explicit opaque audience set on the Pub/Sub subscription — NEVER the push URL. Boot fails
       # on a URL-shaped value, because pasting the URL here would put the shared secret into
       # configuration, the process environment and every startup log that echoes bound properties.
-      audience: ${PLAY_RTDN_AUDIENCE}
-      service-account-email: ${PLAY_RTDN_SERVICE_ACCOUNT_EMAIL}
+      audience: ${PLAY_RTDN_AUDIENCE:}
+      service-account-email: ${PLAY_RTDN_SERVICE_ACCOUNT_EMAIL:}

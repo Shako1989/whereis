@@ -74,11 +74,14 @@ services:
       AI_CLAUDE_MAX_OUTPUT_TOKENS: ${WHEREIS_AI_CLAUDE_MAX_OUTPUT_TOKENS:-4096}
       AI_CLAUDE_BASE_URL: ${WHEREIS_AI_CLAUDE_BASE_URL:-}
 
-      # The five facts the public legal pages state. `:?` on every one of them is deliberate:
-      # compose refuses to start the stack rather than hand the app a value it would then fail
-      # startup on anyway, and the error names the missing variable instead of a Spring stack
-      # trace. WHEREIS_LEGAL_BACKUP_RETENTION_DAYS is a promise to the user about how long deleted
-      # data survives — it must match what the backup job on this box actually rotates.
+      # The five facts the public legal pages state. `:?` on every one of them is deliberate, and
+      # unlike the Play variables below they KEEP it: these are rendered into two public pages that
+      # Google cross-checks, the app fails startup without them anyway, and — the deciding
+      # difference — they are values the operator can supply TODAY. A `:?` is right exactly when a
+      # missing value is a mistake rather than a fact about the world. The error also names the
+      # missing variable instead of producing a Spring placeholder trace.
+      # WHEREIS_LEGAL_BACKUP_RETENTION_DAYS is a promise to the user about how long deleted data
+      # survives — it must match what the backup job on this box actually rotates.
       WHEREIS_LEGAL_SUPPORT_EMAIL: ${WHEREIS_LEGAL_SUPPORT_EMAIL:?set WHEREIS_LEGAL_SUPPORT_EMAIL in .env}
       WHEREIS_LEGAL_ENTITY: ${WHEREIS_LEGAL_ENTITY:?set WHEREIS_LEGAL_ENTITY in .env}
       WHEREIS_LEGAL_ADDRESS: ${WHEREIS_LEGAL_ADDRESS:?set WHEREIS_LEGAL_ADDRESS in .env}
@@ -92,40 +95,68 @@ services:
       AI_CLAUDE_WORKSPACE_ID: ${WHEREIS_AI_CLAUDE_WORKSPACE_ID:-}
       AI_CLAUDE_MAX_RETRIES: ${WHEREIS_AI_CLAUDE_MAX_RETRIES:-1}
 
-      # Play Billing (V10). `:?` on all three on purpose, unlike the AI keys: the prod profile
-      # declares them with NO default, so a missing one is a startup failure anyway — compose
-      # naming the variable is a better error than a Spring placeholder trace. And PLAY_PROVIDER
-      # must be set EXPLICITLY: the deterministic fake grants any tier to anyone who guesses a
-      # token, so PlayConfig refuses to construct it under the prod profile. Use `google` here
-      # once the Play service account exists; until then the stack will not start, which is the
-      # correct answer for a build that cannot verify a purchase.
-      PLAY_PROVIDER: ${WHEREIS_PLAY_PROVIDER:?set WHEREIS_PLAY_PROVIDER in .env (google)}
-      PLAY_PACKAGE_NAME: ${WHEREIS_PLAY_PACKAGE_NAME:?set WHEREIS_PLAY_PACKAGE_NAME in .env}
-      PLAY_SERVICE_ACCOUNT_JSON: ${WHEREIS_PLAY_SERVICE_ACCOUNT_JSON:?set WHEREIS_PLAY_SERVICE_ACCOUNT_JSON in .env}
-
-      # The RTDN push endpoint (V11). `:?` on all four, for a sharper reason than the rest: this
-      # endpoint can hand ANY account ANY tier and it is reachable by anyone on the internet, so a
-      # half-configured deployment must not start.
+      # ------------------------------------------------------------------ Play Billing
       #
-      # PLAY_RTDN_VERIFIER must be `google`. PlayRtdnConfig refuses `fake` under the prod profile
-      # with its OWN Environment check — deliberately not keyed on PLAY_PROVIDER, so a deployment
-      # running provider=google with the verifier left unset is not silently unguarded.
+      # WHICH OF THESE ARE REQUIRED AND WHY, because it changed and the reason matters.
+      #
+      # NONE of them is `:?` any more. They were, and that was correct while `google` was the only
+      # value prod could run: the app declared them with no default, so a missing one failed
+      # startup anyway and compose naming the variable was the better error. It is no longer
+      # correct, because the values CANNOT EXIST YET — there is no Google Cloud service account and
+      # no Pub/Sub topic — and `:?` on a value that cannot exist means `docker compose up -d` takes
+      # the whole application down, free-tier users included, over a feature nobody can use.
+      #
+      # So billing has a third mode, `disabled`, and it is the default below. Under it purchase
+      # verification answers 501 PLAY_BILLING_NOT_CONFIGURED, POST /play/rtdn rejects every caller,
+      # and the three scheduled billing jobs do not run — it cannot grant a tier by any route.
+      # Everything else is untouched: the free tier, GET /users/me/plan, per-tier limits and
+      # 409 PLAN_LIMIT_REACHED all keep working. PLAY_PROVIDER=fake is still REFUSED under the
+      # prod profile; do not reach for it to fix a boot failure, reach for `disabled`.
+      #
+      # THE CHECK COMPOSE USED TO MAKE NOW LIVES IN THE APPLICATION, because it is conditional and
+      # `${VAR:?}` cannot express a condition:
+      #   * provider=google with a blank key             -> PlayConfig fails startup
+      #   * verifier=google with a blank secret/audience/email -> PlayRtdnConfig fails startup
+      #   * `disabled` set on one half only              -> PlayBillingModeGuard fails startup
+      # A typo in one of these variable names therefore still stops the container, loudly, naming
+      # the property — it does not quietly produce a billing-shaped deployment with no credentials.
+      #
+      # TO SWITCH BILLING ON: set all six in .env (README Step 11e) and `up -d`. No image rebuild
+      # and no code change — that is the whole point of the third value.
+      PLAY_PROVIDER: ${WHEREIS_PLAY_PROVIDER:-disabled}
+      # Safe default because it is this application's own id and must match the Play Console app.
+      PLAY_PACKAGE_NAME: ${WHEREIS_PLAY_PACKAGE_NAME:-az.technest.whereis}
+      # Read ONLY when PLAY_PROVIDER=google, and required at startup in that case.
+      PLAY_SERVICE_ACCOUNT_JSON: ${WHEREIS_PLAY_SERVICE_ACCOUNT_JSON:-}
+
+      # The RTDN push endpoint (V11). `disabled` denies every caller: the route stays where it is,
+      # on its own @Order(0) security chain, and answers 401 with an empty body and no ledger row.
+      # That is deliberately safer than deleting the route — the chain topology does not change
+      # with configuration — and strictly safer than either other verifier, which by design accept
+      # something.
+      #
+      # PlayRtdnConfig still refuses `fake` under the prod profile with its OWN Environment check,
+      # deliberately not keyed on PLAY_PROVIDER, so a deployment running provider=google with the
+      # verifier left unset is not silently unguarded.
       #
       # PLAY_RTDN_AUDIENCE must be the opaque audience string set explicitly on the Pub/Sub push
       # subscription (e.g. whereis-rtdn) and NEVER the push URL. Cloud Pub/Sub sets the `aud` claim
       # to the full endpoint URL — shared secret and all — when the subscription leaves the audience
       # blank; the app refuses to boot on a URL-shaped value for exactly that reason. See README
       # Step 11.
-      PLAY_RTDN_VERIFIER: ${WHEREIS_PLAY_RTDN_VERIFIER:?set WHEREIS_PLAY_RTDN_VERIFIER in .env (google)}
-      PLAY_RTDN_SHARED_SECRET: ${WHEREIS_PLAY_RTDN_SHARED_SECRET:?set WHEREIS_PLAY_RTDN_SHARED_SECRET in .env}
-      PLAY_RTDN_AUDIENCE: ${WHEREIS_PLAY_RTDN_AUDIENCE:?set WHEREIS_PLAY_RTDN_AUDIENCE in .env}
-      PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: ${WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL:?set WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL in .env}
+      PLAY_RTDN_VERIFIER: ${WHEREIS_PLAY_RTDN_VERIFIER:-disabled}
+      PLAY_RTDN_SHARED_SECRET: ${WHEREIS_PLAY_RTDN_SHARED_SECRET:-}
+      PLAY_RTDN_AUDIENCE: ${WHEREIS_PLAY_RTDN_AUDIENCE:-}
+      PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: ${WHEREIS_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL:-}
 
       # The three scheduled billing components. All default to ON in application.yml, so these are
       # only here for the one operational answer they exist for: if whereis is ever scaled to more
       # than one container, turn all three OFF on every instance but one. Correctness survives two
       # instances — every write is idempotent and guarded by compare-and-set or write-once — but the
       # Play API quota spend doubles.
+      #
+      # These flags are irrelevant while PLAY_PROVIDER=disabled: the jobs check that FIRST and do
+      # nothing, silently, whatever these say. They matter again the moment billing is switched on.
       PLAY_RECONCILE_ENABLED: ${WHEREIS_PLAY_RECONCILE_ENABLED:-true}
       PLAY_VOIDED_SWEEP_ENABLED: ${WHEREIS_PLAY_VOIDED_SWEEP_ENABLED:-true}
       PLAY_CANCELLATION_ENABLED: ${WHEREIS_PLAY_CANCELLATION_ENABLED:-true}

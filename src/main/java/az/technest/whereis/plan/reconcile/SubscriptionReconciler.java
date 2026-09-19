@@ -7,6 +7,7 @@ import az.technest.whereis.plan.SubscriptionWriter;
 import az.technest.whereis.plan.UserSubscription;
 import az.technest.whereis.plan.UserSubscriptionRepository;
 import az.technest.whereis.plan.play.PlayApiException;
+import az.technest.whereis.plan.play.PlayProperties;
 import az.technest.whereis.plan.play.PlayPurchaseInvalidException;
 import az.technest.whereis.plan.play.PlaySubscription;
 import az.technest.whereis.plan.play.PlaySubscriptionsApi;
@@ -50,11 +51,25 @@ public class SubscriptionReconciler {
     private final SubscriptionLinkResolver linkResolver;
     private final PlaySubscriptionsApi play;
     private final ReconcileProperties properties;
+    private final PlayProperties playProperties;
 
+    /**
+     * <strong>Two gates, and they answer different questions.</strong> {@code billingConfigured()}
+     * is "is there a Play API to call at all?" — under {@code whereis.play.provider=disabled} every
+     * call refuses, so a tick would throw {@code PlayBillingNotConfiguredException} on the first
+     * row, every fifteen minutes, forever. Silent rather than logged for exactly that reason: the
+     * mode is announced ONCE at startup by {@code PlayConfig}, and a scheduled job that WARNs about a
+     * deliberate configuration is log noise that trains an operator to ignore the log. The
+     * {@code enabled} flag is the separate, pre-existing "we are running two containers" answer.
+     *
+     * <p>The guard reads {@code PlayProperties#billingConfigured()} rather than comparing the
+     * string here, so all four readers of "billing is off" share one normalisation.
+     */
     @Scheduled(fixedDelayString = "${whereis.play.reconcile.delay:PT15M}",
             initialDelayString = "${whereis.play.reconcile.initial-delay:PT2M}")
     public void sweep() {
-        if (!Boolean.TRUE.equals(properties.reconcile().enabled())) {
+        if (!playProperties.billingConfigured()
+                || !Boolean.TRUE.equals(properties.reconcile().enabled())) {
             return;
         }
         runOnce();

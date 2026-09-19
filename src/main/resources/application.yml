@@ -149,8 +149,16 @@ whereis:
   # fake is the default so `./gradlew build` and the whole integration suite run with no network,
   # no Google credentials and no Play Console — which does not exist yet. The fake is REFUSED under
   # the prod profile (its tokens are guessable literals), so a production process cannot select it.
+  #
+  # THREE values, and `disabled` is the one prod can run today: it needs no Google credentials,
+  # answers every purchase 501 PLAY_BILLING_NOT_CONFIGURED, rejects every RTDN caller and stops the
+  # three scheduled billing jobs — so it cannot grant a tier by any route, which is why it is
+  # permitted under prod while `fake` is not. It must be paired with rtdn.verifier=disabled
+  # (PlayBillingModeGuard refuses a half-configured deployment at startup). Free-tier limits,
+  # GET /users/me/plan and 409 PLAN_LIMIT_REACHED are unaffected by it.
   play:
     # fake (default: deterministic, no key, no network) | google (real Play Developer API)
+    # | disabled (billing not configured; refuses everything, grants nothing)
     provider: ${PLAY_PROVIDER:fake}
     # Server config, never a request field: a caller cannot make this server ask Google about a
     # different app's purchase.
@@ -170,6 +178,10 @@ whereis:
     rtdn:
       enabled: ${PLAY_RTDN_ENABLED:true}
       # google (verify Google's RS256 OIDC push token) | fake (one literal, refused under prod)
+      # | disabled (deny every caller; PERMITTED under prod, and must be paired with
+      # whereis.play.provider=disabled). Under `google` a blank shared-secret, audience or
+      # service-account-email is a STARTUP FAILURE: blank rejects every push, which would silently
+      # stop this deployment tracking Google. PlayRtdnConfig owns that check.
       verifier: ${PLAY_RTDN_VERIFIER:google}
       # Check 1. 32 random bytes, base64url; it is the ?key= of the registered push URL.
       shared-secret: ${PLAY_RTDN_SHARED_SECRET:}

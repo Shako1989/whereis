@@ -19,7 +19,9 @@ import az.technest.whereis.plan.PlanCatalog.TierConfig;
 import az.technest.whereis.plan.dto.PlanStatusResponse;
 import az.technest.whereis.plan.dto.PurchaseVerificationRequest;
 import az.technest.whereis.plan.play.FakePlaySubscriptionsApi;
+import az.technest.whereis.plan.play.DisabledPlaySubscriptionsApi;
 import az.technest.whereis.plan.play.PlayAccountHash;
+import az.technest.whereis.plan.play.PlayProperties;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumMap;
@@ -68,12 +70,17 @@ class PurchaseVerificationServiceTest {
         play = new FakePlaySubscriptionsApi(shippedCatalog());
         planLimits = mock(PlanLimitEnforcer.class);
         catalog = shippedCatalog();
-        service = new PurchaseVerificationService(subscriptions, writer, play, catalog, planLimits,
+        service = new PurchaseVerificationService(subscriptions, writer, play,
+                properties(PlayProperties.FAKE), catalog, planLimits,
                 new SubscriptionLinkResolver(subscriptions, writer));
 
         when(subscriptions.findByPurchaseToken(any())).thenReturn(Optional.empty());
         when(writer.upsert(any())).thenAnswer(invocation -> rowOf(invocation.getArgument(0)));
         when(planLimits.statusOf(any())).thenReturn(mock(PlanStatusResponse.class));
+    }
+
+    private static PlayProperties properties(String provider) {
+        return new PlayProperties(provider, "az.technest.whereis", null, Duration.ofSeconds(10));
     }
 
     private static UserSubscription rowOf(SubscriptionWriter.Snapshot snapshot) {
@@ -275,7 +282,7 @@ class PurchaseVerificationServiceTest {
             SubscriptionWriter freshWriter = mock(SubscriptionWriter.class);
             when(freshWriter.upsert(any())).thenAnswer(invocation -> rowOf(invocation.getArgument(0)));
             PurchaseVerificationService fresh = new PurchaseVerificationService(
-                    subscriptions, freshWriter, play, catalog, planLimits,
+                    subscriptions, freshWriter, play, properties(PlayProperties.FAKE), catalog, planLimits,
                     new SubscriptionLinkResolver(subscriptions, freshWriter));
 
             assertRefused(() -> fresh.verify(caller, new PurchaseVerificationRequest(token, PRO)),
@@ -410,6 +417,41 @@ class PurchaseVerificationServiceTest {
 
         assertThat(play.acknowledgedTokens()).hasSize(1);
         verify(writer, times(1)).markAcknowledged(any());
+    }
+
+    /**
+     * The billing-not-configured mode, from the endpoint's side. Three assertions rather than one,
+     * because "answers 501" is the least important of them: what makes this mode safe to run in
+     * production is that the refusal happens before ANY read and ANY write, so there is no path
+     * from a POST to a row.
+     */
+    @Test
+    void aPurchaseIsRefusedWith501AndTouchesNothingWhenBillingIsNotConfigured() {
+        PurchaseVerificationService off = new PurchaseVerificationService(subscriptions, writer,
+                new DisabledPlaySubscriptionsApi(), properties(PlayProperties.DISABLED), catalog,
+                planLimits, new SubscriptionLinkResolver(subscriptions, writer));
+
+        assertRefused(() -> off.verify(caller, new PurchaseVerificationRequest("fake-active-pro", PRO)),
+                HttpStatus.NOT_IMPLEMENTED, ErrorCode.PLAY_BILLING_NOT_CONFIGURED);
+
+        // Nothing read, nothing written, no plan status composed: the whole flow is zero statements.
+        verifyNoInteractions(subscriptions, writer, planLimits);
+    }
+
+    /**
+     * The refusal is FIRST, ahead of the product-id check. A client that posted an unknown product
+     * would otherwise be told 400 PLAY_PRODUCT_UNKNOWN — "drop the token" — when the truth is that
+     * this server cannot look at any token at all, and a dropped token is a purchase the user
+     * cannot get back.
+     */
+    @Test
+    void theBillingRefusalWinsOverEveryOtherReasonThePostCouldBeRejected() {
+        PurchaseVerificationService off = new PurchaseVerificationService(subscriptions, writer,
+                new DisabledPlaySubscriptionsApi(), properties(PlayProperties.DISABLED), catalog,
+                planLimits, new SubscriptionLinkResolver(subscriptions, writer));
+
+        assertRefused(() -> off.verify(caller, new PurchaseVerificationRequest("anything", "not_a_product")),
+                HttpStatus.NOT_IMPLEMENTED, ErrorCode.PLAY_BILLING_NOT_CONFIGURED);
     }
 
     private UserSubscription storedRow(UUID owner, SubscriptionState state, Instant entitledUntil,

@@ -17,7 +17,9 @@ import az.technest.whereis.plan.PurchaseProvenance;
 import az.technest.whereis.plan.SubscriptionState;
 import az.technest.whereis.plan.UserSubscription;
 import az.technest.whereis.plan.UserSubscriptionRepository;
+import az.technest.whereis.plan.play.DisabledPlaySubscriptionsApi;
 import az.technest.whereis.plan.play.FakePlaySubscriptionsApi;
+import az.technest.whereis.plan.play.PlayProperties;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumMap;
@@ -48,14 +50,15 @@ class PlayCancellationJanitorTest {
         queue = mock(PlayCancellationQueueRepository.class);
         subscriptions = mock(UserSubscriptionRepository.class);
         play = new FakePlaySubscriptionsApi(catalog());
-        janitor = new PlayCancellationJanitor(queue, subscriptions, play, properties(true), legal("7"));
+        janitor = new PlayCancellationJanitor(queue, subscriptions, play, properties(true),
+                playProperties(PlayProperties.FAKE), legal("7"));
         when(subscriptions.findByPurchaseToken(anyString())).thenReturn(Optional.empty());
     }
 
     @Test
     void theSweepDoesNothingAtAllWhenItsFlagIsOff() {
         PlayCancellationJanitor off = new PlayCancellationJanitor(queue, subscriptions, play,
-                properties(false), legal("7"));
+                properties(false), playProperties(PlayProperties.FAKE), legal("7"));
 
         off.sweep();
 
@@ -138,7 +141,7 @@ class PlayCancellationJanitorTest {
     @Test
     void theDeadlineFollowsTheConfiguredNumberRatherThanAHardcodedSeven() {
         PlayCancellationJanitor thirty = new PlayCancellationJanitor(queue, subscriptions, play,
-                properties(true), legal("30"));
+                properties(true), playProperties(PlayProperties.FAKE), legal("30"));
         PlayCancellationQueueEntry entry = entry("fake-active-pro", Instant.now().minus(Duration.ofDays(8)));
         given(entry);
 
@@ -181,6 +184,26 @@ class PlayCancellationJanitorTest {
     private static LegalProperties legal(String cancellationRetryDays) {
         return new LegalProperties("a@b.c", "Entity", "Address", "2026-01-01", "14",
                 cancellationRetryDays);
+    }
+
+    /**
+     * The billing-not-configured gate, with the {@code enabled} flag left ON. This is the job whose
+     * queue keeps filling regardless — {@code AccountDeletionService} enqueues a cancellation
+     * whether or not billing is configured — so the rows simply wait for billing to be switched on.
+     */
+    @Test
+    void theScheduledSweepDoesNothingWhenBillingIsNotConfiguredEvenWithTheFlagOn() {
+        PlayCancellationJanitor off = new PlayCancellationJanitor(queue, subscriptions,
+                new DisabledPlaySubscriptionsApi(), properties(true),
+                playProperties(PlayProperties.DISABLED), legal("7"));
+
+        off.sweep();
+
+        verify(queue, never()).findDue(any(), any());
+    }
+
+    private static PlayProperties playProperties(String provider) {
+        return new PlayProperties(provider, "az.technest.whereis", null, Duration.ofSeconds(10));
     }
 
     private static ReconcileProperties properties(boolean enabled) {

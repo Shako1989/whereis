@@ -15,7 +15,9 @@ import az.technest.whereis.plan.SubscriptionState;
 import az.technest.whereis.plan.SubscriptionWriter;
 import az.technest.whereis.plan.UserSubscription;
 import az.technest.whereis.plan.UserSubscriptionRepository;
+import az.technest.whereis.plan.play.DisabledPlaySubscriptionsApi;
 import az.technest.whereis.plan.play.FakePlaySubscriptionsApi;
+import az.technest.whereis.plan.play.PlayProperties;
 import az.technest.whereis.plan.play.PlayVoidedPurchase;
 import java.time.Duration;
 import java.time.Instant;
@@ -53,14 +55,16 @@ class PlayVoidedSweepTest {
         subscriptions = mock(UserSubscriptionRepository.class);
         writer = mock(SubscriptionWriter.class);
         play = new FakePlaySubscriptionsApi(catalog());
-        sweeper = new VoidedPurchaseSweeper(subscriptions, writer, play, properties(true));
+        sweeper = new VoidedPurchaseSweeper(subscriptions, writer, play, properties(true),
+                playProperties(PlayProperties.FAKE));
         when(writer.markVoided(any(), any(), any(), any())).thenReturn(true);
         when(subscriptions.findByPurchaseToken(anyString())).thenReturn(Optional.empty());
     }
 
     @Test
     void theSweepDoesNothingAtAllWhenItsFlagIsOff() {
-        VoidedPurchaseSweeper off = new VoidedPurchaseSweeper(subscriptions, writer, play, properties(false));
+        VoidedPurchaseSweeper off = new VoidedPurchaseSweeper(subscriptions, writer, play,
+                properties(false), playProperties(PlayProperties.FAKE));
         play.enqueueVoid(voided("tok", Instant.now().minus(Duration.ofHours(1))));
 
         off.sweep();
@@ -147,6 +151,25 @@ class PlayVoidedSweepTest {
                 .build();
         row.setVoidedAt(voidedAt);
         return row;
+    }
+
+    /**
+     * The billing-not-configured gate, with the {@code enabled} flag left ON so nothing but that
+     * gate can explain the silence. Without it this would throw every six hours forever.
+     */
+    @Test
+    void theScheduledSweepDoesNothingWhenBillingIsNotConfiguredEvenWithTheFlagOn() {
+        VoidedPurchaseSweeper off = new VoidedPurchaseSweeper(subscriptions, writer,
+                new DisabledPlaySubscriptionsApi(), properties(true),
+                playProperties(PlayProperties.DISABLED));
+
+        off.sweep();
+
+        verify(subscriptions, never()).findByPurchaseToken(anyString());
+    }
+
+    private static PlayProperties playProperties(String provider) {
+        return new PlayProperties(provider, "az.technest.whereis", null, Duration.ofSeconds(10));
     }
 
     private static ReconcileProperties properties(boolean enabled) {
