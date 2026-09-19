@@ -45,14 +45,15 @@ public class User extends AuditedEntity {
     private String lastName;
 
     /**
-     * What the account is entitled to. Defaults to {@link Plan#FREE} for every new account, which
-     * is also what V9 gave every existing row.
+     * The OPERATOR GRANT, not the account's effective entitlement. Defaults to {@link Plan#FREE}
+     * for every new account, which is also what V9 gave every existing row.
      *
      * <p>Deliberately has NO setter: this column is written by the migration's default or by an
-     * operator's UPDATE, and by nothing in the application. When billing arrives, a subscription
-     * expiry must not be able to overwrite a hand-made UNLIMITED grant — see
-     * {@code PlanLimitEnforcer#hasUnlimitedEntitlement}, which is the one place the two will be
-     * combined.
+     * operator's UPDATE, and by nothing in the application — billing writes
+     * {@code user_subscriptions} instead. A subscription expiry must never be able to overwrite a
+     * hand-made grant, which is why {@code PlanLimitEnforcer#effectiveTierOf} takes the HIGHER of
+     * this column and the best entitling subscription rather than letting either overwrite the
+     * other. Revoking a grant therefore leaves a paying subscriber on their paid tier.
      */
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)

@@ -4,6 +4,9 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods;
 
 import az.technest.whereis.assistant.AiAssistant;
+import az.technest.whereis.plan.PlanLimitEnforcer;
+import az.technest.whereis.plan.play.PlaySubscriptionsApi;
+import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
@@ -51,6 +54,83 @@ class OwnershipScopingArchTest {
                     .that().areAnnotatedWith(Transactional.class)
                     .should(callAMethodOn(AiAssistant.class))
                     .because("provider latency must never hold a database connection or a lock");
+
+    /**
+     * Same rule, same justification, for the Play Developer API: a Google round trip inside a
+     * transaction holds a database connection (and any lock the transaction took) for as long as
+     * Google feels like taking. {@code PurchaseVerificationService} has no {@code @Transactional}
+     * anywhere for exactly this reason; every write of that flow is a separate
+     * {@code SubscriptionWriter} method reached through the proxy.
+     */
+    @ArchTest
+    static final ArchRule noTransactionalMethodCallsThePlayPort =
+            noMethods()
+                    .that().areAnnotatedWith(Transactional.class)
+                    .should(callAMethodOn(PlaySubscriptionsApi.class))
+                    .because("provider latency must never hold a database connection or a lock");
+
+    /**
+     * Entitlement has ONE answer, and it is computed in one place. Nothing outside {@code plan/}
+     * may read subscription state — a second reader would eventually disagree with
+     * {@code PlanLimitEnforcer#effectiveTierOf}, and then the screen and the wall say different
+     * things. This also keeps the one deliberately UNSCOPED finder in the codebase
+     * ({@code findByPurchaseToken}) unreachable from anywhere that does not know why it is unscoped.
+     */
+    @ArchTest
+    static final ArchRule onlyThePlanPackageReadsSubscriptions =
+            noClasses()
+                    .that().resideOutsideOfPackages("..whereis.plan..")
+                    .should().dependOnClassesThat().haveSimpleName("UserSubscriptionRepository")
+                    .because("entitlement is decided once, in PlanLimitEnforcer");
+
+    /**
+     * <strong>"Nothing existing is ever taken away" as a build failure.</strong> Limits gate
+     * CREATION and nothing else, and that "nothing else" cannot be expressed by a runtime
+     * assertion — only by the absence of a call.
+     *
+     * <p>The rule is per METHOD, not per class, and that is the whole point: {@code ItemService}
+     * legitimately calls {@code requireRoomForAnotherItem} from {@code createAt}, so a class-level
+     * exemption would let {@code ItemService.update} — the unarchive path — quietly acquire a plan
+     * check and start refusing to restore an item the user already owns. Mutation-checked exactly
+     * that way.
+     */
+    @ArchTest
+    static final ArchRule onlyTheTwoCreationMethodsConsultThePlan =
+            noMethods()
+                    .that(couldNotLegitimatelyRefuseACreation())
+                    .should(callAMethodNamedStartingWith("requireRoom", PlanLimitEnforcer.class))
+                    .because("limits refuse creation and nothing else; every other path must never refuse");
+
+    /** Everything except {@code SpaceService.create}, {@code ItemService.createAt} and {@code plan/} itself. */
+    private static DescribedPredicate<JavaMethod> couldNotLegitimatelyRefuseACreation() {
+        return new DescribedPredicate<>(
+                "are not SpaceService.create, ItemService.createAt, or inside ..whereis.plan..") {
+            @Override
+            public boolean test(JavaMethod method) {
+                String owner = method.getOwner().getFullName();
+                if (owner.startsWith("az.technest.whereis.plan.")) {
+                    return false;
+                }
+                boolean spaceCreation = "az.technest.whereis.space.SpaceService".equals(owner)
+                        && "create".equals(method.getName());
+                boolean itemCreation = "az.technest.whereis.item.ItemService".equals(owner)
+                        && "createAt".equals(method.getName());
+                return !spaceCreation && !itemCreation;
+            }
+        };
+    }
+
+    private static ArchCondition<JavaMethod> callAMethodNamedStartingWith(String prefix, Class<?> owner) {
+        return new ArchCondition<>("call a " + owner.getSimpleName() + " method named " + prefix + "*") {
+            @Override
+            public void check(JavaMethod method, ConditionEvents events) {
+                method.getMethodCallsFromSelf().stream()
+                        .filter(call -> call.getTargetOwner().isAssignableTo(owner))
+                        .filter(call -> call.getTarget().getName().startsWith(prefix))
+                        .forEach(call -> events.add(SimpleConditionEvent.satisfied(method, call.getDescription())));
+            }
+        };
+    }
 
     private static ArchCondition<JavaMethod> callAMethodOn(Class<?> port) {
         return new ArchCondition<>("call a method on " + port.getSimpleName()) {

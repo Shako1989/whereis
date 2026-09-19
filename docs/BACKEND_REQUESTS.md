@@ -516,6 +516,11 @@ mutation-checked statement-count guard onto the filtered path.
 
 ## BR-10 — Free-tier limits: 1 space, 100 active items — **IMPLEMENTED 2026-09-19**
 
+> **EXTENDED BY BR-12 (2026-09-19).** The two-valued FREE/UNLIMITED model is now a five-tier ladder
+> and the wall has a door. Everything below still holds for a `FREE` account; the 409 message now
+> names the caller's TIER rather than always saying "Free plan", and it offers an upgrade only where
+> a higher purchasable tier actually raises that allowance.
+
 ### Why
 
 Nothing capped what one account could create. Storage, MinIO objects and (on a Claude/OpenAI
@@ -588,6 +593,11 @@ remember paths), and `PlanLimitIT` (8 cases, run against the REAL production lim
 
 ## BR-11 — `GET /users/me/plan`: what plan am I on, and how much have I used — **IMPLEMENTED 2026-09-19**
 
+> **PARTLY SUPERSEDED BY BR-12 (2026-09-19).** The route, the usage semantics and the
+> "effective entitlement, not the column" rule are unchanged. **The `limits` shape changed** — it is
+> now always an object with two nullable members — and two fields were added (`source`,
+> `subscription`). Read BR-12 before building anything against this entry.
+
 **Raised by:** Android client, the upgrade screen.
 **Contract reference:** `docs/ANDROID_APP_PROMPT.md` §3.1a (the route) and §3.8 (the shape).
 
@@ -616,6 +626,10 @@ GET /api/v1/users/me/plan          Authorization: Bearer {accessToken}
 401  anonymously (standard error shape) — there is no unauthenticated variant
 ```
 
+* > **SUPERSEDED BY BR-12 (2026-09-19): `limits` is now ALWAYS an object and the nullability moved
+  > to its two MEMBERS.** The reasoning below still holds for why a null beats a flag; what changed
+  > is that `MAX` ("ten spaces, unlimited ITEMS") cannot be expressed by a whole-object null at all.
+  > Do not build a client against the paragraph that follows.
 * **`limits` is `null` for an `UNLIMITED` account, and the key is always present.** Branch on
   `limits == null`. Two alternatives were considered and rejected: *omitting* the key means "missing
   is null", which is a decoder setting on the client rather than a property of the wire; *numbers
@@ -637,7 +651,8 @@ GET /api/v1/users/me/plan          Authorization: Bearer {accessToken}
   from a subscription is a different question** (it needs a "manage subscription" button) and will
   get its own field when there is a subscription to manage — do not infer it from this one.
 * The naming asymmetry (`limits.items` vs `usage.activeItems`) is deliberate: the limit mirrors the
-  configuration key `whereis.limits.free.items`, while the usage field has to say precisely what it
+  configuration key `whereis.plans.free.items` (renamed from `whereis.limits.free.items` by
+  BR-12), while the usage field has to say precisely what it
   counted, because "items" reads as "all items" and archived ones do not count.
 * No path or query parameter: the account is the JWT subject, so asking about another user is
   unrepresentable rather than merely refused. The call is a pure read — it never grants or upgrades.
@@ -649,7 +664,172 @@ GET /api/v1/users/me/plan          Authorization: Bearer {accessToken}
 
 Fetch it when the upgrade/settings screen opens and after a `409 PLAN_LIMIT_REACHED`; do not poll it
 on every list render and do not keep a local counter (it disagrees with the server the moment
-another device creates an item). When `limits == null`, show usage alone and **no upgrade offer** —
-that account already has everything an upgrade could give. There is still **no paywall**: BR-10's
-rule stands, the only action that works today is archiving, and a subscription contract will arrive
-as its own BR entry.
+another device creates an item).
+
+> The rest of this paragraph is **superseded by BR-12**, which is the subscription contract it
+> promised. `limits` is never null as a whole any more, so "when `limits == null`, show usage alone
+> and no upgrade offer" is no longer the upgrade gate — use the ladder-index rule in
+> `docs/ANDROID_APP_PROMPT.md` §3.8b. And there IS a paywall now:
+> `POST /users/me/plan/purchases`.
+
+---
+
+## BR-12 — The four-tier ladder and Play purchase verification — **IMPLEMENTED 2026-09-19**
+
+**Raised by:** the product decision that replaced FREE/UNLIMITED with a paid ladder.
+**Contract reference:** `docs/ANDROID_APP_PROMPT.md` §3.1a (the routes) and §3.8a–c (the shapes).
+
+### Why
+
+BR-10 built a wall and BR-11 described it, but the wall still had no door: a `FREE` account at
+either limit could not pay to get past it. Shipping that past closed testing is a Play policy
+problem as well as a product one.
+
+### The ladder
+
+| tier | spaces | active items | Play product |
+|---|---|---|---|
+| `FREE` | 1 | 100 | — |
+| `STANDARD` | 3 | 300 | `whereis_standard_annual` |
+| `PRO` | 5 | 600 | `whereis_pro_annual` |
+| `MAX` | 10 | **no limit** | `whereis_max_annual` |
+| `UNLIMITED` | no limit | no limit | **operator-only, never purchasable** |
+
+All three products are annual, auto-renewing, one base plan each (`annual`), each with a free trial
+configured as an offer in Play Console. The trial length is **never** hardcoded anywhere — the app
+renders it from the pricing phases.
+
+### Three contract changes
+
+**1. `limits` is now always an object; nullability moved to its two members. This SUPERSEDES BR-11.**
+BR-11 said "`limits` is `null` for `UNLIMITED`" and told the upgrade screen to branch on it. `MAX`
+is "ten spaces, unlimited ITEMS", which a whole-object null cannot express at all, so per-allowance
+nulls became mandatory. Keeping both would give "everything is unlimited" two encodings — precisely
+the "states one fact twice, so the wire can contradict itself" defect BR-11 rejected the flag for.
+One rule survives and it is simpler than the one it replaces: **a null is exactly one thing, no
+ceiling on that allowance.**
+
+*The shipped Android build reads the new shape unchanged*, verified against the actual files rather
+than assumed: `PlanLimitsDto(spaces: Int? = null, items: Int? = null)` already declares both members
+nullable, `PlanAllowance(used, limit: Int?)` already means "unlimited" per allowance, and
+`ignoreUnknownKeys = true` drops the new fields. A stale build shows a new subscriber "a plan this
+version does not know about" and offers them nothing, which is the correct degradation — and it is
+never shown FREE's numbers, because the limits come from the same response.
+
+**2. Two new fields on `PlanStatus`.** `source` (`NONE | GRANT | SUBSCRIPTION`) answers the question
+BR-11 explicitly deferred — "may this account manage a subscription?" — and `subscription` carries
+the row itself. `subscription` is non-null exactly when the caller has an entitling row, **regardless
+of which side won the max()**: a paid subscription must always be manageable, even by an account
+that also holds a higher operator grant. The client's rule is the simple one — show "Manage
+subscription" iff `subscription != null`; `source` is only for copy.
+
+Deliberately NOT added: `inTrial`, `autoRenewing`, `formattedPrice`, `trialDays`. The first two are
+unbacked by a column or derivable from `state`, and inventing state the schema does not carry is how
+a report starts lying. Prices and trial lengths may come ONLY from Play `ProductDetails` on the
+device — a server-side price is wrong for most countries and is grounds for store rejection.
+
+**3. Two new endpoints.**
+
+```
+GET  /api/v1/plans                       -> the four-tier ladder, in ladder order, with product ids
+POST /api/v1/users/me/plan/purchases     {purchaseToken, productId} -> 200 = the full PlanStatus
+```
+
+`GET /plans` costs zero statements (it is pure configuration) and is **the only source of tier
+ordering a client may use**: a client that re-encodes the ladder is deciding a fact only the server
+owns, and getting it wrong means offering a downgrade as an upgrade. `UNLIMITED` is absent — it
+cannot be bought.
+
+The purchase endpoint answers the full `PlanStatus`, byte-identical to `GET /users/me/plan`, so the
+purchase result and the plan screen cannot disagree. **Adopt that body; do not issue a second GET.**
+
+### The entitlement rule
+
+```
+effectiveTier = max( tier from users.plan , tier from any entitling subscription )
+                over FREE < STANDARD < PRO < MAX < UNLIMITED
+```
+
+A row is ENTITLING when `entitled_until > now()` **and** `state IN (ACTIVE, IN_GRACE_PERIOD,
+CANCELED)` **and** `voided_at IS NULL` **and** `superseded_by IS NULL`. `CANCELED` entitles —
+auto-renew is off but the paid term is not over. `PAUSED` and `ON_HOLD` do not, even with a future
+expiry. `entitled_until > now()` is the fail-closed guard: even if every notification is lost,
+entitlement lapses on its own.
+
+**`users.plan` is still never written by billing**, and the max() is why: an operator grant always
+wins, a subscription can never downgrade a granted account, and revoking a grant leaves a paying
+subscriber on their paid tier. `UNLIMITED` is unrepresentable in `user_subscriptions.tier` (a
+database CHECK, not a convention), so "granted" and "paid" stay distinguishable forever.
+
+### Failure modes and what the client does
+
+See `docs/ANDROID_APP_PROMPT.md` §3.8c for the full table. The six new `ErrorCode` values are
+`PLAY_UNAVAILABLE` (502), `PLAY_PURCHASE_INVALID` (400), `PLAY_PURCHASE_NOT_ACTIVE` (409),
+`PLAY_PRODUCT_UNKNOWN` (400), `PLAY_PRODUCT_MISMATCH` (400) and `PLAN_PURCHASE_NOT_OWNED` (409).
+**They must be added to the Android `ApiErrorCode` enum in the same wave** — without them every
+branch of the retry policy collapses into `UNKNOWN`.
+
+Two decisions worth naming:
+
+* **State is evaluated before product.** A non-entitling purchase is always 409 (retryable, token
+  kept), never a 400, so a state problem can never be answered with a code that tells the client to
+  throw the token away. And the tier is resolved from **Google's** line item, not the client's claim,
+  so a deferred downgrade — which keeps the OLD product on the token until the term ends — is
+  accepted rather than discarded as a mismatch.
+* **`acknowledged` is on the wire.** Google auto-refunds and revokes an unacknowledged purchase after
+  3 days, and after **5 minutes** for a test purchase, which is every purchase on a closed track.
+  The server acknowledges synchronously with a short bounded retry and always re-verifies an
+  entitling row it finds with `acknowledged = false`. While the client sees `false` it must ignore
+  its own 24-hour re-post rule and re-post on the next foreground. Those three things together are
+  the **interim substitute for the reconciler**, which is out of scope this wave — not an
+  optimisation.
+
+### `obfuscatedAccountId` — the bytes are the contract
+
+`BillingFlowParams.setObfuscatedAccountId(sha256Hex(userId))`, where `userId` is the JWT `sub`
+claim, the hash input is the UUID's canonical `toString()` (36 chars, lowercase, hyphenated) encoded
+as UTF-8, and the output is lowercase hex, exactly 64 characters. Golden vectors are asserted by
+`PlayAccountHashTest` and quoted in §3.8c; copy them verbatim into an Android test. A mismatch is
+409 `PLAN_PURCHASE_NOT_OWNED`, logged at WARN server-side with the user id and a twelve-hex token
+digest; the client retries it on the normal 24-hour schedule rather than never, so a canonicalisation
+slip is recoverable by a release instead of permanent.
+
+An absent value is accepted — a promo code redeemed in the Play Store legitimately carries none —
+and the token binding remains the binding protection: `user_id` and `purchase_token` are
+`updatable = false`, so a token bound to one account can never be re-bound.
+
+### Out of scope, and therefore still broken
+
+* **The RTDN webhook handler.** `play_notifications` exists and is empty; nothing reads the Pub/Sub
+  topic. Pauses, holds, refunds and upgrades are not reflected until it ships.
+* **Refund sweeps.** `voided_at` is never written, so a refunded annual purchase keeps entitling for
+  up to a year. Tolerable only while the track is closed. (`purchases.voidedpurchases.list` defaults
+  to `type=0`, one-time products, and needs `type=1` for subscriptions.)
+* **The acknowledgement reconciler.** If the app is never reopened, a failed acknowledgement is not
+  retried.
+* **Upgrade/downgrade proration.** The schema supports it (`linked_purchase_token`,
+  `superseded_by`); the replacement mode is a pricing decision, not an engineering one.
+
+All four are recorded as promotion gates in `deploy/README.md` Step 10.
+
+### Open questions
+
+* Play Console does not exist yet, so the three product ids, the base plan id `annual` and the trial
+  offers are **assumptions**. A wrong id renders as a tier with limits and no price and no button.
+  `whereis.plans.*.product-id` is the single place to correct them and no release is needed — but
+  somebody must check the console against that config before the first paid build.
+* Who creates the Play service account and the RTDN Pub/Sub topic, and where `PLAY_SERVICE_ACCOUNT_JSON`
+  lives. `deploy/.env` is on the VM's only disk and the nightly backup archives it; a Play publishing
+  credential in an unencrypted backup on the same box is a different risk class from a database password.
+* Privacy and legal: `user_subscriptions` stores a Google purchase token and `play_notifications` will
+  store raw RTDN payloads, neither of which the privacy page mentions. Account deletion does not remove
+  `play_notifications` rows (there is deliberately no `user_id` on that table — a notification can
+  arrive for a token this server has never seen). Legal review before the Data safety form is submitted.
+* **Unarchiving is deliberately unguarded**, so an account at its item ceiling can unarchive to one
+  over. The item exists and the user owns it; refusing would make an item they own permanently
+  unrestorable, which IS taking something away. Pinned by `PlanTierTransitionIT` so nobody "fixes" it.
+  Confirm with the product owner that this is the intended reading.
+* A per-user abuse cap beyond the 60-second re-verify window. An unknown token still costs one Google
+  API call against a per-project quota everyone shares.
+* `source = SUBSCRIPTION` wins the tie when a grant and a subscription name the same tier. Confirm the
+  support copy ("your Pro access is a grant" vs "manage your Pro subscription") for that account.

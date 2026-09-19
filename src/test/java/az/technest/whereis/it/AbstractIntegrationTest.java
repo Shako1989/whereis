@@ -3,6 +3,8 @@ package az.technest.whereis.it;
 import az.technest.whereis.auth.dto.RegisterRequest;
 import az.technest.whereis.auth.dto.TokenPairResponse;
 import az.technest.whereis.location.LocationType;
+import az.technest.whereis.plan.Plan;
+import az.technest.whereis.plan.SubscriptionState;
 import az.technest.whereis.location.dto.CreateLocationRequest;
 import az.technest.whereis.location.dto.LocationResponse;
 import az.technest.whereis.space.SpaceType;
@@ -11,6 +13,8 @@ import az.technest.whereis.space.dto.SpaceResponse;
 import az.technest.whereis.storage.dto.ItemFileResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.time.Duration;
 import java.io.UncheckedIOException;
 import java.util.Base64;
@@ -132,6 +136,57 @@ public abstract class AbstractIntegrationTest {
         if (updated != 1) {
             throw new IllegalStateException("Expected to grant exactly one account, updated " + updated);
         }
+    }
+
+    /**
+     * Grants any tier on the ladder by hand, exactly as an operator does — the STANDARD/PRO/MAX
+     * form of {@link #grantUnlimited(UUID)}, which V10 made possible by widening
+     * {@code ck_users_plan}.
+     *
+     * <p>Remember what this column is: the operator GRANT, never billing state. The effective tier
+     * is the higher of this and the account's best entitling subscription.
+     */
+    protected void grantTier(UUID userId, Plan tier) {
+        int updated = jdbc.update("update users set plan = ? where id = ?", tier.name(), userId);
+        if (updated != 1) {
+            throw new IllegalStateException("Expected to grant exactly one account, updated " + updated);
+        }
+    }
+
+    /**
+     * Inserts a {@code user_subscriptions} row directly, so a test can stand an account on a paid
+     * tier without driving a purchase through the endpoint. Returns the row id.
+     *
+     * <p>Raw SQL on purpose: it is the only way to produce the rows the RTDN handler will later
+     * create (voided, superseded, paused) while that handler does not exist, and the entitlement
+     * query has to be exercised against every one of them.
+     *
+     * <p>{@code last_event_time} is left NULL, which is also what the verify endpoint does — see
+     * the column comment in V10.
+     */
+    protected UUID seedSubscription(UUID userId, Plan tier, SubscriptionState state, Instant entitledUntil) {
+        return seedSubscription(userId, tier, state, entitledUntil, null, null,
+                "seed-" + UUID.randomUUID());
+    }
+
+    /** The full form: {@code voidedAt} and {@code supersededBy} are the two non-state exclusions. */
+    protected UUID seedSubscription(UUID userId, Plan tier, SubscriptionState state, Instant entitledUntil,
+                                    Instant voidedAt, UUID supersededBy, String purchaseToken) {
+        UUID id = UUID.randomUUID();
+        String productId = switch (tier) {
+            case STANDARD -> "whereis_standard_annual";
+            case PRO -> "whereis_pro_annual";
+            case MAX -> "whereis_max_annual";
+            default -> throw new IllegalArgumentException(tier + " is not purchasable");
+        };
+        jdbc.update("insert into user_subscriptions (id, user_id, purchase_token, product_id, tier,"
+                        + " provenance, state, entitled_until, acknowledged, voided_at, superseded_by,"
+                        + " test_purchase, verified_at)"
+                        + " values (?, ?, ?, ?, ?, 'PLAY_PURCHASE', ?, ?, true, ?, ?, false, now())",
+                id, userId, purchaseToken, productId, tier.name(), state.name(),
+                Timestamp.from(entitledUntil),
+                voidedAt == null ? null : Timestamp.from(voidedAt), supersededBy);
+        return id;
     }
 
     /**

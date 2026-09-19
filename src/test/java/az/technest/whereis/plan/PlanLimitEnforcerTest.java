@@ -2,6 +2,9 @@ package az.technest.whereis.plan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -9,13 +12,19 @@ import static org.mockito.Mockito.when;
 
 import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.item.ItemRepository;
+import az.technest.whereis.plan.PlanCatalog.TierConfig;
 import az.technest.whereis.plan.dto.PlanLimitsResponse;
 import az.technest.whereis.plan.dto.PlanStatusResponse;
-import az.technest.whereis.plan.dto.PlanUsageResponse;
 import az.technest.whereis.space.SpaceRepository;
 import az.technest.whereis.user.UserRepository;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -31,139 +40,332 @@ class PlanLimitEnforcerTest {
     private SpaceRepository spaceRepository;
     @Mock
     private ItemRepository itemRepository;
+    @Mock
+    private UserSubscriptionRepository subscriptionRepository;
 
     private final UUID userId = UUID.randomUUID();
 
-    private PlanLimitEnforcer enforcer(int spaces, int items) {
-        return new PlanLimitEnforcer(userRepository, spaceRepository, itemRepository,
-                new FreeTierLimits(spaces, items));
+    /** The production ladder, so these cases and {@code PlanLimitIT} refuse at the same numbers. */
+    private static final PlanCatalog CATALOG = shippedCatalog();
+
+    private static PlanCatalog shippedCatalog() {
+        Map<Plan, TierConfig> tiers = new EnumMap<>(Plan.class);
+        tiers.put(Plan.FREE, new TierConfig(1, 100, null));
+        tiers.put(Plan.STANDARD, new TierConfig(3, 300, "whereis_standard_annual"));
+        tiers.put(Plan.PRO, new TierConfig(5, 600, "whereis_pro_annual"));
+        tiers.put(Plan.MAX, new TierConfig(10, null, "whereis_max_annual"));
+        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null));
+        return new PlanCatalog(tiers);
     }
 
-    private void plan(Plan plan) {
+    private PlanLimitEnforcer enforcer;
+
+    @BeforeEach
+    void noSubscriptionsUnlessATestSaysOtherwise() {
+        // Without this every case NPEs on an unstubbed finder rather than failing its assertion.
+        lenient().when(subscriptionRepository.entitlingOf(eq(userId), any())).thenReturn(List.of());
+        enforcer = new PlanLimitEnforcer(userRepository, spaceRepository, itemRepository,
+                subscriptionRepository, CATALOG);
+    }
+
+    private void granted(Plan plan) {
         when(userRepository.findPlanById(userId)).thenReturn(Optional.of(plan));
     }
 
+    private void subscribed(Plan tier) {
+        when(subscriptionRepository.entitlingOf(eq(userId), any())).thenReturn(List.of(row(tier)));
+    }
+
+    private UserSubscription row(Plan tier) {
+        return UserSubscription.builder()
+                .id(UUID.randomUUID())
+                .userId(userId)
+                .purchaseToken("token-" + tier)
+                .productId(CATALOG.of(tier).productId())
+                .tier(tier)
+                .provenance(PurchaseProvenance.PLAY_PURCHASE)
+                .state(SubscriptionState.ACTIVE)
+                .entitledUntil(Instant.now().plus(Duration.ofDays(365)))
+                .acknowledged(true)
+                .verifiedAt(Instant.now())
+                .build();
+    }
+
+    // ------------------------------------------------------------------ the free tier, unchanged
+
     @Test
     void aFreeAccountWithNoSpaceYetMayCreateOne() {
-        plan(Plan.FREE);
+        granted(Plan.FREE);
         when(spaceRepository.countByUserId(userId)).thenReturn(0L);
 
-        enforcer(1, 100).requireRoomForAnotherSpace(userId);
+        enforcer.requireRoomForAnotherSpace(userId);
     }
 
     @Test
-    void aFreeAccountAtTheSpaceLimitIsRefusedWithTheLimitInTheMessage() {
-        plan(Plan.FREE);
+    void aFreeAccountAtTheSpaceLimitIsRefusedWithItsTierAndLimitInTheMessage() {
+        granted(Plan.FREE);
         when(spaceRepository.countByUserId(userId)).thenReturn(1L);
 
-        assertThatThrownBy(() -> enforcer(1, 100).requireRoomForAnotherSpace(userId))
+        assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
                 .isInstanceOf(PlanLimitReachedException.class)
-                .hasMessageContaining("1 space")
+                .hasMessageContaining("Free plan limit reached: 1 space")
                 .satisfies(thrown -> {
                     PlanLimitReachedException refusal = (PlanLimitReachedException) thrown;
                     assertThat(refusal.code()).isEqualTo(ErrorCode.PLAN_LIMIT_REACHED);
-                    // 409, like every other guard violation here — not 402: the client branches on
-                    // the code, and 402 would promise a payment path that does not exist yet.
+                    // 409, like every other guard violation here — not 402.
                     assertThat(refusal.status()).isEqualTo(HttpStatus.CONFLICT);
                 });
     }
 
     @Test
     void theHundredthItemIsAllowedAndTheHundredAndFirstIsRefused() {
-        plan(Plan.FREE);
+        granted(Plan.FREE);
         when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(99L, 100L);
-        PlanLimitEnforcer enforcer = enforcer(1, 100);
 
         enforcer.requireRoomForAnotherItem(userId);
 
         assertThatThrownBy(() -> enforcer.requireRoomForAnotherItem(userId))
                 .isInstanceOf(PlanLimitReachedException.class)
-                .hasMessageContaining("100 active items")
+                .hasMessageContaining("Free plan limit reached: 100 active items")
                 .hasMessageContaining("Archive");
     }
 
     @Test
     void onlyActiveItemsAreCountedTowardsTheItemLimit() {
-        plan(Plan.FREE);
+        granted(Plan.FREE);
         when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(4L);
 
-        enforcer(1, 100).requireRoomForAnotherItem(userId);
-
-        // The archived-excluding finder is the ONLY one consulted: archiving has to free room, or
-        // the limit becomes a dead end instead of a wall.
-        verify(itemRepository).countByUserIdAndArchivedFalse(userId);
-        verifyNoMoreInteractions(itemRepository);
-    }
-
-    @Test
-    void unlimitedBypassesBothLimitsWithoutEvenCounting() {
-        plan(Plan.UNLIMITED);
-        PlanLimitEnforcer enforcer = enforcer(1, 100);
-
-        enforcer.requireRoomForAnotherSpace(userId);
         enforcer.requireRoomForAnotherItem(userId);
 
-        assertThat(enforcer.hasUnlimitedEntitlement(userId)).isTrue();
-        verifyNoInteractions(spaceRepository, itemRepository);
+        // The archived-excluding finder is the ONLY one consulted: archiving has to free room.
+        verify(itemRepository).countByUserIdAndArchivedFalse(userId);
+        verifyNoMoreInteractions(itemRepository);
     }
 
     @Test
     void anAccountThatNoLongerExistsIsTreatedAsFree() {
         when(userRepository.findPlanById(userId)).thenReturn(Optional.empty());
         when(spaceRepository.countByUserId(userId)).thenReturn(1L);
-        PlanLimitEnforcer enforcer = enforcer(1, 100);
 
-        assertThat(enforcer.hasUnlimitedEntitlement(userId)).isFalse();
+        assertThat(enforcer.effectiveTierOf(userId)).isEqualTo(Plan.FREE);
         // The limits apply rather than being waived: a guard's default must be the restrictive one.
         assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
                 .isInstanceOf(PlanLimitReachedException.class);
     }
 
-    // ------------------------------------------------- the report (GET /users/me/plan)
+    // -------------------------------------------------------------------------- the paid ladder
 
     @Test
-    void aFreeAccountReportsItsPlanItsLimitsAndItsTrueUsage() {
-        plan(Plan.FREE);
-        when(spaceRepository.countByUserId(userId)).thenReturn(1L);
-        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(19L);
+    void aStandardSubscriberIsHeldToThreeSpacesAndThreeHundredItems() {
+        granted(Plan.FREE);
+        subscribed(Plan.STANDARD);
+        when(spaceRepository.countByUserId(userId)).thenReturn(2L, 3L);
 
-        PlanStatusResponse status = enforcer(1, 100).statusOf(userId);
+        enforcer.requireRoomForAnotherSpace(userId);
 
-        assertThat(status.plan()).isEqualTo(Plan.FREE);
-        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(1, 100));
-        assertThat(status.usage()).isEqualTo(new PlanUsageResponse(1L, 19L));
+        assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
+                .isInstanceOf(PlanLimitReachedException.class)
+                .hasMessageContaining("Standard plan limit reached: 3 spaces")
+                .hasMessageContaining("Upgrade");
     }
 
     @Test
-    void anUnlimitedAccountReportsNoLimitsButStillReportsUsage() {
-        plan(Plan.UNLIMITED);
+    void aProSubscriberIsHeldToFiveSpacesAndSixHundredItems() {
+        granted(Plan.FREE);
+        subscribed(Plan.PRO);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(600L);
+
+        assertThatThrownBy(() -> enforcer.requireRoomForAnotherItem(userId))
+                .isInstanceOf(PlanLimitReachedException.class)
+                .hasMessageContaining("Pro plan limit reached: 600 active items");
+    }
+
+    @Test
+    void maxIsRefusedAnEleventhSpaceButNeverAnItem() {
+        granted(Plan.FREE);
+        subscribed(Plan.MAX);
+        when(spaceRepository.countByUserId(userId)).thenReturn(10L);
+
+        // PER-ALLOWANCE nullability, which is the whole reason a single boolean was not enough:
+        // Max has a finite ten spaces AND no item ceiling at all.
+        assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
+                .isInstanceOf(PlanLimitReachedException.class)
+                .hasMessage("Max plan limit reached: 10 spaces.");
+
+        enforcer.requireRoomForAnotherItem(userId);
+        verifyNoInteractions(itemRepository);
+    }
+
+    @Test
+    void anUnlimitedGrantIsRefusedNothingAndNeverCounts() {
+        granted(Plan.UNLIMITED);
+
+        enforcer.requireRoomForAnotherSpace(userId);
+        enforcer.requireRoomForAnotherItem(userId);
+
+        assertThat(enforcer.effectiveTierOf(userId)).isEqualTo(Plan.UNLIMITED);
+        verifyNoInteractions(spaceRepository, itemRepository);
+    }
+
+    // ------------------------------------------------------------------------------- the max()
+
+    @Test
+    void anOperatorGrantBeatsALowerSubscription() {
+        granted(Plan.PRO);
+        subscribed(Plan.STANDARD);
+
+        // The entire reason billing does not write users.plan: a subscription must never be able to
+        // downgrade a hand-made grant.
+        assertThat(enforcer.effectiveTierOf(userId)).isEqualTo(Plan.PRO);
+    }
+
+    @Test
+    void aSubscriptionBeatsALowerOrAbsentGrant() {
+        granted(Plan.FREE);
+        subscribed(Plan.MAX);
+
+        assertThat(enforcer.effectiveTierOf(userId)).isEqualTo(Plan.MAX);
+    }
+
+    @Test
+    void theBestOfSeveralEntitlingSubscriptionsWins() {
+        granted(Plan.FREE);
+        when(subscriptionRepository.entitlingOf(eq(userId), any()))
+                .thenReturn(List.of(row(Plan.STANDARD), row(Plan.MAX), row(Plan.PRO)));
+
+        // Reduced in Java, never ordered in SQL: @Enumerated(STRING) sorts 'MAX' before 'PRO' and
+        // 'STANDARD', which is the ladder upside down.
+        assertThat(enforcer.effectiveTierOf(userId)).isEqualTo(Plan.MAX);
+    }
+
+    @Test
+    void anAccountWithNoEntitlingRowAtAllIsFree() {
+        granted(Plan.FREE);
+
+        assertThat(enforcer.effectiveTierOf(userId)).isEqualTo(Plan.FREE);
+    }
+
+    // ----------------------------------------------------------- the report agrees with the wall
+
+    @Test
+    void theGuardAndTheReportReachTheSameTierOnEveryCombination() {
+        // THE CHOKEPOINT PROPERTY. effectiveTierOf and statusOf must not compute the rule twice:
+        // if they ever disagree the screen says PRO while the wall says FREE. Grant-wins,
+        // subscription-wins and the tie are all here.
+        when(spaceRepository.countByUserId(userId)).thenReturn(0L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
+
+        for (Plan grant : Plan.values()) {
+            for (Plan subscription : List.of(Plan.STANDARD, Plan.PRO, Plan.MAX)) {
+                when(userRepository.findPlanById(userId)).thenReturn(Optional.of(grant));
+                when(subscriptionRepository.entitlingOf(eq(userId), any()))
+                        .thenReturn(List.of(row(subscription)));
+
+                assertThat(enforcer.statusOf(userId).plan())
+                        .as("grant=" + grant + " subscription=" + subscription)
+                        .isEqualTo(enforcer.effectiveTierOf(userId))
+                        .isEqualTo(Plan.higherOf(grant, subscription));
+            }
+        }
+    }
+
+    @Test
+    void aProSubscriberReportsProsLimitsAndTheSubscriptionItself() {
+        granted(Plan.FREE);
+        subscribed(Plan.PRO);
+        when(spaceRepository.countByUserId(userId)).thenReturn(2L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(143L);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        assertThat(status.plan()).isEqualTo(Plan.PRO);
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(5, 600));
+        assertThat(status.source()).isEqualTo(EntitlementSource.SUBSCRIPTION);
+        assertThat(status.subscription().productId()).isEqualTo("whereis_pro_annual");
+        assertThat(status.subscription().tier()).isEqualTo(Plan.PRO);
+        assertThat(status.subscription().state()).isEqualTo(SubscriptionState.ACTIVE);
+    }
+
+    @Test
+    void maxReportsAFiniteSpaceCeilingBesideANullItemCeiling() {
+        granted(Plan.FREE);
+        subscribed(Plan.MAX);
+        when(spaceRepository.countByUserId(userId)).thenReturn(4L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1203L);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(10, null));
+    }
+
+    @Test
+    void anOperatorGrantReportsBothCeilingsNullAndSourceGrant() {
+        granted(Plan.UNLIMITED);
         when(spaceRepository.countByUserId(userId)).thenReturn(4L);
         when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(19L);
 
-        PlanStatusResponse status = enforcer(1, 100).statusOf(userId);
+        PlanStatusResponse status = enforcer.statusOf(userId);
 
         assertThat(status.plan()).isEqualTo(Plan.UNLIMITED);
-        // Null, not the configured numbers: an account they do not apply to must not be handed a
-        // ceiling it could render. The guard says the same thing by returning before it counts.
-        assertThat(status.limits()).isNull();
-        // Usage is still reported — the screen shows "19 items" on both plans, so the two counts
-        // run here even though the guard skips them for an UNLIMITED account.
-        assertThat(status.usage()).isEqualTo(new PlanUsageResponse(4L, 19L));
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(null, null));
+        assertThat(status.source()).isEqualTo(EntitlementSource.GRANT);
+        assertThat(status.subscription()).isNull();
+        // Usage is reported on every tier — the screen still shows "19 items".
+        assertThat(status.usage().activeItems()).isEqualTo(19L);
+    }
+
+    @Test
+    void aPaidSubscriptionIsReportedEvenUnderAHigherGrantSoItStaysManageable() {
+        granted(Plan.UNLIMITED);
+        subscribed(Plan.STANDARD);
+        when(spaceRepository.countByUserId(userId)).thenReturn(1L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1L);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        assertThat(status.plan()).isEqualTo(Plan.UNLIMITED);
+        assertThat(status.source()).isEqualTo(EntitlementSource.GRANT);
+        // The client's rule is "show Manage subscription iff subscription != null", so a real paid
+        // subscription must be reported even when a grant decided the tier.
+        assertThat(status.subscription()).isNotNull();
+        assertThat(status.subscription().tier()).isEqualTo(Plan.STANDARD);
+    }
+
+    @Test
+    void aSubscriptionWinsTheTieAgainstAGrantOfTheSameTier() {
+        granted(Plan.PRO);
+        subscribed(Plan.PRO);
+        when(spaceRepository.countByUserId(userId)).thenReturn(0L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
+
+        // Reasoning recorded in EntitlementSource: a real paid subscription must always be
+        // manageable, so the copy must not call it a grant.
+        assertThat(enforcer.statusOf(userId).source()).isEqualTo(EntitlementSource.SUBSCRIPTION);
+    }
+
+    @Test
+    void aFreeAccountReportsSourceNone() {
+        granted(Plan.FREE);
+        when(spaceRepository.countByUserId(userId)).thenReturn(1L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(19L);
+
+        PlanStatusResponse status = enforcer.statusOf(userId);
+
+        assertThat(status.source()).isEqualTo(EntitlementSource.NONE);
+        assertThat(status.subscription()).isNull();
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(1, 100));
     }
 
     @Test
     void theReportedUsageIsTheSameNumberTheGuardRefusesOn() {
-        plan(Plan.FREE);
+        granted(Plan.FREE);
         when(spaceRepository.countByUserId(userId)).thenReturn(1L);
         when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(100L);
-        PlanLimitEnforcer enforcer = enforcer(1, 100);
 
         PlanStatusResponse status = enforcer.statusOf(userId);
 
-        // "usage == limit" on the screen and 409 from the guard have to be the same fact, or the
-        // upgrade screen says "0 of 1 used" over a refusal.
-        assertThat(status.usage().spaces()).isEqualTo(status.limits().spaces());
-        assertThat(status.usage().activeItems()).isEqualTo(status.limits().items());
+        assertThat(status.usage().spaces()).isEqualTo(status.limits().spaces().longValue());
+        assertThat(status.usage().activeItems()).isEqualTo(status.limits().items().longValue());
         assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
                 .isInstanceOf(PlanLimitReachedException.class);
         assertThatThrownBy(() -> enforcer.requireRoomForAnotherItem(userId))
@@ -171,36 +373,43 @@ class PlanLimitEnforcerTest {
     }
 
     @Test
-    void theReportedItemUsageExcludesArchivedItems() {
-        plan(Plan.FREE);
-        when(spaceRepository.countByUserId(userId)).thenReturn(1L);
-        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(7L);
+    void anOverLimitAccountAfterADowngradeReportsUsageAboveItsLimitsAndIsRefusedOnlyCreation() {
+        // Dropped from PRO (5 spaces) to STANDARD (3) while holding five. Nothing existing is taken
+        // away — every read, rename, move, archive and delete path is untouched because none of them
+        // calls this class at all (OwnershipScopingArchTest makes that a build failure). Only the
+        // next creation is refused, and the report says why without clamping.
+        granted(Plan.FREE);
+        subscribed(Plan.STANDARD);
+        when(spaceRepository.countByUserId(userId)).thenReturn(5L);
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(412L);
 
-        assertThat(enforcer(1, 100).statusOf(userId).usage().activeItems()).isEqualTo(7L);
+        PlanStatusResponse status = enforcer.statusOf(userId);
 
-        // Same finder as the guard, and no other: a report that counted archived rows too would
-        // disagree with the wall the moment a user archives something.
-        verify(itemRepository).countByUserIdAndArchivedFalse(userId);
-        verifyNoMoreInteractions(itemRepository);
+        assertThat(status.plan()).isEqualTo(Plan.STANDARD);
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(3, 300));
+        assertThat(status.usage().spaces()).isEqualTo(5L);
+        assertThat(status.usage().activeItems()).isEqualTo(412L);
+        assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
+                .isInstanceOf(PlanLimitReachedException.class);
     }
 
     @Test
-    void anAccountThatNoLongerExistsIsReportedAsFreeWithItsLimits() {
-        when(userRepository.findPlanById(userId)).thenReturn(Optional.empty());
+    void theReportedSubscriptionIsDeterministicWhenTwoRowsShareATier() {
+        granted(Plan.FREE);
+        Instant now = Instant.now();
+        UserSubscription shorter = row(Plan.PRO);
+        shorter.setEntitledUntil(now.plus(Duration.ofDays(10)));
+        shorter.setProductId("whereis_pro_annual");
+        UserSubscription longer = row(Plan.PRO);
+        longer.setEntitledUntil(now.plus(Duration.ofDays(400)));
+        when(subscriptionRepository.entitlingOf(eq(userId), any()))
+                .thenReturn(List.of(shorter, longer), List.of(longer, shorter));
         when(spaceRepository.countByUserId(userId)).thenReturn(0L);
         when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(0L);
 
-        // Same restrictive default as the guard: an unknown subject is never told it is unlimited.
-        assertThat(enforcer(1, 100).statusOf(userId).plan()).isEqualTo(Plan.FREE);
-    }
-
-    @Test
-    void aConfiguredLimitBelowOneIsRefusedAtStartup() {
-        assertThatThrownBy(() -> new FreeTierLimits(0, 100))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("whereis.limits.free.spaces");
-        assertThatThrownBy(() -> new FreeTierLimits(1, 0))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("whereis.limits.free.items");
+        // Row order out of the database must not decide which subscription the screen names.
+        assertThat(enforcer.statusOf(userId).subscription().entitledUntil())
+                .isEqualTo(enforcer.statusOf(userId).subscription().entitledUntil())
+                .isEqualTo(longer.getEntitledUntil());
     }
 }

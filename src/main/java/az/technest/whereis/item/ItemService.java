@@ -52,7 +52,7 @@ public class ItemService {
      * Shared creation path for the REST API and the AI assistant.
      * Writes the item and its initial open history record in one transaction.
      *
-     * <p>This is also the ONE place the free-tier item limit is enforced, which is why every item
+     * <p>This is also the ONE place the per-tier item limit is enforced, which is why every item
      * in the system is created here: {@link #create} delegates to it, and so do both of
      * {@code PlacementExecutor}'s paths (the resolved chain and the pinned BR-7 destination). The
      * guard sits AFTER the ownership lookup so that a foreign or unknown location is still the

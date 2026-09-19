@@ -1,44 +1,49 @@
 package az.technest.whereis.plan.dto;
 
+import az.technest.whereis.plan.EntitlementSource;
 import az.technest.whereis.plan.Plan;
 
 /**
  * What the caller's plan allows and how much of it is used — the whole body of
- * {@code GET /api/v1/users/me/plan}, and the only way a client can learn the free-tier numbers
- * without being refused first.
+ * {@code GET /api/v1/users/me/plan}, and also the whole body of
+ * {@code POST /api/v1/users/me/plan/purchases}, so a purchase result and the plan screen cannot
+ * disagree.
  *
  * <pre>
- * { "plan": "FREE",      "limits": {"spaces": 1, "items": 100}, "usage": {"spaces": 1, "activeItems": 19} }
- * { "plan": "UNLIMITED", "limits": null,                        "usage": {"spaces": 4, "activeItems": 19} }
+ * { "plan": "PRO",
+ *   "limits": {"spaces": 5, "items": 600},
+ *   "usage":  {"spaces": 2, "activeItems": 143},
+ *   "source": "SUBSCRIPTION",
+ *   "subscription": {"productId": "whereis_pro_annual", "tier": "PRO", "state": "ACTIVE",
+ *                    "entitledUntil": "2027-09-19T10:04:00Z", "provenance": "PLAY_PURCHASE",
+ *                    "acknowledged": true} }
+ *
+ * { "plan": "MAX",       "limits": {"spaces": 10,   "items": null}, "source": "SUBSCRIPTION", ... }
+ * { "plan": "UNLIMITED", "limits": {"spaces": null, "items": null}, "source": "GRANT", "subscription": null }
+ * { "plan": "FREE",      "limits": {"spaces": 1,    "items": 100},  "source": "NONE",  "subscription": null }
  * </pre>
  *
- * <p><strong>{@code limits} is {@code null} for an UNLIMITED account and the key is always
- * present.</strong> Three shapes were possible and this one was chosen deliberately:
- * <ul>
- *   <li><em>null</em> (chosen) — "no limits apply" is the same fact the guard implements by
- *       returning before it counts anything, and a null object says it once. The key is emitted
- *       because nothing in this service configures Jackson's inclusion, so every response here
- *       carries all of its fields; a per-DTO {@code @JsonInclude} would make this one response the
- *       exception. An always-present key also means the client branches on one condition
- *       ({@code limits == null}) instead of two ("absent or null"), and the OpenAPI schema shows a
- *       nullable field rather than an optional one.</li>
- *   <li><em>absent</em> — same meaning, but only for parsers that treat a missing key as null; it
- *       is a decoder setting on the client, not a property of the wire.</li>
- *   <li><em>the numbers plus an {@code unlimited} flag</em> — rejected: it states the same fact
- *       twice, so {@code {"unlimited": true, "spaces": 1}} is representable and self-contradictory,
- *       and a client that ignored the flag would render a limit that is not enforced.</li>
- * </ul>
+ * <p><strong>THE ONE DELIBERATE CONTRACT CHANGE (supersedes BR-11).</strong> {@code limits} is now
+ * ALWAYS a non-null object and the nullability moved to its two MEMBERS. BR-11 documented
+ * "{@code limits} is null for UNLIMITED"; that is superseded here because MAX ("10 spaces,
+ * unlimited items") cannot be expressed by a whole-object null at all. One rule survives, and it is
+ * simpler than the one it replaces: <em>a null is exactly one thing — no ceiling on that
+ * allowance.</em>
  *
- * <p>{@code plan} is the caller's <em>effective entitlement</em>, not a copy of a column: it is
- * derived from {@code PlanLimitEnforcer#hasUnlimitedEntitlement}, the one method the guards ask, so
- * the screen and the wall cannot disagree. Today that is exactly {@code users.plan}; when billing
- * lands and the rule becomes "granted OR subscribed", a subscriber reads {@code UNLIMITED} here
- * while {@code users.plan} stays {@code FREE}. Telling a grant apart from a subscription is a
- * different question (it needs a "manage subscription" button) and will need its own field.
+ * <p>{@code plan} is the caller's <em>effective entitlement</em>, never a copy of a column:
+ * {@code max(users.plan, best entitling subscription)} from
+ * {@code PlanLimitEnforcer#effectiveTierOf}, the one method the guards ask, so the screen and the
+ * wall cannot disagree. An operator grant therefore always wins and a subscription can never
+ * downgrade a granted account.
  *
- * @param plan   what the caller is entitled to
- * @param limits what a FREE account may hold, or {@code null} when nothing is limited
- * @param usage  how much of it exists right now — always reported, on both plans
+ * @param plan         the effective tier
+ * @param limits       what that tier may hold; members are null where nothing is limited
+ * @param usage        how much of it exists right now — always reported, on every tier, and never
+ *                     clamped ({@code usage.spaces = 5} against {@code limits.spaces = 3} after a
+ *                     downgrade is a valid, expected body)
+ * @param source       which side of the max() decided the tier; for copy, not for behaviour
+ * @param subscription the best entitling subscription, or {@code null} when there is none
  */
-public record PlanStatusResponse(Plan plan, PlanLimitsResponse limits, PlanUsageResponse usage) {
+public record PlanStatusResponse(Plan plan, PlanLimitsResponse limits, PlanUsageResponse usage,
+                                 EntitlementSource source, PlanSubscriptionResponse subscription) {
 }

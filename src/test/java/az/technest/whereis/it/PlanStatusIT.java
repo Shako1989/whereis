@@ -7,11 +7,14 @@ import az.technest.whereis.item.dto.ItemResponse;
 import az.technest.whereis.item.dto.UpdateItemRequest;
 import az.technest.whereis.location.LocationType;
 import az.technest.whereis.plan.Plan;
+import az.technest.whereis.plan.SubscriptionState;
 import az.technest.whereis.plan.dto.PlanStatusResponse;
 import az.technest.whereis.space.SpaceType;
 import az.technest.whereis.space.dto.CreateSpaceRequest;
 import az.technest.whereis.space.dto.SpaceResponse;
 import com.fasterxml.jackson.databind.JsonNode;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpEntity;
@@ -72,7 +75,7 @@ class PlanStatusIT extends AbstractIntegrationTest {
         PlanStatusResponse status = planOf(token);
 
         assertThat(status.plan()).isEqualTo(Plan.FREE);
-        // The numbers come from whereis.limits.free.* — the client must never hardcode them.
+        // The numbers come from whereis.plans.free.* — the client must never hardcode them.
         assertThat(status.limits().spaces()).isEqualTo(1);
         assertThat(status.limits().items()).isEqualTo(100);
         assertThat(status.usage().spaces()).isEqualTo(1L);
@@ -135,7 +138,7 @@ class PlanStatusIT extends AbstractIntegrationTest {
         assertPlanLimitRefusal(createSpaceRaw(token, "Office"));
 
         PlanStatusResponse status = planOf(token);
-        assertThat(status.usage().spaces()).isEqualTo(status.limits().spaces());
+        assertThat(status.usage().spaces()).isEqualTo(status.limits().spaces().longValue());
     }
 
     @Test
@@ -150,13 +153,13 @@ class PlanStatusIT extends AbstractIntegrationTest {
 
         PlanStatusResponse status = planOf(token);
         assertThat(status.usage().activeItems()).isEqualTo(100L);
-        assertThat(status.usage().activeItems()).isEqualTo(status.limits().items());
+        assertThat(status.usage().activeItems()).isEqualTo(status.limits().items().longValue());
     }
 
     // ---------------------------------------------------------------------- the UNLIMITED grant
 
     @Test
-    void anUnlimitedAccountReportsAPresentNullLimitsAndKeepsReportingUsage() {
+    void anUnlimitedAccountReportsAPresentLimitsObjectWithBothMembersNull() {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
         createItem(token, drawerOf(token), "Passport");
@@ -167,12 +170,124 @@ class PlanStatusIT extends AbstractIntegrationTest {
 
         assertThat(raw.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(raw.getBody().get("plan").asText()).isEqualTo("UNLIMITED");
-        // The decision the client branches on, asserted on the wire: the key is PRESENT and null,
-        // not omitted and not a set of numbers nobody enforces.
+        // THE SUPERSEDED ASSERTION. BR-11 shipped `limits: null` for a granted account and this
+        // test pinned it; the four-tier ladder makes that unrepresentable, because MAX is "ten
+        // spaces, unlimited items" and a whole-object null cannot say that. So `limits` is now
+        // always an OBJECT and a null is exactly one thing — no ceiling on that allowance.
         assertThat(raw.getBody().has("limits")).isTrue();
-        assertThat(raw.getBody().get("limits").isNull()).isTrue();
+        assertThat(raw.getBody().get("limits").isNull()).isFalse();
+        assertThat(raw.getBody().get("limits").get("spaces").isNull()).isTrue();
+        assertThat(raw.getBody().get("limits").get("items").isNull()).isTrue();
+        assertThat(raw.getBody().get("source").asText()).isEqualTo("GRANT");
+        assertThat(raw.getBody().get("subscription").isNull()).isTrue();
         assertThat(raw.getBody().get("usage").get("spaces").asLong()).isEqualTo(2L);
         assertThat(raw.getBody().get("usage").get("activeItems").asLong()).isEqualTo(1L);
+    }
+
+    // --------------------------------------------------------------------------- the paid ladder
+
+    @Test
+    void aStandardSubscriberReportsStandardsLimitsAndTheSubscriptionItself() {
+        String token = registerAndGetToken();
+        UUID userId = subjectOf(token);
+        createItem(token, drawerOf(token), "Passport");
+        seedSubscription(userId, Plan.STANDARD, SubscriptionState.ACTIVE,
+                Instant.now().plus(Duration.ofDays(365)));
+
+        ResponseEntity<JsonNode> raw = get(token, PLAN, JsonNode.class);
+
+        assertThat(raw.getBody().get("plan").asText()).isEqualTo("STANDARD");
+        assertThat(raw.getBody().get("limits").get("spaces").asInt()).isEqualTo(3);
+        assertThat(raw.getBody().get("limits").get("items").asInt()).isEqualTo(300);
+        assertThat(raw.getBody().get("source").asText()).isEqualTo("SUBSCRIPTION");
+        assertThat(raw.getBody().get("subscription").get("productId").asText())
+                .isEqualTo("whereis_standard_annual");
+        assertThat(raw.getBody().get("subscription").get("tier").asText()).isEqualTo("STANDARD");
+        assertThat(raw.getBody().get("subscription").get("acknowledged").asBoolean()).isTrue();
+    }
+
+    @Test
+    void maxReportsAFiniteSpaceCeilingBesideANullItemCeiling() {
+        String token = registerAndGetToken();
+        UUID userId = subjectOf(token);
+        seedSubscription(userId, Plan.MAX, SubscriptionState.ACTIVE,
+                Instant.now().plus(Duration.ofDays(365)));
+
+        ResponseEntity<JsonNode> raw = get(token, PLAN, JsonNode.class);
+
+        assertThat(raw.getBody().get("plan").asText()).isEqualTo("MAX");
+        assertThat(raw.getBody().get("limits").get("spaces").asInt()).isEqualTo(10);
+        assertThat(raw.getBody().get("limits").get("items").isNull()).isTrue();
+    }
+
+    @Test
+    void anOperatorGrantBeatsALowerSubscriptionAndTheSubscriptionIsStillReported() {
+        String token = registerAndGetToken();
+        UUID userId = subjectOf(token);
+        grantTier(userId, Plan.PRO);
+        seedSubscription(userId, Plan.STANDARD, SubscriptionState.ACTIVE,
+                Instant.now().plus(Duration.ofDays(365)));
+
+        ResponseEntity<JsonNode> raw = get(token, PLAN, JsonNode.class);
+
+        // max(), not an override — and the paid half is still reported so it stays manageable.
+        assertThat(raw.getBody().get("plan").asText()).isEqualTo("PRO");
+        assertThat(raw.getBody().get("source").asText()).isEqualTo("GRANT");
+        assertThat(raw.getBody().get("subscription").get("tier").asText()).isEqualTo("STANDARD");
+    }
+
+    @Test
+    void anOverLimitAccountAfterADowngradeReportsUsageAboveItsLimitsWithoutClamping() {
+        String token = registerAndGetToken();
+        UUID userId = subjectOf(token);
+        grantTier(userId, Plan.PRO);
+        createSpace(token, "Home", SpaceType.HOME);
+        createSpace(token, "Office", SpaceType.OFFICE);
+        createSpace(token, "Car", SpaceType.CAR);
+        createSpace(token, "Garage", SpaceType.GARAGE);
+        createSpace(token, "Warehouse", SpaceType.WAREHOUSE);
+        grantTier(userId, Plan.FREE);
+        seedSubscription(userId, Plan.STANDARD, SubscriptionState.ACTIVE,
+                Instant.now().plus(Duration.ofDays(365)));
+
+        PlanStatusResponse status = planOf(token);
+
+        assertThat(status.plan()).isEqualTo(Plan.STANDARD);
+        assertThat(status.limits().spaces()).isEqualTo(3);
+        // No clamping and no error: the honest body is the one that explains the 409 on the next
+        // POST, and the shipped client's progress bar already coerces the fraction to 0..1.
+        assertThat(status.usage().spaces()).isEqualTo(5L);
+        assertPlanLimitRefusal(createSpaceRaw(token, "Attic"));
+    }
+
+    // ------------------------------------------------------------------- the ladder endpoint
+
+    @Test
+    void theLadderEndpointListsFourTiersInOrderWithTheirProductIdsAndNeverTheOperatorGrant() {
+        String token = registerAndGetToken();
+
+        ResponseEntity<JsonNode> ladder = get(token, "/api/v1/plans", JsonNode.class);
+
+        assertThat(ladder.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(ladder.getBody().isArray()).isTrue();
+        assertThat(ladder.getBody()).hasSize(4);
+        assertThat(ladder.getBody().get(0).get("tier").asText()).isEqualTo("FREE");
+        assertThat(ladder.getBody().get(0).get("productId").isNull()).isTrue();
+        assertThat(ladder.getBody().get(1).get("tier").asText()).isEqualTo("STANDARD");
+        assertThat(ladder.getBody().get(1).get("productId").asText()).isEqualTo("whereis_standard_annual");
+        assertThat(ladder.getBody().get(2).get("tier").asText()).isEqualTo("PRO");
+        assertThat(ladder.getBody().get(3).get("tier").asText()).isEqualTo("MAX");
+        assertThat(ladder.getBody().get(3).get("limits").get("spaces").asInt()).isEqualTo(10);
+        assertThat(ladder.getBody().get(3).get("limits").get("items").isNull()).isTrue();
+        // UNLIMITED is never listed: it is not purchasable, and a client that saw it would render
+        // it as something to buy.
+        assertThat(ladder.getBody().toString()).doesNotContain("UNLIMITED");
+    }
+
+    @Test
+    void theLadderEndpointIsUnreachableWithoutAToken() {
+        assertThat(rest.getForEntity("/api/v1/plans", JsonNode.class).getStatusCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
     // ------------------------------------------------------------------------------ the ceiling

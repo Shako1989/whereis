@@ -108,12 +108,50 @@ whereis:
     effective-date: ${WHEREIS_LEGAL_EFFECTIVE_DATE:1970-01-01}
     backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS:0}
 
-  # Free-tier ceilings. Product rules rather than deployment secrets, so they are plain values here
-  # instead of .env placeholders — relaxed binding still lets WHEREIS_LIMITS_FREE_SPACES /
-  # WHEREIS_LIMITS_FREE_ITEMS override one during closed testing without a code change. Only ACTIVE
-  # items count towards `items` (archiving frees room); locations are deliberately not limited.
-  # An account with users.plan = 'UNLIMITED' ignores both (see deploy/README.md for the grant).
-  limits:
+  # The tier ladder. Product rules rather than deployment secrets, so they are plain values here
+  # instead of .env placeholders — relaxed binding still lets WHEREIS_PLANS_PRO_ITEMS retune a
+  # number during closed testing without a code change (see deploy/README.md Step 10; raising a
+  # LOWER tier means raising every tier above it, or startup fails with a message naming both).
+  #
+  # A BLANK/ABSENT limit means NO CEILING ON THAT ALLOWANCE — which is the only way `max`
+  # ("10 spaces, unlimited items") is expressible at all. Only ACTIVE items count towards `items`
+  # (archiving frees room); locations are deliberately not limited.
+  #
+  # `unlimited` is the OPERATOR GRANT (users.plan = 'UNLIMITED', deploy/README.md Step 10). It has
+  # no product-id and never will: it is not purchasable, and GET /api/v1/plans omits it.
+  plans:
     free:
       spaces: 1
       items: 100
+    standard:
+      spaces: 3
+      items: 300
+      product-id: whereis_standard_annual
+    pro:
+      spaces: 5
+      items: 600
+      product-id: whereis_pro_annual
+    max:
+      spaces: 10
+      # Blank, not a big number: null is "no ceiling on THIS allowance". Max is ten spaces and
+      # unlimited items, which a single all-or-nothing flag could not express.
+      items:
+      product-id: whereis_max_annual
+    # `unlimited` is deliberately ABSENT: the operator grant has no ceiling on either allowance
+    # and no product-id, so there is nothing to configure. PlanCatalog supplies it and refuses to
+    # start if this file ever gives it one.
+
+  # The Play Developer API, for verifying purchases. Same shape as ai.provider: a deterministic
+  # fake is the default so `./gradlew build` and the whole integration suite run with no network,
+  # no Google credentials and no Play Console — which does not exist yet. The fake is REFUSED under
+  # the prod profile (its tokens are guessable literals), so a production process cannot select it.
+  play:
+    # fake (default: deterministic, no key, no network) | google (real Play Developer API)
+    provider: ${PLAY_PROVIDER:fake}
+    # Server config, never a request field: a caller cannot make this server ask Google about a
+    # different app's purchase.
+    package-name: ${PLAY_PACKAGE_NAME:az.technest.whereis}
+    # Required ONLY when provider=google; the app refuses to start without it, and nothing else in
+    # the process reads it. Contents of the service-account key, from the environment.
+    service-account-json: ${PLAY_SERVICE_ACCOUNT_JSON:}
+    timeout: ${PLAY_TIMEOUT:10s}

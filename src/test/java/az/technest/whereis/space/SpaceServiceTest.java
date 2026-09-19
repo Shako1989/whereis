@@ -14,6 +14,7 @@ import az.technest.whereis.common.error.ConflictException;
 import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.location.LocationRepository;
 import az.technest.whereis.plan.PlanLimitEnforcer;
+import az.technest.whereis.plan.Plan;
 import az.technest.whereis.plan.PlanLimitReachedException;
 import az.technest.whereis.space.dto.CreateSpaceRequest;
 import az.technest.whereis.space.dto.SpaceResponse;
@@ -112,7 +113,7 @@ class SpaceServiceTest {
     @Test
     void createRefusesAtThePlanLimitAndSavesNothing() {
         when(spaceRepository.existsByUserIdAndNormalizedName(userId, "office")).thenReturn(false);
-        doThrow(PlanLimitReachedException.spaces(1)).when(planLimits).requireRoomForAnotherSpace(userId);
+        doThrow(PlanLimitReachedException.spaces(1, Plan.FREE, true)).when(planLimits).requireRoomForAnotherSpace(userId);
 
         assertThatThrownBy(() -> spaceService.create(userId,
                 new CreateSpaceRequest("Office", null, SpaceType.OFFICE)))

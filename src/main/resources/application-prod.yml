@@ -40,3 +40,12 @@ whereis:
     legal-address: ${WHEREIS_LEGAL_ADDRESS}
     effective-date: ${WHEREIS_LEGAL_EFFECTIVE_DATE}
     backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS}
+
+  # The Play Developer API. No defaults on purpose: prod must not be able to start half-configured,
+  # and it must NEVER run on the fake provider — PlayConfig refuses to construct the fake under this
+  # profile, so PLAY_PROVIDER=fake here is a loud startup failure rather than a silent entitlement
+  # escalation. Set all three in deploy/.env.
+  play:
+    provider: ${PLAY_PROVIDER}
+    package-name: ${PLAY_PACKAGE_NAME}
+    service-account-json: ${PLAY_SERVICE_ACCOUNT_JSON}

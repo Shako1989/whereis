@@ -38,6 +38,13 @@ dependencies {
     implementation 'net.logstash.logback:logstash-logback-encoder:8.1'
     implementation 'com.anthropic:anthropic-java:2.34.0'
 
+    // Play Developer API, for the `google` provider of PlaySubscriptionsApi. Compiled into the
+    // jar but never exercised by `test` or `integrationTest` — both run the deterministic fake,
+    // which is the default provider. A wrong version guess costs one line, because the port is
+    // the only thing the rest of the application sees.
+    implementation 'com.google.apis:google-api-services-androidpublisher:v3-rev20260909-2.0.0'
+    implementation 'com.google.auth:google-auth-library-oauth2-http:1.52.0'
+
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'

@@ -103,7 +103,9 @@ Every other endpoint requires `Authorization: Bearer {accessToken}`.
 | Method | Path | Auth | Body | Success |
 |---|---|---|---|---|
 | DELETE | `/users/me` | bearer | `{password}` | **204** (empty) |
-| GET | `/users/me/plan` | bearer | — | 200 `PlanStatus` (§3.8) |
+| GET | `/users/me/plan` | bearer | — | 200 `PlanStatus` (§3.8a) |
+| POST | `/users/me/plan/purchases` | bearer | `{purchaseToken, productId}` | 200 `PlanStatus` (§3.8c) |
+| GET | `/plans` | bearer | — | 200 `[LadderRow]` (§3.8b) — note: NOT under `/users/me` |
 
 - Re-authentication is mandatory: the body carries the user's **current password**. A wrong, blank or
   missing password — and a token whose account no longer exists — all return **401
@@ -344,85 +346,232 @@ server `message` verbatim to the user; never show a stack trace or an HTTP numbe
 indistinguishable from one that does not exist. Your UI must respect that: on 404 say
 *"This item is no longer available"* and pop back to the list. Never say "you don't have permission".
 
-### 3.8 Plan limits — the free tier (409 `PLAN_LIMIT_REACHED`)
+### 3.8 The tier ladder (409 `PLAN_LIMIT_REACHED`, and how to get past it)
 
-A `FREE` account may hold **1 space** and **100 ACTIVE items**. Beyond either, the three creation
-calls above answer **409** with `code: "PLAN_LIMIT_REACHED"` and a `message` that names what was hit
-and what the limit is.
+**SUPERSEDES the two-valued free-tier contract.** There are now five tiers, four of which a client
+may render:
 
-**`GET /users/me/plan` is where the numbers come from (BR-11).** Ask the server; never hardcode a
-limit and never keep a running counter of your own — the limits live in server configuration and can
-be tuned without an app release, and a local counter disagrees with the server the first time an
-item is created on another device.
+| tier | spaces | active items | Play product |
+|---|---|---|---|
+| `FREE` | 1 | 100 | — |
+| `STANDARD` | 3 | 300 | `whereis_standard_annual` |
+| `PRO` | 5 | 600 | `whereis_pro_annual` |
+| `MAX` | 10 | **no limit** | `whereis_max_annual` |
+| `UNLIMITED` | no limit | no limit | **never purchasable — an operator grant** |
+
+All three paid products are **annual, auto-renewing, one base plan each with base plan id
+`annual`**, each with a free trial configured as an offer in Play Console. **Never hardcode the
+trial length**: read it from the pricing phases (§3.8c).
+
+Beyond a tier's ceiling, the three creation calls answer **409 `PLAN_LIMIT_REACHED`** with a
+`message` that names the tier and the limit. Nothing existing is ever taken away.
+
+#### 3.8a `GET /users/me/plan` — what am I on, and how much have I used
+
+Ask the server; never hardcode a limit and never keep a running counter of your own.
 
 ```jsonc
-// PlanStatus — GET /api/v1/users/me/plan, 200
-{ "plan": "FREE",                              // "FREE" | "UNLIMITED" — an unknown tier is NOT FREE; see below
-  "limits": { "spaces": 1, "items": 100 },     // what a FREE account may hold
-  "usage":  { "spaces": 1, "activeItems": 19 } }
+// PlanStatus — GET /api/v1/users/me/plan, 200. Same body as POST /users/me/plan/purchases.
+{ "plan": "PRO",                                  // the EFFECTIVE tier; unknown values are NOT FREE
+  "limits": { "spaces": 5, "items": 600 },        // always an OBJECT; a null MEMBER = no ceiling there
+  "usage":  { "spaces": 2, "activeItems": 143 },
+  "source": "SUBSCRIPTION",                       // NONE | GRANT | SUBSCRIPTION — for copy only
+  "subscription": {                               // null when there is no entitling subscription
+    "productId": "whereis_pro_annual",
+    "tier": "PRO",
+    "state": "ACTIVE",                            // ACTIVE | CANCELED | IN_GRACE_PERIOD | ...
+    "entitledUntil": "2027-09-19T10:04:00Z",
+    "provenance": "PLAY_PURCHASE",                // PLAY_PURCHASE | PROMO_CODE | OPERATOR
+    "acknowledged": true } }
 
-// the same endpoint for an account that was granted UNLIMITED
-{ "plan": "UNLIMITED",
-  "limits": null,                              // ALWAYS PRESENT, null = nothing is limited
-  "usage":  { "spaces": 4, "activeItems": 19 } }
+// Max: a finite space ceiling beside no item ceiling at all
+{ "plan": "MAX", "limits": {"spaces": 10, "items": null}, "usage": {...},
+  "source": "SUBSCRIPTION", "subscription": {...} }
+
+// an operator grant
+{ "plan": "UNLIMITED", "limits": {"spaces": null, "items": null}, "usage": {...},
+  "source": "GRANT", "subscription": null }
+
+// free
+{ "plan": "FREE", "limits": {"spaces": 1, "items": 100}, "usage": {...},
+  "source": "NONE", "subscription": null }
 ```
 
-- **A tier this build does not recognise must not be treated as `FREE`.** §4.4's "unknown becomes
-  `OTHER`" rule is about `SpaceType`/`LocationType` and does not transfer here: `FREE` is the only
-  value that offers an upgrade, so defaulting to it would offer more room to an account that may
-  already have paid for it. Map any unrecognised, blank or missing `plan` to its own `UNKNOWN`
-  state, render it as "a plan this version does not know about", and offer nothing — the same
-  answer as `UNLIMITED`. Only an explicit `"FREE"` may be offered an upgrade.
-- **`limits` is `null`, not absent, and not a set of numbers with a flag.** Branch on
-  `limits == null` and nothing else. When it is null there is no ceiling to render: show usage alone
-  ("4 spaces, 19 items"), never "19 of 100", never "∞ of 100", and never an upgrade offer — that
-  account already has everything an upgrade could give. Model it as a nullable object; the key is
-  always on the wire, so `explicitNulls = false` is not required to read it.
-- **`usage` is always present, on both plans**, and `usage.activeItems` counts exactly what the wall
-  counts: non-archived items. `limits.items` and `usage.activeItems` are deliberately named
-  differently — the limit is the configured product rule, the usage says precisely what it counted.
-- `plan` is the caller's **effective entitlement**, computed by the same code that refuses a
-  creation, so `usage.spaces == limits.spaces` is true exactly when the next `POST /spaces` will be
-  a 409. Render "1 of 1 spaces used" from these two numbers; do not infer the state from a past
-  error.
-- There is no path or query parameter: the account is the JWT subject. **401** anonymously, like
-  every other `/api/v1` call.
-- Three statements server-side (one plan lookup, two counts) — cheap, but not free. Fetch it when
-  the upgrade/settings screen opens and after a `409 PLAN_LIMIT_REACHED`, not on every list render.
+- **`limits` IS ALWAYS AN OBJECT AND THE NULLABILITY MOVED TO ITS TWO MEMBERS.** BR-11 said
+  "`limits` is `null` for `UNLIMITED`" and told the upgrade screen to branch on that; **that rule is
+  dead.** Max is "ten spaces, unlimited items", which a whole-object null cannot express at all. The
+  rule that survives is simpler: **a null is exactly one thing — no ceiling on THAT allowance.**
+  Render `{"spaces": 10, "items": null}` as "2 of 10 spaces" beside "143 items, no limit".
+  *The already-shipped client needs no change to read this:* `PlanLimitsDto` declares both members
+  nullable and `PlanAllowance(used, limit: Int?)` already means "unlimited" per allowance.
+- **Do not use `limits` to decide whether to offer an upgrade.** It is wrong in both directions now:
+  `MAX` has a non-null object and must never be offered anything. The rule is §3.8b's: offer a tier
+  only when it is strictly above the caller's on the ladder returned by `GET /plans`.
+- **An unrecognised `plan` is NOT `FREE`.** §4.4's "unknown becomes `OTHER`" does not transfer here.
+  Map anything unrecognised, blank or missing to your own `UNKNOWN` state, render it as "a plan this
+  version does not know about", and **offer nothing**. Defaulting to `FREE` would offer more room to
+  an account that already paid for it.
+- **`source` is for copy, never for behaviour.** Show "Manage subscription" **iff `subscription !=
+  null`** — a paid subscription must stay manageable even for an account that also holds a higher
+  operator grant, which is exactly the `source: "GRANT"` + non-null `subscription` case.
+- **`subscription.acknowledged == false` means the purchase is not yet confirmed to Google.** Google
+  auto-refunds and revokes an unacknowledged purchase (3 days; **5 minutes** for a test purchase on a
+  closed track). There is no server-side reconciler yet, so while this reads `false` the client must
+  **ignore its own 24-hour re-post rule and re-POST the token on the next foreground.**
+- **`usage` is always present, on every tier, and is NEVER CLAMPED.** `{"limits": {"spaces": 3},
+  "usage": {"spaces": 5}}` is a valid, expected body for an account that dropped from `PRO` to
+  `STANDARD`. Draw it as full, not as overflowing (the shipped `PlanAllowance.fraction` already
+  coerces to `0f..1f`).
+- `plan` is the caller's **effective entitlement** — `max(operator grant, best entitling
+  subscription)` — computed by the same code that refuses a creation, so `usage.spaces ==
+  limits.spaces` is true exactly when the next `POST /spaces` will be a 409.
+- No path or query parameter: the account is the JWT subject. **401** anonymously.
 - It is a **read**: it never grants, never upgrades and never changes anything.
+
+#### 3.8b `GET /plans` — the ladder, and the ONLY source of tier ordering
+
+```jsonc
+// GET /api/v1/plans, 200 — authenticated, no parameters, in LADDER ORDER
+[ {"tier": "FREE",     "productId": null,                      "limits": {"spaces": 1,  "items": 100}},
+  {"tier": "STANDARD", "productId": "whereis_standard_annual", "limits": {"spaces": 3,  "items": 300}},
+  {"tier": "PRO",      "productId": "whereis_pro_annual",      "limits": {"spaces": 5,  "items": 600}},
+  {"tier": "MAX",      "productId": "whereis_max_annual",      "limits": {"spaces": 10, "items": null}} ]
+```
+
+- **Derive a tier's rank from its INDEX in this array.** Do not hardcode the ordering: the server
+  owns it, and a client that re-encodes it will eventually offer a downgrade as an upgrade.
+- **A tier is an upgrade iff its index is greater than the caller's.** A caller whose tier is **not
+  in this list at all** — `UNLIMITED`, or a tier this build has never heard of — is offered
+  **nothing**, and no row is badged "Your plan". Render the ladder under a header that frames it as
+  what the paid plans offer (or behind a disclosure) rather than misplacing the badge; that is the
+  default view for every operator-granted tester, which is the whole audience of this wave.
+- `productId != null` is what makes a row purchasable. **Product ids are never hardcoded in the
+  app**: they come from here, so re-pointing one is a server environment change with no release.
+- `UNLIMITED` is deliberately absent — it cannot be bought, and listing it would invite a client to
+  render it as an option.
+- No prices. A server-side price is wrong for most countries and is grounds for store rejection.
+
+#### 3.8c `POST /users/me/plan/purchases` — link a Play purchase to this account
+
+```jsonc
+// request
+{ "purchaseToken": "opaque-token-from-Play", "productId": "whereis_pro_annual" }
+// 200: the FULL PlanStatus body of §3.8a. ADOPT IT — do not issue a second GET.
+```
+
+`productId` is sent even though the server could look it up: acknowledgement needs it, and the
+server cross-checks the claim against Google's own line items. **The answer is never taken from the
+request** — tier, state, expiry, acknowledgement, test flag and promo marker all come from Google.
+
+| situation | status | `code` | what the client does |
+|---|---|---|---|
+| verified and active | 200 | — | adopt the body; mark the token synced |
+| replay within 60 s, still entitling | 200 | — | adopt the body |
+| pending / paused / on hold / expired / unknown state | 409 | `PLAY_PURCHASE_NOT_ACTIVE` | **keep the token**, short bounded backoff (30 s / 60 s / 120 s for the first ten minutes, then hourly) — a PENDING payment becomes ACTIVE later, and the 5-minute test-purchase fuse makes an hour too slow |
+| token already linked to another account | 409 | `PLAN_PURCHASE_NOT_OWNED` | show "this purchase belongs to another account"; keep the token but retry only on the normal 24-hour schedule, never in a loop |
+| `productId` is not one this server offers | 400 | `PLAY_PRODUCT_UNKNOWN` | a client bug — you sent a product that is not in `GET /plans` |
+| none of the purchase's products is ours | 400 | `PLAY_PRODUCT_MISMATCH` | drop the token |
+| Google does not know the token | 400 | `PLAY_PURCHASE_INVALID` | drop the token |
+| Google unreachable / 5xx / timeout | 502 | `PLAY_UNAVAILABLE` | retry with backoff; **do not** start the 24-hour clock |
+| body missing or malformed | 400 | `VALIDATION_ERROR` | client bug |
+| anonymous / expired token | 401 | standard | §4.1 |
+
+**Six new `ApiErrorCode` values** (`PLAY_UNAVAILABLE`, `PLAY_PURCHASE_INVALID`,
+`PLAY_PURCHASE_NOT_ACTIVE`, `PLAY_PRODUCT_UNKNOWN`, `PLAY_PRODUCT_MISMATCH`,
+`PLAN_PURCHASE_NOT_OWNED`) must be added to the client enum **in the same wave**. Without them every
+branch above collapses into `UNKNOWN` and the retry policy is unimplementable.
+
+**`obfuscatedAccountId` — the bytes are the contract.** Set
+`BillingFlowParams.setObfuscatedAccountId(sha256Hex(userId))`; the server recomputes the same value
+from the JWT subject and refuses a purchase that names another account.
+
+- **Where `userId` comes from:** the JWT `sub` claim of the access token. The client already decodes
+  that payload for the e-mail claim; extend that reader to expose `sub` and store it with the
+  session. There is no `/users/me` profile endpoint and none is needed.
+- **The exact input:** SHA-256 over the **UTF-8 bytes of the UUID's canonical `toString()` form** —
+  36 characters, lowercase, hyphenated — rendered as **lowercase hex, exactly 64 characters**. Not
+  the raw `sub` string as received, not dashes stripped, not uppercase.
+- **Golden vectors, asserted by `PlayAccountHashTest` on the backend and to be copied verbatim into
+  an Android test:**
+  - `00000000-0000-0000-0000-000000000000` → `12b9377cbe7e5c94e8a70d9d23929523d14afa954793130f8a3959c7b849aca8`
+  - `3f2504e0-4f89-41d3-9a0c-0305e82c3301` → `16362f566387b3cf5a6e92fb0a986c76ca20eb3a0c12cbdfbd0b29501e0c18df`
+- The server compares case-insensitively on the hex, so an upper-cased digest still matches.
+- **Fail closed:** if the user id is not available, do not launch the billing flow at all.
+
+**Where price and trial actually live.** `ProductDetails.formattedPrice` does **not** exist for
+subscriptions. Read
+`getSubscriptionOfferDetails() → getPricingPhases().getPricingPhaseList()`:
+
+- renewal price = `formattedPrice` of the phase whose `recurrenceMode == INFINITE_RECURRING`;
+- trial = the phase with `priceAmountMicros == 0L`; its length is `getBillingPeriod()`, an ISO-8601
+  period. **Carry the period, never `Period.parse(...).getDays()`** — `P1M` and `P1Y` both have a
+  `days` field of 0, so a trial changed in Play Console from 14 days to 1 month would render
+  "First 0 days free" next to a live purchase button. Format `P14D` / `P2W` / `P1M` with unit-aware
+  plurals, and render no trial line at all when there is no free phase.
+- `offerToken` is **mandatory** on `launchBillingFlow`, and `getSubscriptionOfferDetails()` **order
+  is not guaranteed** — selecting `[0]` is a bug that works on the test device. Select by
+  `basePlanId` (`"annual"`), preferring an offer with a free phase, else the bare base plan
+  (`offerId == null`).
+- A promo-code trial is **not** visible here and must never be inferred from a price: during one,
+  Google reports the FULL price server-side. `signupPromotion` is the only marker and it is the
+  backend's job — it surfaces as `subscription.provenance == "PROMO_CODE"`.
+
+**Play Billing Library 9.1.0 shapes, which differ from every pre-8.0 sample:**
+`enablePendingPurchases(PendingPurchasesParams.newBuilder()...build())` is **required** on the
+builder (the no-arg overload was removed), and `queryProductDetailsAsync` delivers a
+`QueryProductDetailsResult` carrying **both** `getProductDetailsList()` and
+`getUnfetchedProductList()`. Log every unfetched product id with its status at WARN and surface it
+in that ladder row's copy — a mistyped `product-id` is otherwise a silent blank card on a build that
+can only be tested by hand on a signed release. Distinguish "billing unavailable / connection
+failed" (transient, offer a retry) from "this product was not returned" (permanent for this build,
+show limits only).
+
+**`queryPurchasesAsync` on every foreground is mandatory, not an optimisation.** Promo codes are
+redeemed in the Play Store or in-app and produce a purchase with the app closed, and a flow
+interrupted by process death completes on Google's side with nothing to tell the app.
+
+**Never gate the paid tier locally.** Entitlement is the server's answer, from `GET
+/users/me/plan`; a purchase is not access until the server says so.
 
 **Server-side facts the client can rely on**
 
-* Only **ACTIVE** items count. Archiving an item (`PUT /items/{id}` with `archived: true`) frees
-  room immediately; the item is not deleted and still shows under
-  `GET /items?includeArchived=true`. Deleting a space or an item frees room the same way.
+* Only **ACTIVE** items count. Archiving (`PUT /items/{id}` with `archived: true`) frees room
+  immediately; the item is not deleted and still shows under `GET /items?includeArchived=true`.
 * **Locations are not limited** at any depth or number.
-* Nothing existing is ever taken away by the limits. Only creation is refused — an account that
-  already holds more than the free tier (e.g. after an `UNLIMITED` grant was removed) keeps
-  everything and can still read, edit, move, archive and delete.
+* **Nothing existing is ever taken away.** An account over its ceiling after any downgrade — an
+  expiry, a cancellation, a refund, a pause, a revoked grant, a retuned limit — keeps every space,
+  location, item, photo and history record and may still read, rename, move, archive, **unarchive**
+  and delete them. Only `POST /spaces`, `POST /items` and `POST /assistant/remember` can answer 409.
 * Ownership still wins: a foreign or unknown `locationId` is `404 LOCATION_NOT_FOUND` even at the
   limit. Handle the 404 first.
 * A refused `/assistant/remember` creates **nothing** — no item and none of the locations the
   sentence implied. Do not optimistically insert a row and then reconcile.
+* `CANCELED` entitles: auto-renew is off but the paid term is not over. `PAUSED` and `ON_HOLD` do
+  not, even with a future `entitledUntil`.
 
 **What the UI must do**
 
-1. Show the limit, not the error. Render your own localized copy — the numbers come from
-   `GET /users/me/plan` (the server `message` also carries them, for the case where the refusal
-   arrives first), and §3.7's rule still applies (never surface a raw `code`). For the item limit
-   the honest wording is *"You've reached 100 items on the free plan"*.
-2. **Offer the action that works today: archive something.** For the item limit, deep-link to a list
-   the user can archive from. For the space limit there is no such action — say what the plan allows
-   and stop.
-3. **There is NO paywall yet.** Billing is a later backend change: no Play Billing product, no
-   purchase flow, no subscription endpoint. Do **not** ship a "Subscribe" button that opens nothing,
-   a placeholder purchase screen, or a Play Billing SDK integration against an imagined contract.
-   When the subscription contract lands it will arrive as its own BR entry.
-4. During closed testing, accounts that need more room are granted `UNLIMITED` by the operator
-   directly in the database. A tester who hits the wall is a working test, not a bug — there is
-   nothing the app can do about it, and nothing it should pretend to do. A granted account reads
-   `plan: "UNLIMITED"` with `limits: null`, which is the one thing the upgrade screen must check
-   before it offers anything: never offer an upgrade to someone who already has one.
+1. Show the limit, not the error. Render your own localized copy; §3.7's rule still applies (never
+   surface a raw `code`). The server `message` names the tier and the number for the case where the
+   refusal arrives before the plan does.
+2. **Always offer archiving for the item limit**, on every tier — it is the action that works
+   without a purchase. For the space limit there is no such action.
+3. **Offer an upgrade only when one exists.** Use §3.8b's index rule. `MAX` and `UNLIMITED` are
+   offered nothing; so is `UNKNOWN`.
+4. **Model "charged by Play, not yet confirmed by our server" explicitly.** A 502 or a dropped
+   connection after a successful purchase leaves the user paid and the plan reading `FREE` — the
+   worst state this screen can reach. Render "your purchase is being confirmed", rebuild that state
+   on every launch from `queryPurchasesAsync` so it survives process death, and stamp the
+   "already sent" record only on a **terminal** outcome (200, or a 400/409 you are told to stop on),
+   never on a transport failure.
+5. **Scope the sent-token record to the account.** A shared device signs one user out and another
+   in; a `PLAN_PURCHASE_NOT_OWNED` recorded against a bare token would put the FIRST user's own
+   purchase on the ignore list when they sign back in. Key it by `(account, token)` or clear it on
+   sign-out.
+6. **Gate the whole billing subsystem on `BILLING_ENABLED` and an authenticated session.** The debug
+   build has `applicationIdSuffix = ".debug"`, so every billing call fails there; without the gate,
+   every developer and CI foreground starts a doomed connect-retry loop, and a logged-out cold start
+   fires an authenticated POST that wakes the token refresher for nothing.
 
 ---
 

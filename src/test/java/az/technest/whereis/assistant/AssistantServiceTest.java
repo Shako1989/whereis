@@ -21,6 +21,7 @@ import az.technest.whereis.common.error.BadRequestException;
 import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.common.error.NotFoundException;
 import az.technest.whereis.item.dto.ItemResponse;
+import az.technest.whereis.plan.Plan;
 import az.technest.whereis.plan.PlanLimitReachedException;
 import az.technest.whereis.search.SearchService;
 import az.technest.whereis.search.dto.ItemSearchResult;
@@ -682,7 +683,7 @@ class AssistantServiceTest {
         when(aiAssistant.interpretPlacement(anyString(), anyList())).thenReturn(interpretation("Home", 0.93));
         when(spaceRepository.findByUserIdAndNormalizedName(userId, "home")).thenReturn(Optional.of(home));
         when(executor.place(eq(userId), eq(home.getId()), any(), eq(AssistantService.PLACEMENT_NOTE)))
-                .thenThrow(PlanLimitReachedException.activeItems(100));
+                .thenThrow(PlanLimitReachedException.activeItems(100, Plan.FREE, true));
 
         assertThatThrownBy(() ->
                 service.remember(userId, "I put my passport in the bedroom drawer at home", null, null))
@@ -701,7 +702,7 @@ class AssistantServiceTest {
     void aPinnedPlacementRefusedByThePlanLimitRecordsFailedWithThatCodeAndRethrows() {
         UUID pinned = UUID.randomUUID();
         when(executor.placeAt(eq(userId), eq(pinned), anyString(), eq(null), anyString()))
-                .thenThrow(PlanLimitReachedException.activeItems(100));
+                .thenThrow(PlanLimitReachedException.activeItems(100, Plan.FREE, true));
 
         assertThatThrownBy(() -> service.remember(userId, "kabel 20A", null, pinned))
                 .isInstanceOf(PlanLimitReachedException.class);

@@ -17,6 +17,14 @@ public enum ErrorCode {
     LOCATION_NOT_EMPTY,
     SPACE_NOT_EMPTY,
     PLAN_LIMIT_REACHED,
+    // Play Billing (V10). PLAY_* describe what Google said about a purchase; PLAN_* describe what
+    // this application decided about an account.
+    PLAY_UNAVAILABLE,
+    PLAY_PURCHASE_INVALID,
+    PLAY_PURCHASE_NOT_ACTIVE,
+    PLAY_PRODUCT_UNKNOWN,
+    PLAY_PRODUCT_MISMATCH,
+    PLAN_PURCHASE_NOT_OWNED,
     FILE_TOO_LARGE,
     UNSUPPORTED_MEDIA_TYPE,
     STORAGE_ERROR,

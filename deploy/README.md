@@ -390,18 +390,32 @@ trend to zero after a deletion. Note for whoever signs the privacy statement: a 
 genuinely persists in the Step 8 dumps until they rotate out; there is no process that scrubs a
 user from an existing dump.
 
-## Step 10 — Free-tier limits: grant UNLIMITED (do this right after the first deploy)
+## Step 10 — The tier ladder: grants, tuning, and the gates before promotion
 
-`V9` gives every account `users.plan = 'FREE'`, which allows **1 space** and **100 ACTIVE items**.
-The migration deliberately contains **no `UPDATE`** — nothing is grandfathered, including the
-account that already exists on this box. Nothing is deleted or hidden, but until it is granted that
-account **cannot create a 5th space** (it currently holds 4 spaces and 19 active items).
+`V9` gave every account `users.plan = 'FREE'`; `V10` widened that column to the four-tier ladder
+plus the operator grant:
 
-So do this immediately after the deploy, for your own account and for every tester who should not
-hit the wall. There is no endpoint and no admin API for it, by design — it is one statement:
+| tier        | spaces | active items | Play product              |
+|-------------|--------|--------------|---------------------------|
+| `FREE`      | 1      | 100          | —                         |
+| `STANDARD`  | 3      | 300          | `whereis_standard_annual` |
+| `PRO`       | 5      | 600          | `whereis_pro_annual`      |
+| `MAX`       | 10     | **no limit** | `whereis_max_annual`      |
+| `UNLIMITED` | no limit | no limit   | **never purchasable**     |
+
+Neither migration contains an `UPDATE` — nothing is grandfathered, including the account that
+already exists on this box. Nothing is deleted or hidden, but until it is granted that account
+**cannot create a 5th space**.
+
+An account's effective tier is `max(users.plan, its best entitling subscription)`. So a grant always
+wins, a subscription can never downgrade a granted account, and **revoking a grant leaves a paying
+subscriber on their paid tier**. `users.plan` is written by the migration's default or by you, and
+by nothing else.
+
+### Granting a tier by hand
 
 ```sh
-docker exec -i autoparts-postgres psql -U whereis -d whereis -c "UPDATE users SET plan = 'UNLIMITED' WHERE lower(email) = lower('you@example.com');"
+docker exec -i autoparts-postgres psql -U whereis -d whereis -c "UPDATE users SET plan = 'PRO' WHERE lower(email) = lower('you@example.com');"
 ```
 
 Expect `UPDATE 1`. `UPDATE 0` means the e-mail does not match a row — check it, do not guess:
@@ -410,46 +424,136 @@ Expect `UPDATE 1`. `UPDATE 0` means the e-mail does not match a row — check it
 docker exec -i autoparts-postgres psql -U whereis -d whereis -c "SELECT email, plan FROM users ORDER BY created_at;"
 ```
 
-To revoke a grant, set it back to `'FREE'`. Revoking takes nothing away: the account keeps every
-space and item it already has and can still read, edit, move, archive and delete them — only
-creation is refused from then on.
+Valid values are `FREE`, `STANDARD`, `PRO`, `MAX`, `UNLIMITED`. To revoke, set it back to `'FREE'`.
+Revoking takes nothing away: the account keeps every space and item it already has and can still
+read, edit, move, archive and delete them — only creation is refused from then on.
 
-**Why by hand.** `UNLIMITED` is a *grant* for specific accounts (you, testers, close
-acquaintances), not a fact about when an account was created, which is exactly what a migration
-could not express. It is also **not** subscription state and must never be merged with it: when
-billing lands, a Play RTDN reporting an expiry will write "no longer subscribed" somewhere, and if
-that somewhere were this column it would silently erase the grants you made here. The entitlement
-rule becomes `plan = 'UNLIMITED' OR active subscription` inside one method
-(`PlanLimitEnforcer#hasUnlimitedEntitlement`); this column stays operator-only.
+> ### ⚠️ `V10` IS A ONE-WAY DOOR FOR GRANTS. READ BEFORE GRANTING ANY PAID TIER.
+>
+> `users.plan` is an `@Enumerated(STRING)` column, and the **pre-V10 image only knows
+> `FREE` and `UNLIMITED`**. Flyway does not undo `V10`. So if you grant `STANDARD`/`PRO`/`MAX` and
+> then roll the container back to an earlier image — which this runbook otherwise treats as routine —
+> every read of that account throws: `GET /users/me/plan`, `POST /spaces`, `POST /items` and both
+> assistant paths all answer 500, because the entitlement check runs on every creation. The account
+> most likely to be granted first is yours, i.e. the one doing the rollback.
+>
+> **Do not grant a paid tier until the release has settled.** If you must roll back, run this FIRST,
+> paste-ready:
+>
+> ```sh
+> docker exec -i autoparts-postgres psql -U whereis -d whereis -c "UPDATE users SET plan = 'UNLIMITED' WHERE plan IN ('STANDARD','PRO','MAX');"
+> ```
+>
+> `UNLIMITED` exists in both images, so the rolled-back build reads those rows fine (it just gives
+> them more than they paid for, which is the safe direction).
 
-Tuning the limits needs no code change: both are `@ConfigurationProperties`
-(`whereis.limits.free.spaces` / `.items`, defaulting to 1 and 100 in `application.yml`). To override
-one here, add the passthrough to the `environment:` block of `docker-compose.prod.yml` — it is
-deliberately NOT there today, because the defaults ARE the product rule and an unused knob in the
-compose file invites drift:
+### A time-boxed grant (an end date, without touching `users.plan`)
+
+`users.plan` grants are permanent until you revoke them. For a tester who should lose access on a
+date, write a `user_subscriptions` row instead — `provenance = 'OPERATOR'`, and `entitled_until` is
+what makes it time-boxed. Only `STANDARD`, `PRO` and `MAX` are representable there; an *unlimited*
+grant is permanent by construction and belongs on `users.plan`.
+
+```sh
+docker exec -i autoparts-postgres psql -U whereis -d whereis -c "
+INSERT INTO user_subscriptions (user_id, purchase_token, product_id, tier, provenance, state, entitled_until, acknowledged, verified_at)
+SELECT id, 'operator:' || gen_random_uuid(), NULL, 'PRO', 'OPERATOR', 'ACTIVE', now() + interval '90 days', true, now()
+FROM users WHERE lower(email) = lower('tester@example.com');"
+```
+
+The `operator:` token convention matters: `purchase_token` is globally unique and shares a namespace
+with Google's real tokens, so an invented value that happened to collide would make a real paid
+purchase permanently unredeemable. (It may also be left `NULL` for an `OPERATOR` row — the CHECK
+allows that — but a greppable marker is worth more than a null during an incident.)
+
+To revoke early, expire it rather than deleting it:
+
+```sh
+docker exec -i autoparts-postgres psql -U whereis -d whereis -c "UPDATE user_subscriptions SET entitled_until = now() WHERE provenance = 'OPERATOR' AND user_id = (SELECT id FROM users WHERE lower(email) = lower('tester@example.com'));"
+```
+
+### Tuning the numbers
+
+Every tier's ceilings and product id are `@ConfigurationProperties` (`whereis.plans.*`, defaulting in
+`application.yml` to the table above), so retuning needs no code change. The environment names are
+`WHEREIS_PLANS_<TIER>_SPACES` / `WHEREIS_PLANS_<TIER>_ITEMS` / `WHEREIS_PLANS_<TIER>_PRODUCT_ID` —
+**these were renamed in this wave; the old `WHEREIS_LIMITS_FREE_*` names bind nothing and the app now
+refuses to start if it sees one**, precisely so a stale `.env` cannot look healthy while production
+tuning has silently reverted.
+
+To override one here, add the passthrough to the `environment:` block of `docker-compose.prod.yml` —
+it is deliberately NOT there today, because the defaults ARE the product rule and an unused knob in
+the compose file invites drift:
 
 ```yaml
-      WHEREIS_LIMITS_FREE_SPACES: ${WHEREIS_LIMITS_FREE_SPACES:-1}
-      WHEREIS_LIMITS_FREE_ITEMS: ${WHEREIS_LIMITS_FREE_ITEMS:-100}
+      WHEREIS_PLANS_FREE_SPACES: ${WHEREIS_PLANS_FREE_SPACES:-1}
+      WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-100}
 ```
+
+> **The ladder must never go down.** A higher tier may never allow less than a lower one (a blank
+> value means "no ceiling" and counts as the largest). So raising `WHEREIS_PLANS_FREE_ITEMS` to
+> `999999` on its own is a **startup failure**, not a working escape hatch — you must raise
+> `STANDARD` and `PRO` to at least the same number. The container says exactly that and names both
+> offending keys:
+>
+> ```
+> whereis.plans.free.items (999999) exceeds whereis.plans.standard.items (300);
+> a higher tier may never allow less — raise every tier above it too
+> ```
+
+### Play Billing configuration
+
+`PLAY_PROVIDER`, `PLAY_PACKAGE_NAME` and `PLAY_SERVICE_ACCOUNT_JSON` are now forwarded by
+`docker-compose.prod.yml` with `:?`, so a missing one stops the stack with a named error instead of
+a Spring placeholder trace. Set them in `.env`:
+
+```sh
+WHEREIS_PLAY_PROVIDER=google
+WHEREIS_PLAY_PACKAGE_NAME=az.technest.whereis
+WHEREIS_PLAY_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
+```
+
+`PLAY_PROVIDER=fake` is **refused under the `prod` profile** and the container will not start. That
+is deliberate: the fake's tokens are guessable literals (`fake-active-max`), so a production process
+running it would hand the top tier to anyone who posted one. Do not "fix" a boot failure by
+switching to `fake`.
 
 ### GATE before promoting a build past closed testing
 
-> **The wall has no door yet.** Billing is not implemented — no Play Billing product, no purchase
-> flow, no subscription endpoint. A `FREE` account that reaches 1 space or 100 active items is
-> refused with `409 PLAN_LIMIT_REACHED` and **cannot pay to get past it**. The only ways forward are
-> archiving an item (which frees room) or an operator grant.
+> **1. The wall's door is new and unfinished.** `POST /users/me/plan/purchases` verifies a Play
+> purchase and raises the tier, but there is **no Play Console yet**: the three product ids in
+> `whereis.plans.*.product-id` are assumptions. If any of them differs from what is actually created,
+> `queryProductDetailsAsync` returns that product as *unfetched* and the app shows the tier with
+> limits, no price and no button. Somebody must check the console against that config before the
+> first paid build; it is an environment change, not a release.
 >
-> That is intentional for closed testing — testers are meant to exercise the wall. It must **not**
-> reach an open track or production that way. Before promoting a build to open testing or
-> production, one of these must be true:
+> If billing is still not usable when you promote, one of these must be true instead:
 >
-> 1. billing is implemented and a purchase actually grants unlimited use; **or**
-> 2. the limits are raised high enough to be unreachable (`WHEREIS_LIMITS_FREE_*`) so no user is
->    refused a creation they cannot resolve; **or**
-> 3. the accounts on the track are all granted `UNLIMITED`.
+> 1. the limits are raised out of reach — `WHEREIS_PLANS_FREE_SPACES` / `WHEREIS_PLANS_FREE_ITEMS`,
+>    **and every tier above them**, per the monotonicity rule above; **or**
+> 2. every account on the track is granted `UNLIMITED`.
 >
 > Shipping a paid wall with no way to pay is a Play policy problem as well as a product one.
+>
+> **2. REFUNDS ARE NOT SWEPT YET.** `voided_at` is never written until the RTDN
+> `voidedPurchaseNotification` handler ships (next wave), so a refunded annual purchase keeps
+> entitling for **up to a year**. Acceptable only while the track is closed and there is no real
+> revenue. (Trap for whoever builds it: `purchases.voidedpurchases.list` defaults to `type=0`,
+> one-time products, and must be called with `type=1` for subscriptions or the sweep silently finds
+> nothing.)
+>
+> **3. UNACKNOWLEDGED PURCHASES HAVE A 5-MINUTE FUSE ON A CLOSED TRACK.** Google auto-refunds and
+> revokes a purchase that is not acknowledged within 3 days — and within **5 minutes** for a test
+> purchase, which is every purchase a license tester makes. The endpoint acknowledges synchronously
+> with a short retry, re-verifies any entitling row it finds with `acknowledged = false`, and reports
+> that flag to the client so the next foreground repairs it. There is still **no server-side
+> reconciler**: if the app is not reopened, a failed acknowledgement is not retried. Watch for
+> `Could not acknowledge purchase` at WARN after any tester purchase.
+>
+> **4. RTDN IS NOT CONSUMED.** The `play_notifications` ledger exists and is empty; nothing reads the
+> Pub/Sub topic. Expiries are handled by the fail-closed `entitled_until > now()` predicate, so
+> entitlement lapses on its own — but pauses, holds, refunds and upgrades are not reflected until
+> their notification is applied.
 
 ## Redeploy and rollback
 
@@ -462,3 +566,7 @@ docker compose -f docker-compose.prod.yml --env-file .env up -d
 Note that images are built on the VM and tagged `latest`, so there is no previous image to
 roll back to. If you want tagged rollbacks, set `WHEREIS_VERSION` per build and keep the old
 tags — or move to a registry.
+
+**Before rolling back past the V10 release**, run the `users.plan` repair statement in Step 10's
+one-way-door box. Flyway does not undo a migration, and an older image cannot read a `STANDARD`,
+`PRO` or `MAX` row.

@@ -14,9 +14,10 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     boolean existsByEmail(String email);
 
     /**
-     * The entitlement of one account, without hydrating the entity — the guard on every creation
-     * path needs the plan and nothing else. Empty when the account is gone; the caller decides what
-     * that means ({@code PlanLimitEnforcer} reads it as FREE).
+     * The OPERATOR GRANT on one account, without hydrating the entity — one half of what the guard
+     * on every creation path needs (the other is the account's entitling subscriptions). Empty when
+     * the account is gone; the caller decides what that means ({@code PlanLimitEnforcer} reads it
+     * as FREE, because a guard's default must be the restrictive one).
      */
     @Query("select u.plan from User u where u.id = :userId")
     Optional<Plan> findPlanById(@Param("userId") UUID userId);

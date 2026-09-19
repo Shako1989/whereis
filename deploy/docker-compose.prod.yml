@@ -87,6 +87,24 @@ services:
       AI_CLAUDE_WORKSPACE_ID: ${WHEREIS_AI_CLAUDE_WORKSPACE_ID:-}
       AI_CLAUDE_MAX_RETRIES: ${WHEREIS_AI_CLAUDE_MAX_RETRIES:-1}
 
+      # Play Billing (V10). `:?` on all three on purpose, unlike the AI keys: the prod profile
+      # declares them with NO default, so a missing one is a startup failure anyway — compose
+      # naming the variable is a better error than a Spring placeholder trace. And PLAY_PROVIDER
+      # must be set EXPLICITLY: the deterministic fake grants any tier to anyone who guesses a
+      # token, so PlayConfig refuses to construct it under the prod profile. Use `google` here
+      # once the Play service account exists; until then the stack will not start, which is the
+      # correct answer for a build that cannot verify a purchase.
+      PLAY_PROVIDER: ${WHEREIS_PLAY_PROVIDER:?set WHEREIS_PLAY_PROVIDER in .env (google)}
+      PLAY_PACKAGE_NAME: ${WHEREIS_PLAY_PACKAGE_NAME:?set WHEREIS_PLAY_PACKAGE_NAME in .env}
+      PLAY_SERVICE_ACCOUNT_JSON: ${WHEREIS_PLAY_SERVICE_ACCOUNT_JSON:?set WHEREIS_PLAY_SERVICE_ACCOUNT_JSON in .env}
+
+      # Tier limits. Deliberately NOT forwarded by default — the numbers in application.yml ARE the
+      # product rule, and an unused knob in the compose file invites drift. Add these only when
+      # Step 10's escape hatch is actually being used, and remember that raising a LOWER tier means
+      # raising every tier above it or the container refuses to start:
+      #   WHEREIS_PLANS_FREE_SPACES: ${WHEREIS_PLANS_FREE_SPACES:-1}
+      #   WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-100}
+
       # Native Android clients do not send Origin, so this only matters if a web
       # client is added later. Keep it tight rather than permissive.
       CORS_ALLOWED_ORIGINS: ${WHEREIS_CORS_ALLOWED_ORIGINS:-https://${WHEREIS_API_HOST}}

@@ -20,6 +20,7 @@ import az.technest.whereis.location.LocationService;
 import az.technest.whereis.location.LocationTreeDao;
 import az.technest.whereis.location.LocationType;
 import az.technest.whereis.plan.PlanLimitEnforcer;
+import az.technest.whereis.plan.Plan;
 import az.technest.whereis.plan.PlanLimitReachedException;
 import az.technest.whereis.storage.FileStorageService;
 import az.technest.whereis.storage.dto.ItemPrimaryImage;
@@ -340,7 +341,7 @@ class ItemServiceTest {
     void createAtRefusesAtThePlanLimitAndWritesNothing() {
         UUID locationId = UUID.randomUUID();
         when(locationService.requireOwned(userId, locationId)).thenReturn(location(locationId, "Top Drawer"));
-        doThrow(PlanLimitReachedException.activeItems(100)).when(planLimits).requireRoomForAnotherItem(userId);
+        doThrow(PlanLimitReachedException.activeItems(100, Plan.FREE, true)).when(planLimits).requireRoomForAnotherItem(userId);
 
         assertThatThrownBy(() -> itemService.createAt(userId, locationId, "Passport", null, null, null))
                 .isInstanceOf(PlanLimitReachedException.class)
@@ -355,7 +356,7 @@ class ItemServiceTest {
     void theManualCreateEndpointGoesThroughTheSameGuard() {
         UUID locationId = UUID.randomUUID();
         when(locationService.requireOwned(userId, locationId)).thenReturn(location(locationId, "Top Drawer"));
-        doThrow(PlanLimitReachedException.activeItems(100)).when(planLimits).requireRoomForAnotherItem(userId);
+        doThrow(PlanLimitReachedException.activeItems(100, Plan.FREE, true)).when(planLimits).requireRoomForAnotherItem(userId);
 
         // create() delegates to createAt(), which is why one guard covers all three creation paths.
         assertThatThrownBy(() -> itemService.create(userId,

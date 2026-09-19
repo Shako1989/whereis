@@ -30,10 +30,13 @@ Photos live in MinIO; PostgreSQL holds only metadata.
 5. Deleting a location fails while it has children or items; deleting a space fails while it has locations.
 6. MinIO binaries are eventually deleted when their metadata rows go away (outbox + janitor);
    PostgreSQL and MinIO never pretend to share a transaction.
-7. A FREE account may hold 1 space and 100 ACTIVE items (`whereis.limits.free.*`); beyond either,
+7. Entitlement is a LADDER — FREE(1 space/100 items) < STANDARD(3/300) < PRO(5/600) < MAX(10/
+   unlimited items) < UNLIMITED(operator grant, never purchasable) — configured in
+   `whereis.plans.*`. The effective tier is `max(users.plan, best entitling subscription)`, so an
+   operator grant always wins and billing never writes `users.plan`. Beyond a tier's ceiling,
    CREATION is refused with 409 PLAN_LIMIT_REACHED and nothing existing is touched. Archiving frees
-   room; locations are never limited. `users.plan = 'UNLIMITED'` is exempt and is an OPERATOR GRANT,
-   never billing state.
+   room; locations are never limited. A limit is nullable PER ALLOWANCE (`null` = no ceiling on that
+   allowance), which is the only way MAX is expressible.
 
 **MVP journey (covered end-to-end by `MvpJourneyIT`):** register → create "Home" →
 "I put my passport in the bedroom wardrobe top drawer" auto-creates the chain and the item →
@@ -145,26 +148,53 @@ assistant/ fixed pipeline: read the user's spaces → AiAssistant.interpret(mess
            WRITE-ONLY in this change: no read endpoint and nothing on `ItemResponse` — read the rows
            from the database; a scoped history endpoint and an item-detail `sourceMessage` are a
            deliberate follow-up, not shipped.
-plan/      the free tier. `Plan` (FREE|UNLIMITED, varchar+CHECK in V9), `FreeTierLimits`
-           (`whereis.limits.free.spaces`=1 / `.items`=100 as @ConfigurationProperties — config, not
-           constants), `PlanLimitReachedException` (409), and `PlanLimitEnforcer`: the ONE guard,
-           two `require*` methods called from `SpaceService.create` and `ItemService.createAt`.
-           Those two sites cover all THREE creation paths, because `ItemService.create` delegates to
-           `createAt` and so do both `PlacementExecutor` paths (chain and pinned BR-7). Counts are
-           `count` queries, userId-scoped, ACTIVE-only (`countByUserIdAndArchivedFalse`) — archiving
-           frees room. `statusOf` (the read side, behind `PlanController` / GET /users/me/plan) runs
-           those SAME two count expressions and the same `FreeTierLimits`, so the upgrade screen and
-           the wall cannot disagree; it is the only `@Transactional` on the class (readOnly, one
-           snapshot for its three statements) and reports usage on both plans, while the guards skip
-           counting entirely for an UNLIMITED account. The guard sits AFTER the location ownership
-           lookup (a foreign id stays 404, not 409) and BEFORE every write, so a refusal inside the
-           assistant's transaction rolls back the just-created chain too. `hasUnlimitedEntitlement`
-           is the one method whose BODY is meant to grow into `plan = 'UNLIMITED' OR active
-           subscription` (GET /users/me/plan reports ITS answer, not the column); the COLUMN must not —
-           an RTDN expiry writing it would erase a hand-made grant. `users.plan` has no setter on
-           the entity and no endpoint that writes it (GET /users/me/plan only reports the
-           entitlement): the migration's default or an operator's UPDATE, nothing else.
-           A vanished account reads as FREE (a guard's default is the restrictive one).
+plan/      the tier ladder and Play purchase verification. `Plan` (FREE|STANDARD|PRO|MAX|UNLIMITED,
+           varchar+CHECK in V9 widened by V10 — the DECLARATION ORDER IS THE LADDER, never insert a
+           constant in the middle, and never `order by` an @Enumerated(STRING) column to find the
+           highest: 'MAX' < 'PRO' < 'STANDARD' alphabetically). `PlanCatalog`
+           (@ConfigurationProperties("whereis") with a `plans` map — the prefix is `whereis` so the
+           binding key is `whereis.plans.free.items`, i.e. WHEREIS_PLANS_FREE_ITEMS; a record
+           component named `tiers` under prefix `whereis.plans` would have bound
+           `whereis.plans.tiers.*` instead). Limits are `Integer`, null == no ceiling on THAT
+           allowance; the constructor refuses at startup on a missing tier, a purchasable tier with
+           no product-id, an unpurchasable one with a product-id, duplicate product ids, or a ladder
+           that goes DOWN (a message naming both offending keys — deploy/README.md Step 10's escape
+           hatch needs every tier above the raised one raised too). UNLIMITED is supplied rather
+           than configured: a YAML entry whose every value is blank binds to nothing at all.
+           `PlanLimitReachedException` (409, message names the TIER and offers an upgrade only when
+           a higher PURCHASABLE tier actually raises that allowance — "subscribe for unlimited
+           spaces" at MAX advertises a product that does not exist).
+           `PlanLimitEnforcer`: still the ONE guard. `effectiveTierOf(UUID) -> Plan` replaced
+           `hasUnlimitedEntitlement(UUID) -> boolean`; both it and `statusOf` reach the answer
+           through the SAME private `effectiveTierOf(granted, subscribed)` and the SAME single
+           finder, so the report and the wall cannot compute the rule twice. `requireRoom*`
+           signatures are unchanged and still have exactly two callers.
+           `UserSubscription`/`UserSubscriptionRepository` (V10): ONE `@Query`, `entitlingOf`, whose
+           four predicates ARE the entitlement rule — `entitled_until > now` (fail-closed: even with
+           every RTDN lost, entitlement lapses), state in ACTIVE/IN_GRACE_PERIOD/CANCELED (CANCELED
+           entitles — auto-renew off, term not over; PAUSED and ON_HOLD do not), `voided_at is null`
+           (a refund revokes at once, not at expiry), `superseded_by is null`. The state list lives
+           once in `SubscriptionState.ENTITLING_STATES_JPQL` and `SubscriptionStateTest` pins it
+           against `entitles()`. `findByPurchaseToken` is the ONE deliberately unscoped finder in the
+           codebase — its whole purpose is to discover that a token belongs to somebody else.
+           `plan/play/`: the `PlaySubscriptionsApi` port, shaped exactly like `AiAssistant` —
+           `FakePlaySubscriptionsApi` (token-string-driven, the DEFAULT, refused under the prod
+           profile because its tokens are guessable literals) and `GooglePlaySubscriptionsApi`
+           (purchases.subscriptionsv2.get; purchases.subscriptions.get is DEPRECATED; acknowledge
+           has no v2 method). `signupPromotion` and `latestSuccessfulOrderId` are LINE-ITEM fields,
+           `basePlanId` is under `offerDetails`, and Google's state arrives as
+           "SUBSCRIPTION_STATE_ACTIVE" — `SubscriptionState.fromWire` is the only place a raw Google
+           string is compared, and anything unmapped becomes UNKNOWN, which DENIES.
+           `PurchaseVerificationService` (NO @Transactional anywhere, like `AssistantService`) +
+           `SubscriptionWriter` (every write, one transaction each, reached through the proxy) —
+           the two Google calls sit strictly BETWEEN transactions. Ownership is re-checked in the
+           writer as well as the orchestrator: the first check runs before the Google round trip, so
+           a second account can create the row in between. Idempotency is the unique constraint on
+           `purchase_token`, not a code path.
+           `PlanController` (GET /users/me/plan, POST /users/me/plan/purchases) and
+           `PlanCatalogController` (GET /plans — the ladder, zero statements, UNLIMITED omitted).
+           `LegacyLimitsPropertyGuard` refuses to boot while a retired `whereis.limits.free.*` key
+           is still set anywhere.
 common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler; CurrentUser
            (JWT subject → UUID); CorrelationIdFilter (X-Correlation-Id → MDC); Names — the ONE
            normalizer used by every writer, lookup, and the AI resolution path. clean() is the
@@ -196,15 +226,41 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
   `user_id` → users ON DELETE CASCADE (backstop only — deletion deletes them explicitly first). Indexes:
   `(user_id, created_at DESC)`, partial `(item_id)`, partial `(space_id)` (the SET NULL triggers need it).
   Rows are kept for the life of the account; no purge job (decision, 2026-09-16).
-- `users.plan` (V9): `varchar(20) NOT NULL DEFAULT 'FREE'` + `ck_users_plan CHECK (plan IN ('FREE',
-  'UNLIMITED'))` matching `Plan` byte for byte (`PlanTest` parses the SQL). **V9 contains no
+- `users.plan` (V9, widened by V10 to FREE|STANDARD|PRO|MAX|UNLIMITED): `varchar(20) NOT NULL
+  DEFAULT 'FREE'` + `ck_users_plan` matching `Plan` byte for byte. `PlanTest` computes the EFFECTIVE
+  allowed set across EVERY migration (tracking ADD and DROP of that constraint name) rather than
+  parsing one file — a single-file regex stops guarding the moment a later migration widens the same
+  constraint. **V10 is a ONE-WAY DOOR for grants**: `users.plan` is @Enumerated(STRING), so a
+  pre-V10 image cannot read a 'PRO' row and answers 500 on every creation; deploy/README.md Step 10
+  carries the paste-ready repair. **V9 contains no
   `UPDATE` and that absence is the design** — nothing is grandfathered, every pre-existing row
   (including the one production account, at 4 spaces / 19 active items) starts FREE, and until it is
   granted it cannot create a 5th space. Existing data is untouched; only creation is refused.
   Granting is an operator action (`UPDATE users SET plan = 'UNLIMITED' WHERE lower(email) = …`,
   deploy/README.md Step 10), not a migration and not an endpoint. No index: the column is read by
   primary key.
-- Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java enums.
+- `user_subscriptions` (V10): one row per Google purchase token, uuid PK (`purchase_token` is
+  `text` and UNIQUE — that constraint IS the idempotency key). `tier` CHECK is the PURCHASABLE set
+  only, so UNLIMITED is unrepresentable and "granted" stays distinguishable from "paid" forever.
+  `superseded_by` is a COMPOSITE self-FK `(superseded_by, user_id) -> (id, user_id)` (V4's
+  `fk_locations_parent_same_space` pattern): a Play account can be signed into two whereis accounts,
+  and a cross-user chain would abort the single-transaction `AccountDeletionService` on the
+  Play-mandated DELETE /users/me. `ux_user_subscriptions_supersedes` is UNIQUE, so a row is
+  superseded at most once and a cycle needs a self-reference the CHECK already blocks. `user_id` has
+  its OWN plain index for the cascade — the partial entitling index cannot serve it. `last_event_time`
+  is NULLABLE bigint epoch-millis, the RTDN high-water mark, and **the verify endpoint must never
+  write it** (verifying applies no notification; seeding it with now() would make the handler discard
+  every notification already in flight). Entitlement is one partial index
+  `(user_id, entitled_until DESC) WHERE voided_at IS NULL AND superseded_by IS NULL`.
+- `play_notifications` (V10): the RTDN ledger, keyed on the Pub/Sub message id so a redelivery is a
+  PK collision. No FK and no `user_id` — a notification can arrive for a token this server has never
+  seen. `attempts`/`last_attempt_at` plus a work-queue index excluding `attempts >= 10`, so a failure
+  is recordable while still pending and a poison message falls out instead of blocking the queue.
+  Deliberately UNMAPPED this wave, therefore NOT validated by Hibernate at all. `notification_kind`
+  has no CHECK on purpose: the Java enum that would pin it ships with the handler.
+- Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java
+  enums; each has a test that computes the effective constraint across migrations (`PlanTest`,
+  `SubscriptionStateTest`, `SubscriptionTierTest`, `PurchaseProvenanceTest`, `AssistantOutcomeTest`).
 - **Account deletion order is assistant messages → items → locations → spaces → user, with the
   storage_deletion_queue rows enqueued BEFORE the item cascade** (assistant messages go first so their
   item_id/space_id SET NULL triggers never fire inside the two bulk deletes and the summary count is exact) (`item_files` cascades from `items`, which erases the object keys).
@@ -226,21 +282,33 @@ a foreign or unknown one is 404 LOCATION_NOT_FOUND, never an empty page), GET /i
 /items/{id}/files, DELETE /{fileId}, GET /{fileId}/url (presigned) · assistant:
 POST /assistant/remember {message, spaceId? XOR locationId? — locationId means no AI call and the text is the item name}, /assistant/search {query}, /assistant/images/analyze
 (the `assistant_messages` rows V8 writes have NO endpoint — write-only for now) ·
-Free tier: POST /spaces, POST /items and POST /assistant/remember (both paths) answer
-**409 PLAN_LIMIT_REACHED** when a FREE account is at 1 space / 100 active items. 409 and not 402 —
+Plan/billing: POST /spaces, POST /items and POST /assistant/remember (both paths) answer
+**409 PLAN_LIMIT_REACHED** when the caller's EFFECTIVE tier is at its ceiling. 409 and not 402 —
 the client branches on `code`, this API answers every other guard violation with 409
 (SPACE_NOT_EMPTY, DUPLICATE_NAME), and 402 would advertise a payment path that does not exist yet.
 The message names what was hit and the limit, because the client shows it. DUPLICATE_NAME still
 wins over the space limit (the more specific answer), and LOCATION_NOT_FOUND (404) still wins over
 the item limit. No other response carries a plan or quota field: the ONE place to ask is
-**GET /users/me/plan** (BR-11) — `{plan: FREE|UNLIMITED, limits: {spaces,items} | null, usage:
-{spaces,activeItems}}`. `limits` is ALWAYS PRESENT and is `null` exactly when nothing is limited
-(chosen over omitting the key, and over numbers plus an `unlimited` flag — that shape can state two
-contradictory things at once); `usage` is present on both plans and `activeItems` excludes archived
-rows. `plan` is the EFFECTIVE ENTITLEMENT from `PlanLimitEnforcer#hasUnlimitedEntitlement`, not a
-copy of `users.plan`, so the report cannot contradict the guard — when billing lands a subscriber
-will read UNLIMITED here while the column stays FREE. No path or query parameter (the account is the
-JWT subject), no write, three statements (one plan lookup + the guard's own two counts). ·
+**GET /users/me/plan** (BR-11, extended by BR-12) — `{plan, limits:{spaces,items}, usage:
+{spaces,activeItems}, source, subscription}`. **`limits` is ALWAYS AN OBJECT and a null MEMBER means
+no ceiling on THAT allowance** — BR-11's "limits is null for UNLIMITED" is SUPERSEDED, because MAX
+("10 spaces, unlimited items") cannot be expressed by a whole-object null. `source` is
+NONE|GRANT|SUBSCRIPTION and is for COPY ONLY; `subscription` is non-null exactly when an entitling
+row exists REGARDLESS of which side won the max(), because a paid subscription must always be
+manageable, and it carries `acknowledged` (false = Google will auto-refund unless the client
+re-posts). `usage` is present on every tier, is never clamped (usage 5 against limit 3 after a
+downgrade is a valid body), and `activeItems` excludes archived rows. `plan` is the EFFECTIVE
+ENTITLEMENT from `PlanLimitEnforcer#effectiveTierOf`, never a copy of `users.plan`. Four statements.
+· **GET /plans** — the four-tier ladder in ladder order with real numbers and product ids, pure
+configuration, UNLIMITED deliberately absent; it is also the ONLY source of tier ORDERING a client
+may use. · **POST /users/me/plan/purchases** `{purchaseToken, productId}` → 200 with the identical
+`PlanStatusResponse`, so the purchase result and the plan screen cannot disagree. State is evaluated
+BEFORE product (a non-entitling purchase is always 409 PLAY_PURCHASE_NOT_ACTIVE — retryable, token
+kept — so a state problem can never be answered with a drop-the-token 400), the tier comes from
+GOOGLE's line item rather than the client's claim (a deferred downgrade keeps the OLD product on the
+token), and 400 PLAY_PRODUCT_MISMATCH is reserved for a purchase offering NONE of our products.
+Errors: PLAY_UNAVAILABLE(502), PLAY_PURCHASE_INVALID(400), PLAY_PURCHASE_NOT_ACTIVE(409),
+PLAY_PRODUCT_UNKNOWN(400), PLAY_PRODUCT_MISMATCH(400), PLAN_PURCHASE_NOT_OWNED(409). ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
 Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
@@ -258,11 +326,20 @@ the Play Store data-deletion and privacy URLs).
   after-commit point. `AssistantServiceTest` pins the propagation declaration by reflection and the
   swallow on both the CREATED and the NEEDS_CONFIRMATION path; a runtime proof across a real
   transaction boundary is still a gap.
-- Free-tier enforcement stays in `PlanLimitEnforcer` and its two call sites; never inline a second
-  copy of the rule, never count by loading rows, and never write `users.plan` from application code.
-  Anything that REPORTS the tier (GET /users/me/plan today) reads it from the same class and the
-  same count expressions — a usage number counted somewhere else drifts from the wall it describes,
-  and then the screen lies.
+- Tier enforcement stays in `PlanLimitEnforcer` and its two call sites; never inline a second copy
+  of the rule, never count by loading rows, and never write `users.plan` from application code.
+  Anything that REPORTS the tier reads it from the same class, through the same private
+  `effectiveTierOf(granted, subscribed)` and the same single entitling finder and count expressions —
+  a tier or a usage number computed somewhere else drifts from the wall it describes, and then the
+  screen lies. Three ArchUnit rules make this a build failure: nothing outside `plan/` may depend on
+  `UserSubscriptionRepository`; no `@Transactional` method may call `PlaySubscriptionsApi`; and only
+  `SpaceService.create` and `ItemService.createAt` — **per METHOD, not per class** — may call
+  `requireRoom*`, which is what converts "limits refuse creation and NOTHING else" from a promise
+  into a build failure (mutation-checked by adding a guard to `ItemService.update`).
+- Never let a purchase decide the tier from the request body: tier, state, expiry, acknowledgement,
+  test flag and promo marker all come from Google's response. The port fake must be structurally
+  unavailable in production, not merely unselected — its tokens are guessable literals, so selecting
+  it there is a self-service entitlement escalation.
 - Bulk `@Modifying` updates: think before `clearAutomatically` — it detaches managed entities
   the caller still mutates (this exact bug shipped once and was caught in review).
 - Login is enumeration-safe (dummy BCrypt verify + uniform INVALID_CREDENTIALS).
@@ -280,7 +357,7 @@ the Play Store data-deletion and privacy URLs).
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 221 unit tests — must stay green without Docker OR network
+./gradlew build              # compile + 334 unit tests — must stay green without Docker OR network
 ./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO) — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
@@ -624,11 +701,94 @@ across 14 classes** (`PlanStatusIT` 8). `seedActiveItems` moved from `PlanLimitI
 entry, unchanged by this: the wall has no door (no billing), and the endpoint does not add one — it
 describes the wall honestly, which is all a client can do until a payment path exists.
 
+**2026-09-19 — the four-tier ladder and Play purchase verification (V10, BR-12).** The two-valued
+FREE/UNLIMITED model is replaced by FREE(1/100) < STANDARD(3/300) < PRO(5/600) < MAX(10/unlimited
+items) < UNLIMITED, and the wall finally has a door. Details in §3 `plan/`, §4 for V10, §5 for the
+two new endpoints and §6 for the guardrails. The decisions worth keeping:
+
+* **The entitlement is a `max()`, not an override.** `effectiveTier = max(users.plan, best entitling
+  subscription)`. An operator grant always wins, a subscription can never downgrade a granted
+  account, revoking a grant leaves a paying subscriber on their paid tier — and `users.plan` is
+  still never written by billing, which is the whole reason V9 kept them separate. `UNLIMITED` is
+  unrepresentable in `user_subscriptions.tier` by a database CHECK, so "granted" and "paid" stay
+  distinguishable forever.
+* **Limits are nullable PER ALLOWANCE.** MAX is "ten spaces, unlimited ITEMS", which a single
+  all-or-nothing null cannot express. `PlanLimitsResponse` is therefore always an OBJECT with two
+  nullable members, superseding BR-11's "limits is null for UNLIMITED" — the one surviving rule is
+  "a null is exactly one thing, no ceiling on that allowance". The shipped Android build reads it
+  unchanged (verified against the files: both members already nullable, `PlanAllowance` already
+  per-allowance, `ignoreUnknownKeys = true`).
+* **One finder, one reduction, one combine.** An earlier cut had the guard and the report reach the
+  tier through two different queries with a duplicated five-predicate WHERE clause. They now share
+  `entitlingOf` and a single private `effectiveTierOf(granted, subscribed)`; a unit test asserts the
+  two public entry points agree on grant-wins, subscription-wins and the tie.
+* **State before product on the verify endpoint.** A non-entitling purchase is always 409 (retryable,
+  token kept), never a 400, because a 400 tells the client to throw the token away — and a
+  legitimate deferred downgrade keeps the OLD product on the token, which a strict product check
+  would have discarded as a lie. The tier is resolved from Google's line item, never the claim.
+* **Acknowledgement has no reconciler yet, so three things stand in for one.** Google auto-refunds an
+  unacknowledged purchase after 3 days — **5 minutes** for a test purchase, i.e. every purchase on
+  the closed track this wave exists to serve. So: the endpoint retries `acknowledge` with a short
+  bounded backoff; it NEVER short-circuits an entitling row whose `acknowledged` is false, however
+  recently it was verified; and `acknowledged` is on the wire so the client re-posts on the next
+  foreground instead of waiting 24 hours. Recorded as an interim substitute, not an optimisation.
+* **The fake Play port is refused under the `prod` profile.** Its tokens are guessable literals
+  (`fake-active-max`), so a production process running it would hand the top tier to anyone who
+  posted one — structurally unavailable beats merely unselected, because the most likely way
+  `PLAY_PROVIDER=fake` gets set is somebody fixing a boot failure at 2am.
+* **Two schema shapes exist only to stop a future 500.** `superseded_by` is a COMPOSITE self-FK to
+  `(id, user_id)`: one Play account can be signed into two whereis accounts, and a cross-user
+  supersession chain would abort the single-transaction `AccountDeletionService` on the
+  Play-mandated `DELETE /users/me`. And `user_subscriptions.user_id` has its own plain index,
+  because the partial entitling index cannot serve the FK cascade — every other users-referencing
+  table already has one.
+* **`last_event_time` is nullable and the verify endpoint never writes it.** Seeding the RTDN
+  high-water mark with `now()` would put it ahead of every notification already in flight for that
+  purchase, including the purchase notification itself, and the next wave's handler would discard
+  them all silently and unrecoverably.
+* **`whereis.limits.free.*` became `whereis.plans.*`**, and the app now REFUSES TO BOOT if a retired
+  key is still set — the rename is silent-failure-shaped (Spring ignores unknown properties and the
+  new defaults are the same two numbers). `deploy/README.md` Step 10 was rewritten around the new
+  names, the monotonicity rule (raising a lower tier requires raising every tier above it, or
+  startup fails naming both keys), the V10 one-way-door rollback statement, the `OPERATOR` grant
+  snippet, and four promotion gates.
+* **Unarchiving stays deliberately unguarded** (an account at its item ceiling can unarchive to one
+  over) — the item exists and the user owns it, and refusing would make it permanently unrestorable,
+  which IS taking something away. Pinned by `PlanTierTransitionIT`.
+
+Five mutation checks were RUN rather than assumed: adding `requireRoomForAnotherItem` to
+`ItemService.update` fails the new ArchUnit rule (which is why that rule is per-method, not
+per-class — the first, class-level version passed); dropping `entitled_until > now()` from the
+entitlement query fails 4 ITs; adding a `Plan` constant without a migration fails `PlanTest`; adding
+a state to `entitles()` without the JPQL constant fails `SubscriptionStateTest`; and removing V10's
+`DROP CONSTRAINT ck_users_plan` fails `PlanTest` (the effective-CHECK scan, not a single-file regex).
+One real defect was found by an integration test rather than by reasoning: `SubscriptionWriter.upsert`
+updated another account's row when a second POST won the insert during the Google round trip, and
+answered the caller 200 with a body showing FREE. The ownership check now lives on both write paths.
+
+Suites: **unit 334** (+113), **integration 109 across 17 classes** (+40: `PlanPurchaseIT` 18,
+`PlanTierTransitionIT` 8, `UserSubscriptionMappingIT` 8, `PlanStatusIT` +6). New dependencies:
+`com.google.apis:google-api-services-androidpublisher:v3-rev20260909-2.0.0` and
+`com.google.auth:google-auth-library-oauth2-http:1.52.0` — compiled, never exercised by `test` or
+`integrationTest`, which both run the fake.
+
+**OUT OF SCOPE and therefore still broken** (all four are promotion gates in `deploy/README.md`
+Step 10): the RTDN webhook handler (`play_notifications` exists and is empty), the acknowledgement
+reconciler, the voided-purchase sweep (so a refunded annual purchase keeps entitling for up to a
+year), and upgrade/downgrade proration. Also still open: Play Console does not exist, so the three
+product ids and the base plan id `annual` are assumptions nothing verifies; there is no Play service
+account or Pub/Sub topic; and `user_subscriptions` storing a Google purchase token is not mentioned
+by the privacy page.
+
 ## 9. Future extension points (design for, do not build)
 
 pgvector/semantic search behind the SearchService port · shared household accounts · QR/NFC
 tags · reminders · real image object detection · notifications · Elasticsearch only if scale
-demands. **Subscriptions (Play Billing + RTDN)**: designed for, not built — the entitlement check is
-already one method (`PlanLimitEnforcer#hasUnlimitedEntitlement`) so the rule can become
-`plan = 'UNLIMITED' OR active subscription`; give the subscription its OWN state and never let an
-expiry write `users.plan`. Prefer simplicity; no premature microservices or event sourcing.
+demands. **Subscriptions (Play Billing + RTDN)**: the ladder, the schema, the port and the verify endpoint
+SHIPPED 2026-09-19 (BR-12). Still to build, in this order: the RTDN webhook handler (the ledger and
+its ordering guarantees already exist), the acknowledgement reconciler, the voided-purchase sweep
+(`purchases.voidedpurchases.list` defaults to `type=0`, one-time products — subscriptions need
+`type=1`), and upgrade/downgrade proration (`linked_purchase_token` and `superseded_by` are there;
+the replacement mode is a pricing decision). The next wave's hard contract: resolve
+`linkedPurchaseToken` with a userId-SCOPED finder, never the global `findByPurchaseToken`, or the
+composite self-FK turns a cross-account link into a 500 on account deletion. Prefer simplicity; no premature microservices or event sourcing.
