@@ -65,6 +65,9 @@ class AccountDeletionIT extends AbstractIntegrationTest {
     /** Driven by hand: the scheduled flag is off in the shared IT context so one pass is assertable. */
     @Autowired
     private az.technest.whereis.plan.reconcile.PlayCancellationJanitor janitor;
+    /** Same reason. The RTDN ledger's retention sweep — the half account deletion cannot reach. */
+    @Autowired
+    private az.technest.whereis.plan.reconcile.PlayNotificationJanitor notificationJanitor;
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
@@ -485,6 +488,75 @@ class AccountDeletionIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void deletingTheAccountAlsoPurgesTheRtdnLedgerRowsItCanStillBeLinkedTo() {
+        // THE GAP THIS CLOSES. play_notifications had no delete of any kind, so the table kept
+        // Google's purchase tokens, order ids, product ids and raw payload jsonb indefinitely —
+        // outliving the "hard delete" /legal/delete-account promises. There is no user_id and no
+        // foreign key on that table by V10's design (a notification can arrive for a token this
+        // server has never seen), so the ONLY linkage is the purchase token, and the join that
+        // resolves it goes through user_subscriptions — which is why the purge runs inside the
+        // deletion transaction and before the users cascade.
+        Account alice = buildAccount(1, 1, 0);
+        String aliceToken = "fake-active-pro-" + UUID.randomUUID();
+        buy(alice.token(), aliceToken, "whereis_pro_annual");
+
+        Account bob = buildAccount(1, 1, 0);
+        String bobToken = "fake-active-pro-" + UUID.randomUUID();
+        buy(bob.token(), bobToken, "whereis_pro_annual");
+
+        // Two ledger rows for Alice's token and one for Bob's. Written through the real push
+        // endpoint, so the rows are exactly the shape the handler produces.
+        pushRenewal(aliceToken, nowMillis());
+        pushRenewal(aliceToken, nowMillis() + 1);
+        pushRenewal(bobToken, nowMillis());
+        assertThat(ledgerRowsFor(aliceToken)).isEqualTo(2);
+        assertThat(ledgerRowsFor(bobToken)).isEqualTo(1);
+        awaitQuietJanitorWindow();
+
+        assertThat(deleteAccount(alice).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        assertThat(ledgerRowsFor(aliceToken))
+                .as("every notification linkable to the deleted account goes with it")
+                .isZero();
+        assertThat(ledgerRowsFor(bobToken))
+                .as("another subscriber's ledger is untouched — the purge is scoped by token, not global")
+                .isEqualTo(1);
+        // And the cancellation outbox is NOT what was purged: the token has to survive there for
+        // the retry window the public page states, or Google keeps billing a deleted account.
+        assertThat(count("select count(*) from play_cancellation_queue where purchase_token = ?",
+                aliceToken))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void theRetentionSweepAgesOutWhatTheAccountPurgeCannotReachAndKeepsTheRest() {
+        // The second half, and it exists because the first one cannot see these rows at all: a
+        // notification for a token no account ever claimed, and a notification that arrives AFTER
+        // the deletion, when its token no longer resolves to anybody. Without this the ledger grows
+        // forever whatever account deletion does.
+        // No local subscription row for either: the handler records NO_LOCAL_ROW, which is exactly
+        // the row account deletion can never attribute to anybody.
+        String orphanToken = "fake-active-pro-" + UUID.randomUUID();
+        pushRenewal(orphanToken, nowMillis());
+        assertThat(ledgerRowsFor(orphanToken)).isEqualTo(1);
+
+        String recentToken = "fake-active-pro-" + UUID.randomUUID();
+        pushRenewal(recentToken, nowMillis());
+
+        // Age the first one past the window the public pages state. received_at is our own clock and
+        // is what the sweep gates on — not Google's event time, which V11 lets a MALFORMED row omit.
+        jdbc.update("update play_notifications set received_at = now() - interval '31 days'"
+                + " where purchase_token = ?", orphanToken);
+
+        notificationJanitor.runOnce();
+
+        assertThat(ledgerRowsFor(orphanToken)).as("older than the retention window").isZero();
+        assertThat(ledgerRowsFor(recentToken))
+                .as("inside the window: a redelivery must still collide with the primary key")
+                .isEqualTo(1);
+    }
+
+    @Test
     void deletingTwiceOverTheSameUndrainedTokenStillAnswers204() {
         // THE SEQUENCE THAT WOULD HAVE BROKEN THE PLAY-MANDATED ENDPOINT. ux_user_subscriptions_
         // purchase_token is global, so two LIVE accounts can never hold the same token — the
@@ -572,6 +644,23 @@ class AccountDeletionIT extends AbstractIntegrationTest {
     private void makeDue(String purchaseToken) {
         jdbc.update("update play_cancellation_queue set next_attempt_at = now() - interval '1 minute'"
                 + " where purchase_token = ?", purchaseToken);
+    }
+
+    private int ledgerRowsFor(String purchaseToken) {
+        return count("select count(*) from play_notifications where purchase_token = ?", purchaseToken);
+    }
+
+    /** One SUBSCRIPTION_RENEWED (type 2) push, through both auth checks, with a fresh message id. */
+    private void pushRenewal(String purchaseToken, long eventTimeMillis) {
+        ResponseEntity<String> pushed = postRtdn(UUID.randomUUID().toString(),
+                subscriptionNotification(eventTimeMillis, 2, purchaseToken));
+        assertThat(pushed.getStatusCode().is2xxSuccessful())
+                .as("the push must be acked, not nacked: %s", pushed.getStatusCode())
+                .isTrue();
+    }
+
+    private static long nowMillis() {
+        return System.currentTimeMillis();
     }
 
     private ResponseEntity<JsonNode> buy(String token, String purchaseToken, String productId) {

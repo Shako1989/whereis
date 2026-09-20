@@ -327,6 +327,23 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
   nacked, and the same garbage was redelivered for the full 7-day retention with nothing recorded.
   For that outcome `payload` holds the RAW PUB/SUB ENVELOPE (it parsed, or there would be no
   messageId and hence no row) rather than the decoded notification.
+  **Rows now LEAVE this table, by two mechanisms that close different holes** (2026-09-20 — until
+  then `PlayNotificationRepository` had no delete of any kind and the table kept purchase tokens,
+  order ids, product ids and Google's raw payload jsonb forever, outliving the hard delete
+  `/legal/delete-account` promises). `deleteAllLinkedToUser` runs INSIDE the deletion transaction
+  and is scoped by `purchase_token IN (select … from user_subscriptions where user_id = ?)` — the
+  ONLY linkage the table offers, hence the ordering constraint above. `deleteAllReceivedBefore`
+  (behind `PlayNotificationJanitor`) ages out what the first cannot see at all: a token no account
+  ever claimed, and a notification that arrives AFTER the deletion. It gates on `received_at` (NOT
+  NULL, our own clock; V11 lets a MALFORMED row omit `event_time_millis`) and **cannot break either
+  invariant the ledger exists for**: the fallback watermark is `max(event_time_millis)` per token, so
+  deleting only rows older than the window either leaves the max untouched or removes every row for
+  that token — and then every removed event is older than anything that can still arrive, because
+  Pub/Sub stops redelivering after its own 7-day message retention, so a null watermark accepts the
+  same events a preserved one would have. Idempotency has the same 7-day bound. The window is
+  `whereis.legal.billing-log-retention-days` (30), **the same property both public pages are rendered
+  from**, and a value ≤ 7 is a STARTUP FAILURE rather than a clamp. No index and no migration: both
+  existing indexes are partial, and a daily sequential scan at this table's size is cheaper.
 - `user_subscriptions.pending_product_id` (V11): Google's `lineItem.deferredItemReplacement.productId`
   — the product this subscription BECOMES at term end. Stored as Google's id and NOT as a tier,
   deliberately the opposite choice from `tier`: `tier` is frozen at verification time so re-pointing
@@ -353,10 +370,14 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
 - Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java
   enums; each has a test that computes the effective constraint across migrations (`PlanTest`,
   `SubscriptionStateTest`, `SubscriptionTierTest`, `PurchaseProvenanceTest`, `AssistantOutcomeTest`).
-- **Account deletion order is play_cancellation_queue → assistant messages → items → locations →
-  spaces → user, with the storage_deletion_queue rows enqueued BEFORE the item cascade** (the Play
+- **Account deletion order is play_cancellation_queue → play_notifications purge → assistant messages
+  → items → locations → spaces → user, with the storage_deletion_queue rows enqueued BEFORE the item
+  cascade** (the Play
   cancellations go FIRST because stopping the money comes before dismantling the account, and because
-  the `user_subscriptions` rows they read cascade away with the `users` row at the end; assistant
+  the `user_subscriptions` rows they read cascade away with the `users` row at the end; the RTDN
+  ledger purge goes SECOND and has the same deadline for the same reason — `play_notifications` has no
+  `user_id`, so the only linkage is the purchase token and the join runs through `user_subscriptions`,
+  which means moving this step after `userRepository.delete` silently purges NOTHING; assistant
   messages go next so their item_id/space_id SET NULL triggers never fire inside the two bulk deletes
   and the summary count is exact) (`item_files` cascades from `items`, which erases the object keys).
   Items must go first because `items.current_location_id` is RESTRICT (checked immediately); the whole
@@ -514,7 +535,8 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
   NaN-proof (`x >= min && x <= max`, never `!(x < min)`).
 - Batch, never per-row: location paths and primary images resolve in one query per page.
 - Never log credentials, tokens, or user messages above DEBUG.
-- Account deletion: **Play cancellations enqueued FIRST**, then outbox rows before the item cascade;
+- Account deletion: **Play cancellations enqueued FIRST, then the `play_notifications` purge**, then
+  outbox rows before the item cascade;
   assistant messages → items → locations → spaces → user; per-space
   advisory locks taken first in ascending id order; zero MinIO calls, zero PLAY calls and no
   afterCommit sweep in the request path (two janitors drain the two outboxes);
@@ -525,8 +547,8 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 491 unit tests — must stay green without Docker OR network
-./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 163 tests — needs Docker
+./gradlew build              # compile + 497 unit tests — must stay green without Docker OR network
+./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 171 tests — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
 
@@ -1047,9 +1069,10 @@ settled (the server is correct either way); account deletion refunds nothing, wh
 decision now stated on a public page and wants a human sign-off (`subscriptionsv2.revoke` DOES exist
 in the pinned client — an earlier draft claimed otherwise); nothing notices if RTDN stops arriving;
 the reconciler's ceiling is ~1,200 live subscriptions and it WARNs rather than failing when it falls
-behind; and `play_notifications` is deliberately not deleted by account deletion (no `user_id`,
-because a notification can arrive for a token this server has never seen), which is the one billing
-retention question the privacy page still does not answer.
+behind. ~~`play_notifications` is deliberately not deleted by account deletion, which is the one
+billing retention question the privacy page still does not answer~~ — CLOSED 2026-09-20 (see the
+last entry in this section): the rows that CAN be linked to the account go with it, the rest age
+out, and both pages state it.
 
 **2026-09-20 — `disabled`: billing switched off, deliberately, so whereis can deploy before Play
 Billing credentials exist.** The two billing waves left `deploy/docker-compose.prod.yml` with seven
@@ -1126,7 +1149,7 @@ Suites: **unit 491** (+19), **integration 163 across 22 classes** (+12: `Billing
 REPLACED rather than deleted — it asserted the very placeholders this change had to relax, and its
 successor pins the new invariant (safe defaults in `application-prod.yml` + the conditional
 refusal). Docs: `deploy/docker-compose.prod.yml` (which variables keep `:?` and why: the legal
-five do, because a missing one is a mistake rather than a fact about the world), `deploy/.env.example`,
+ones do, because a missing one is a mistake rather than a fact about the world), `deploy/.env.example`,
 `deploy/README.md` Step 10 (deploy-now) and new Step 11e (switch-on, and switch-off as incident
 response), `docs/ANDROID_APP_PROMPT.md` §3.8c + the error-code list.
 
@@ -1136,6 +1159,75 @@ recording: `PLAY_PROVIDER` explicitly set to the EMPTY string (rather than absen
 `fake` and so fails startup under prod. Compose's `:-disabled` covers the realistic path and the
 failure is loud and fail-closed, so it was left alone rather than changing what blank means to
 `PlayProperties` — which would have altered the development default too.
+
+**2026-09-20 — five public claims the code did not support, fixed before the Play submission.**
+Play cross-checks the Data safety declaration against the privacy policy, so a page that overstates
+the system is a false attestation. An audit of `deploy/`, the RTDN ledger, the Android client and
+`ClaudeAssistant` against the two pages found five mismatches, and in every one the PAGE was wrong.
+Four were corrected on the pages **in both languages**; one was corrected in the CODE, because
+weakening the promise was the wrong repair.
+
+1. **"Encrypted backups" was false.** `deploy/db_backup.sh` is `pg_dump | gzip` and `tar czf` — no
+   gpg, no openssl anywhere. The claim came off both pages (AZ and EN on each) and the rest of the
+   sentence stayed accurate; the script gained a header comment recording that the pages no longer
+   claim it, and what adding it would need (a passphrase, somewhere OFF this box to keep it, a
+   tested restore path). Encryption was deliberately NOT added: it needs a key-custody decision
+   that is the owner's, not a code change.
+2. **`play_notifications` outlived the "hard delete".** Closed in code — see §4's ledger bullet and
+   the deletion order, and the new `PlayNotificationPurgeService` / `PlayNotificationJanitor`.
+   **What the table actually offered was only `purchase_token`** (plus `order_id`/`product_id`,
+   which identify the purchase and not the person): V10 gave it no `user_id` and no FK on purpose,
+   so "this account's rows" is a join through `user_subscriptions` and is answerable ONLY before the
+   `users` cascade — which is what pinned the purge to second place in the order and is what
+   `AccountDeletionServiceTest`'s `InOrder` now protects. 30 days for the age-based half, with a
+   startup refusal at ≤ 7, because Pub/Sub's own message retention is the floor both the watermark
+   and the primary-key idempotency depend on. The window is a `whereis.legal.*` property read by
+   BOTH the pages and the janitor — the third time that coupling has been the right answer here.
+3. **"No analytics or tracking SDKs are used" was imprecise**: Play Billing 9.1.0 carries Google's
+   own CCT transport. Narrowed to what WE integrated (nothing), with the Billing Library named as
+   the component that carries Google's own.
+4. **Voice input was undisclosed.** `AssistantScreen.kt` fires `ACTION_RECOGNIZE_SPEECH` and reads
+   back only `EXTRA_RESULTS`, so the device's recognizer holds the microphone and whereis receives
+   text. Both pages now say so, each in its own register — the notice discloses the collection and
+   that the audio may be processed off-device under that provider's terms; the deletion page answers
+   its own reader's question ("there are no recordings to delete, because we never hold any"). This
+   is what makes "Audio files: not collected" on the form an honest answer. The app requests no
+   `RECORD_AUDIO` permission, which is consistent.
+5. **The Anthropic paragraph now describes a PROCESSOR relationship** — on our behalf, under our
+   instructions, not used for training per their API terms — which is what supports answering
+   "Shared: No", and it stops short of claiming an audit nobody here has done. Corrected on the way:
+   what is actually sent is the sanitized sentence **plus up to 20 of the user's own space names on
+   EVERY remember call**, appended to the system prompt whether or not the sentence mentions one
+   (`ClaudeAssistant#placementSystem`). The page said "together with the names of your spaces",
+   which understated both the cap and the unconditionality.
+
+`LegalPagesIT` gained five tests, each asserting BOTH halves — the corrected claim present in AZ
+and EN, and the overstatement absent — because a page promise with no test is exactly how this
+drift happened, and because a fix applied to one language reads as deliberate rather than as an
+oversight. Three mutation checks were RUN: removing the purge call fails
+`AccountDeletionServiceTest#happyPathRunsTheCascadeInTheOnlyOrderTheForeignKeysAllow` AND
+`AccountDeletionIT#deletingTheAccountAlsoPurgesTheRtdnLedgerRowsItCanStillBeLinkedTo`;
+re-introducing "Encrypted backups" in ENGLISH ONLY fails
+`LegalPagesIT#neitherPageClaimsTheBackupsAreEncryptedBecauseTheyAreNot`; setting the window to 7
+refuses to boot with a message naming the property, the value and the Pub/Sub reason.
+
+Suites: **unit 497** (+6: `PlayNotificationJanitorTest` 5, `LegalPagesTest` +1), **integration 171
+across 22 classes** (+8: `LegalPagesIT` +5, `AccountDeletionIT` +2, `BillingDisabledProdIT` +1 —
+the assertion that the retention sweep is the ONE scheduled billing component that does NOT gate on
+`billingConfigured()`, because it calls nothing and billing being off must not stop a retention
+promise being kept). No migration: the purge needs no schema change, and both existing indexes on
+the table are partial so neither serves the age predicate — a daily sequential scan at this size is
+cheaper than a V12. Docs: `deploy/README.md` (the backup section states plainly that the artefacts
+are not encrypted; the legal table is now seven rows), `deploy/.env.example`,
+`deploy/docker-compose.prod.yml`, `application-prod.yml`.
+
+**Still open, found while fixing the pages and NOT fixed here:** (a) the backups are unencrypted and
+on the box's only disk — the pages are now honest about the first and silent about the second, and
+both want the same off-box decision; (b) `assistant_messages` rows are kept for the life of the
+account with no purge job (a 2026-09-16 decision), which is consistent with the pages but means the
+only bound on assistant text is account deletion; (c) the privacy notice still describes the
+`openai` provider as a possibility, which production does not use — accurate but vague, and it is
+the kind of "depending on configuration" wording a reviewer can reasonably ask to have pinned down.
 
 ## 9. Future extension points (design for, do not build)
 

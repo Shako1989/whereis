@@ -335,6 +335,17 @@ metadata rows, so both must be captured together. Add to root's crontab:
 > Retention is 14 days per artefact kind, which is what
 > `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS=14` in `.env` promises the user.
 >
+> **The artefacts are NOT encrypted, and the public pages no longer say they are.** A dump is
+> `pg_dump | gzip` and the object store is `tar czf`; there is no gpg and no openssl in the script.
+> Both legal pages described "encrypted backups" in both languages until 2026-09-20, which on the
+> two URLs Play cross-checks against the Data safety form is a false attestation — so the claim was
+> removed from the pages rather than encryption added here. Adding it is an owner decision, not a
+> code change: it needs a passphrase, a place to keep it that is **not this box** (a key beside the
+> ciphertext protects against nothing that matters), and a tested restore path. The header comment
+> in `deploy/db_backup.sh` carries the same note and the two commands that would do it. If it is
+> ever added, put the claim back on **both pages in both languages** and add the assertion to
+> `LegalPagesIT`.
+>
 > The MinIO archive is a **hot copy** — read from the volume while the server runs, so an object
 > being written at that instant can land torn. Accepted: objects are independent files, so the
 > blast radius is that one photo rather than the archive, and the alternative is stopping MinIO
@@ -364,7 +375,7 @@ Data deletion URL : https://$WHEREIS_API_HOST/legal/delete-account
 Privacy policy URL: https://$WHEREIS_API_HOST/legal/privacy
 ```
 
-The two files under `src/main/resources/legal/` are no longer edited at all — set the **six**
+The two files under `src/main/resources/legal/` are no longer edited at all — set the **seven**
 `WHEREIS_LEGAL_*` values in `.env` and the app renders them at startup. A missing value FAILS
 STARTUP rather than serving a literal `{{SUPPORT_EMAIL}}` to a reviewer:
 
@@ -376,6 +387,7 @@ STARTUP rather than serving a literal `{{SUPPORT_EMAIL}}` to a reviewer:
 | `WHEREIS_LEGAL_EFFECTIVE_DATE` | the date the notice takes effect |
 | `WHEREIS_LEGAL_BACKUP_RETENTION_DAYS` | how long deleted data can persist in backups. `14`, matching the rotation in `deploy/db_backup.sh`. Change both together or the page lies. |
 | `WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS` | how long a Google purchase token is kept after deletion, while the Play cancellation is retried. `7`. **`PlayCancellationJanitor` reads the same property as its give-up deadline**, so the code and the page cannot drift. |
+| `WHEREIS_LEGAL_BILLING_LOG_RETENTION_DAYS` | how long a Google billing notification stays in the RTDN ledger (`play_notifications`). `30`. **`PlayNotificationJanitor` reads the same property as its cutoff.** A value of 7 or less is a **startup failure**, not a clamp: Pub/Sub redelivers an unacknowledged message for up to 7 days and `message_id` is what makes a redelivery a no-op. |
 
 **Both pages changed in the V11 release and both must be re-read before submission.** They now
 state what happens to a Google Play subscription when the account is deleted — including that the
@@ -556,12 +568,12 @@ voided-purchase sweep and cancellation janitor will not run. Free-tier limits,
 GET /users/me/plan and 409 PLAN_LIMIT_REACHED are unaffected.
 ```
 
-One legal value IS still required (it is `:?` in compose), because it is rendered into the public
-account-deletion page and read by `PlayCancellationJanitor` as its give-up deadline, so the two
-cannot drift:
+Two legal values ARE still required (both `:?` in compose), because each is rendered into the
+public pages **and** read by the component that has to honour it, so neither can drift:
 
 ```sh
 WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS=7
+WHEREIS_LEGAL_BILLING_LOG_RETENTION_DAYS=30
 ```
 
 ### The refusals that replaced compose's `:?`

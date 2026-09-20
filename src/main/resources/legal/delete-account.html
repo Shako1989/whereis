@@ -61,13 +61,19 @@
     <li>həmin məkanlardakı bütün yerləşmə ağacı (otaqlar, mebel, siyirmələr, qutular…);</li>
     <li>bütün <em>əşyalarınız</em>;</li>
     <li>əşyaların tam hərəkət tarixçəsi;</li>
-    <li>köməkçiyə yazdığınız hər bir cümlə, modelin şərhi ilə birlikdə;</li>
+    <li>köməkçiyə yazdığınız — və ya səslə dediyiniz — hər bir cümlə, modelin şərhi ilə birlikdə;</li>
     <li>bütün əşya fotolarının məlumatları (metadata);</li>
     <li>Google Play abunəliyinizin bu tətbiqdəki qeydi — məhsul, səviyyə, vəziyyət və bitmə tarixi;</li>
+    <li>Google-un həmin abunəlik barədə göndərdiyi bildirişlərin texniki jurnalındakı qeydlər —
+      hesabınızla əlaqələndirilə bilən hər bir qeyd;</li>
     <li>bütün aktiv sessiyalar və yeniləmə tokenləri — bütün cihazlardan çıxış edilir.</li>
   </ul>
   <p>Fotoların özləri obyekt yaddaşından <strong>asinxron şəkildə, hesab silindikdən qısa müddət sonra</strong>
     silinir. Hesab silinən andan etibarən onlara heç bir yeni giriş linki yaradıla bilməz.</p>
+  <p><strong>Səs yazıları silinmir, çünki heç vaxt bizdə olmur.</strong> Köməkçidə mikrofon
+    düyməsindən istifadə etdikdə nitqi cihazınızın öz nitq tanıma xidməti emal edir və biz yalnız
+    onun qaytardığı mətni alırıq. Həmin mətn yuxarıdakı siyahıda göstərildiyi kimi, əlinizlə
+    yazdığınız cümlə ilə eyni qaydada silinir.</p>
 
   <h3>Google Play abunəliyi</h3>
   <p>whereis abunəliklərinin ödənişini <strong>whereis yox, Google Play</strong> aparır. whereis
@@ -102,11 +108,17 @@
   </div>
 
   <h3>Saxlanma müddəti</h3>
-  <p>Şifrələnmiş verilənlər bazası ehtiyat nüsxələri məlumatlarınızı silinmədən sonra ən çox
+  <p>Verilənlər bazasının ehtiyat nüsxələri məlumatlarınızı silinmədən sonra ən çox
     <strong>{{BACKUP_RETENTION_DAYS}} gün</strong> ərzində saxlaya bilər; bu müddətdən sonra nüsxələr
     avtomatik olaraq rotasiya ilə silinir. Ehtiyat nüsxələr yalnız fəlakət halında bərpa üçün istifadə
     olunur və silinmiş hesabı geri qaytarmaq üçün istifadə edilmir. Heç bir məlumat marketinq və ya
     profilləşdirmə məqsədi ilə saxlanılmır.</p>
+  <p>Google abunəlikdəki dəyişikliklər barədə bizə bildiriş göndərir; hesabınızla əlaqələndirilə
+    bilən bildirişlər yuxarıda deyildiyi kimi hesabla birlikdə silinir. Hesab silindikdən
+    <em>sonra</em> gələn bildiriş isə artıq heç bir hesaba bağlanmır — belə qeydlər
+    <strong>{{BILLING_LOG_RETENTION_DAYS}} gündən sonra</strong> tamamilə silinir. Bu müddət
+    təsadüfi seçilməyib: Google təsdiq alınmayana qədər həmin bildirişi bir həftə ərzində təkrar göndərə
+    bilər və qeydin özü həmin bildirişin iki dəfə tətbiq edilməsinin qarşısını alır.</p>
 
   <p>Suallarınız üçün: <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>.
     Məxfilik bildirişi: <a href="/legal/privacy">/legal/privacy</a>.</p>
@@ -147,13 +159,19 @@
     <li>the entire location tree within them (rooms, furniture, drawers, boxes, …);</li>
     <li>all your <em>items</em>;</li>
     <li>the complete movement history of every item;</li>
-    <li>every sentence you typed to the assistant, with its interpretation;</li>
+    <li>every sentence you typed — or dictated — to the assistant, with its interpretation;</li>
     <li>all photo metadata;</li>
     <li>the record of your Google Play subscription in this app — product, tier, state and expiry date;</li>
+    <li>every entry in the technical log of Google's notifications about that subscription that can
+      be linked to your account;</li>
     <li>every active session and refresh token — you are signed out on all devices.</li>
   </ul>
   <p>The photo files themselves are removed from object storage <strong>asynchronously, shortly after
     the account is deleted</strong>. From the moment of deletion no new access link to them can be issued.</p>
+  <p><strong>There are no voice recordings to delete, because we never hold any.</strong> When you
+    use the assistant's microphone button, your device's own speech service does the recognition and
+    we receive only the text it returns. That text is deleted with everything else above, exactly as
+    a sentence you had typed.</p>
 
   <h3>Google Play subscriptions</h3>
   <p>whereis subscriptions are billed by <strong>Google Play, not by whereis</strong>. Deleting your
@@ -188,10 +206,16 @@
   </div>
 
   <h3>Retention</h3>
-  <p>Encrypted database backups may still contain your data for up to
+  <p>Database backups may still contain your data for up to
     <strong>{{BACKUP_RETENTION_DAYS}} days</strong> after deletion, after which they rotate out
     automatically. Backups are used only for disaster recovery and are never used to restore a deleted
     account. Nothing is retained for marketing or profiling.</p>
+  <p>Google sends us notifications about changes to a subscription. Those that can be linked to your
+    account are deleted with it, as listed above. One that arrives <em>after</em> the account is gone
+    can no longer be linked to anybody, and entries like that are deleted in full
+    <strong>after {{BILLING_LOG_RETENTION_DAYS}} days</strong>. That period is not arbitrary: Google
+    can re-send a notification for up to a week until it is acknowledged, and the entry is what stops
+    the same notification being applied twice.</p>
 
   <p>Questions: <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>.
     Privacy notice: <a href="/legal/privacy">/legal/privacy</a>.</p>

@@ -1,6 +1,7 @@
 package az.technest.whereis.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import az.technest.whereis.auth.dto.RegisterRequest;
@@ -18,6 +19,7 @@ import az.technest.whereis.plan.play.DisabledPlaySubscriptionsApi;
 import az.technest.whereis.plan.play.PlayBillingNotConfiguredException;
 import az.technest.whereis.plan.play.PlaySubscriptionsApi;
 import az.technest.whereis.plan.reconcile.PlayCancellationJanitor;
+import az.technest.whereis.plan.reconcile.PlayNotificationJanitor;
 import az.technest.whereis.plan.reconcile.SubscriptionReconciler;
 import az.technest.whereis.plan.reconcile.VoidedPurchaseSweeper;
 import az.technest.whereis.plan.rtdn.DisabledPlayPushAuthenticator;
@@ -123,7 +125,7 @@ class BillingDisabledProdIT {
         // application-test.yml is NOT active here, so the secret has to come from somewhere.
         registry.add("security.jwt.secret", () -> "prod-profile-integration-secret-0123456789");
 
-        // The six values application-prod.yml declares with no default. They render the two public
+        // The seven values application-prod.yml declares with no default. They render the two public
         // legal pages and LegalPages refuses to boot on a leftover marker, so they are genuinely
         // required of any prod deployment — unlike the Play values, which are the subject here.
         registry.add("whereis.legal.support-email", () -> "support@example.com");
@@ -132,6 +134,9 @@ class BillingDisabledProdIT {
         registry.add("whereis.legal.effective-date", () -> "2026-09-20");
         registry.add("whereis.legal.backup-retention-days", () -> "14");
         registry.add("whereis.legal.cancellation-retry-days", () -> "7");
+        // PlayNotificationJanitor reads this one as well, and refuses to boot at 7 or below — so a
+        // prod context starting at all is also the proof that the floor accepts the shipped value.
+        registry.add("whereis.legal.billing-log-retention-days", () -> "30");
 
         // AND NOTHING ELSE. No whereis.play.provider, no rtdn verifier, no shared secret, no
         // audience, no service-account email, no service-account key. Adding any of them here
@@ -163,6 +168,9 @@ class BillingDisabledProdIT {
 
     @Autowired
     private PlayCancellationJanitor cancellationJanitor;
+
+    @Autowired
+    private PlayNotificationJanitor notificationJanitor;
 
     // ---------------------------------------------------------------- 1. it starts at all
 
@@ -380,6 +388,20 @@ class BillingDisabledProdIT {
 
         assertThatThrownBy(() -> voidedSweeper.runOnce())
                 .isInstanceOf(PlayBillingNotConfiguredException.class);
+    }
+
+    /**
+     * <strong>The FOURTH scheduled component is deliberately not gated the same way.</strong> The
+     * three above call the Play API, so under {@code provider=disabled} a tick would throw on its
+     * first row forever. The ledger retention sweep makes no Play call — it is one {@code DELETE} —
+     * and a deployment that switches billing off must still purge the ledger it accumulated while
+     * billing was on. Gating it on the provider would turn "billing is off" into "the retention
+     * promise on two public pages stopped being kept", silently. So it runs here, and it must.
+     */
+    @Test
+    void theLedgerRetentionSweepStillRunsWithBillingDisabledBecauseItCallsNothing() {
+        assertThatCode(() -> notificationJanitor.sweep()).doesNotThrowAnyException();
+        assertThatCode(() -> notificationJanitor.runOnce()).doesNotThrowAnyException();
     }
 
     // ---------------------------------------------------------------------------- helpers

@@ -183,7 +183,7 @@ class PlayCancellationJanitorTest {
 
     private static LegalProperties legal(String cancellationRetryDays) {
         return new LegalProperties("a@b.c", "Entity", "Address", "2026-01-01", "14",
-                cancellationRetryDays);
+                cancellationRetryDays, "30");
     }
 
     /**
@@ -208,7 +208,7 @@ class PlayCancellationJanitorTest {
 
     private static ReconcileProperties properties(boolean enabled) {
         return new ReconcileProperties(null, null,
-                new ReconcileProperties.Cancellation(enabled, 20));
+                new ReconcileProperties.Cancellation(enabled, 20), null);
     }
 
     private static PlanCatalog catalog() {

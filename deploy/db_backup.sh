@@ -22,11 +22,31 @@
 # REMAINING GAP, not solved here: every copy lives on this box's only disk. That covers a dropped
 # table or a bad deploy; it does NOT cover losing the VM or the disk. An off-box destination needs
 # a target and credentials and is a separate decision.
+#
+# NOT ENCRYPTED, AND THE PUBLIC PAGES NO LONGER SAY IT IS. Both /legal/privacy and
+# /legal/delete-account used to describe these artefacts as "encrypted backups" / "şifrələnmiş
+# ehtiyat nüsxələr" in both languages. Nothing below encrypts anything — a dump is `pg_dump | gzip`
+# and the object store is `tar czf` — so on 2026-09-20 the CLAIM was removed from the pages rather
+# than encryption bolted on here, because that is the owner's decision and not a code change:
+#
+#   * it needs a passphrase or key, and somewhere to keep it that is NOT this box (a key stored
+#     beside the ciphertext protects against nothing that matters — losing the disk loses both);
+#   * it needs a tested restore path, because an encrypted backup nobody can decrypt under pressure
+#     is worse than a plaintext one;
+#   * gpg --symmetric --batch --passphrase-file, or openssl enc -aes-256-cbc -pbkdf2, would slot
+#     into the two pipelines below with `set -o pipefail` already doing the right thing.
+#
+# If encryption is added, say so on BOTH pages in BOTH languages again, and add the assertion to
+# LegalPagesIT — the page and this script are the pair that has to move together, exactly like
+# RETENTION_DAYS below and WHEREIS_LEGAL_BACKUP_RETENTION_DAYS.
 
 set -uo pipefail
 
 BACKUP_DIR=/root/backups
 LOG=/root/backups/backup.log
+# MUST equal WHEREIS_LEGAL_BACKUP_RETENTION_DAYS in deploy/.env: that value is rendered into both
+# public legal pages as a promise about how long deleted data survives, and only this rotation can
+# make it true.
 RETENTION_DAYS=14
 DATE=$(date +%Y%m%d-%H%M)
 mkdir -p "$BACKUP_DIR"

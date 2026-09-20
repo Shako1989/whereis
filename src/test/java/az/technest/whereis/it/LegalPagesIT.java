@@ -89,6 +89,130 @@ class LegalPagesIT extends AbstractIntegrationTest {
         assertThat(body).contains("Google LLC");
     }
 
+    // ------------------------------------------------------------------------------------------
+    // The five claims an audit of the code against the pages found overstated on 2026-09-20. Each
+    // assertion below is BOTH halves — the corrected claim present in AZ and EN, and the
+    // overstatement absent — because a fix applied to one language reads as deliberate rather than
+    // as an oversight, and because the only thing that stops a future edit re-introducing a
+    // sentence is a test that names it.
+    // ------------------------------------------------------------------------------------------
+
+    @Test
+    void neitherPageClaimsTheBackupsAreEncryptedBecauseTheyAreNot() {
+        // deploy/db_backup.sh is `pg_dump | gzip` and `tar czf`. There is no gpg and no openssl in
+        // it, so "encrypted backups" / "şifrələnmiş ehtiyat nüsxələr" was a false attestation on the
+        // two URLs Play cross-checks against the Data safety declaration. The claim went; the rest
+        // of the sentence — the retention window, and what backups are for — stayed.
+        for (String path : new String[] {"/legal/privacy", "/legal/delete-account"}) {
+            String body = anonymousGet(path).getBody();
+            assertThat(body).as("%s must not claim encryption in English", path)
+                    .doesNotContainIgnoringCase("encrypted");
+            assertThat(body).as("%s must not claim encryption in Azerbaijani", path)
+                    .doesNotContainIgnoringCase("şifrələnmiş");
+        }
+
+        assertThat(anonymousGet("/legal/privacy").getBody())
+                .contains("Backups may hold deleted data")
+                .contains("Ehtiyat nüsxələr silinmiş məlumatları");
+        assertThat(anonymousGet("/legal/delete-account").getBody())
+                .contains("Database backups may still contain your data")
+                .contains("Verilənlər bazasının ehtiyat nüsxələri");
+    }
+
+    @Test
+    void bothPagesStateTheBillingNotificationLedgerAndItsRetentionWindow() {
+        // play_notifications used to outlive the "hard delete" this page promises: the table has no
+        // user_id, so nothing deleted its rows and it kept purchase tokens, order ids, product ids
+        // and Google's raw payload indefinitely. The code now purges the rows that can be linked to
+        // a deleted account and ages the rest out — and the window is RENDERED from
+        // whereis.legal.billing-log-retention-days, the same property PlayNotificationJanitor uses
+        // as its cutoff, never a literal in the HTML.
+        for (String path : new String[] {"/legal/privacy", "/legal/delete-account"}) {
+            String body = anonymousGet(path).getBody();
+            assertThat(body).as("%s, English", path).contains("30 days");
+            assertThat(body).as("%s, Azerbaijani", path).contains("30 gündən sonra");
+        }
+
+        // And the account-linked half, stated as a deletion rather than as a retention: the
+        // "what is deleted" list names the ledger entries in both languages.
+        assertThat(anonymousGet("/legal/delete-account").getBody())
+                .contains("be linked to your account;")
+                .contains("hesabınızla əlaqələndirilə bilən hər bir qeyd;");
+    }
+
+    @Test
+    void theAnalyticsClaimIsNarrowedToWhatWeIntegratedRatherThanWhatShipsInside() {
+        // "No analytics or tracking SDKs are used" was imprecise: Play Billing 9.1.0 carries
+        // Google's own CCT transport. The honest claim is about what WE added, with the Billing
+        // Library named as the exception — which is also what makes the Data safety answer
+        // defensible instead of contradicted by the app's own dependency list.
+        String body = anonymousGet("/legal/privacy").getBody();
+
+        assertThat(body).doesNotContain("No analytics or tracking SDKs are used");
+        assertThat(body).doesNotContain("izləmə SDK-ları istifadə edilmir");
+        assertThat(body)
+                .contains("We have integrated no analytics or tracking SDK into the app")
+                .contains("heç bir analitika və ya izləmə SDK-sı əlavə edilməmişdir");
+        // The exception named rather than implied: the Billing Library is what carries Google's own
+        // components, and it is there because the app sells subscriptions.
+        assertThat(body)
+                .contains("Billing Library")
+                .contains("Google Play Billing kitabxanası");
+    }
+
+    @Test
+    void bothPagesDiscloseVoiceInputAndThatNoAudioReachesTheServer() {
+        // AssistantScreen.kt fires RecognizerIntent.ACTION_RECOGNIZE_SPEECH and reads back only
+        // EXTRA_RESULTS, so the device's own recognizer holds the microphone and whereis receives
+        // text. Neither page mentioned voice, microphone or speech in either language, which is
+        // what would have made "Audio files: not collected" on the Data safety form an unsupported
+        // answer. The privacy notice discloses the collection; the deletion page answers the
+        // question its own reader has ("what happens to my recordings?").
+        String privacy = anonymousGet("/legal/privacy").getBody();
+        assertThat(privacy)
+                .contains("Voice input")
+                .contains("your device's own speech service")
+                .contains("No audio recording is sent to us or stored by us");
+        assertThat(privacy)
+                .contains("Səslə daxiletmə")
+                .contains("cihazınızın öz nitq tanıma xidməti")
+                .contains("Səs yazısı nə bizə göndərilir, nə də bizdə saxlanılır");
+
+        String deletion = anonymousGet("/legal/delete-account").getBody();
+        assertThat(deletion).contains("There are no voice recordings to delete");
+        assertThat(deletion).contains("Səs yazıları silinmir, çünki heç vaxt bizdə olmur");
+    }
+
+    @Test
+    void theAnthropicParagraphDescribesAProcessorAndTheSpaceNamesActuallySent() {
+        // Two halves of one paragraph. The Data safety form is answered "Shared: No" on the grounds
+        // that Anthropic processes data on the developer's behalf under the developer's
+        // instructions, so the page has to SUPPORT that rather than read as a disclosure to a third
+        // party — while stopping short of guarantees nobody here can verify.
+        String body = anonymousGet("/legal/privacy").getBody();
+
+        assertThat(body)
+                .contains("on our behalf, as a processor, and under our instructions")
+                .contains("bizim adımızdan, emalçı qismində və bizim göstərişimizlə");
+        assertThat(body)
+                .contains("not used to train their models")
+                .contains("modellərin təlimi üçün istifadə edilmir");
+        // Not an audit claim: the page says what the relationship is, not that we checked it.
+        assertThat(body)
+                .contains("independently audited")
+                .contains("proseslərini biz özümüz yoxlaya bilmirik");
+
+        // And what is ACTUALLY sent. ClaudeAssistant#placementSystem appends up to 20 of the
+        // caller's own space names to the system prompt on EVERY remember call, whether or not the
+        // sentence mentions a space — a page implying "only when you name one" understates it.
+        assertThat(body)
+                .contains("up to 20 of the names of your own spaces")
+                .contains("20-si də göndərilir");
+        assertThat(body)
+                .contains("on every such request")
+                .contains("hər dəfə");
+    }
+
     @Test
     void theHtmlFormOfTheUrlIsServedToo() {
         // The clean URL forwards to the .html resource; the target must be permitted as well.

@@ -4,16 +4,19 @@ import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Tuning for the three scheduled billing components. Bound from {@code whereis.play.reconcile.*},
- * {@code whereis.play.voided-sweep.*} and {@code whereis.play.cancellation.*} through one record so
- * the quota arithmetic below lives next to the numbers it is about.
+ * Tuning for the four scheduled billing components. Bound from {@code whereis.play.reconcile.*},
+ * {@code whereis.play.voided-sweep.*}, {@code whereis.play.cancellation.*} and
+ * {@code whereis.play.notification-retention.*} through one record so the quota arithmetic below
+ * lives next to the numbers it is about.
  *
  * <p><strong>Each component has its own {@code enabled} flag</strong>, and that is the operator's
- * answer to "we are now running two containers": all three are plain {@code @Scheduled} methods
+ * answer to "we are now running two containers": all four are plain {@code @Scheduled} methods
  * with no distributed lock, exactly like {@code StorageJanitor}. Correctness survives a second
  * instance — every write is idempotent and guarded by compare-and-set or write-once — but the Play
  * quota spend doubles, and the fix is to turn the sweeps off on all but one. Accepted limitation,
- * and the first thing to revisit if this ever scales horizontally.
+ * and the first thing to revisit if this ever scales horizontally. (The retention sweep is the one
+ * that costs no quota at all: it makes no Play call, so a second instance only repeats a DELETE
+ * that already matched nothing.)
  *
  * <p><strong>The reconciler's throughput CEILING, stated because it is a ceiling and not
  * headroom.</strong> A batch of 25 every 15 minutes is 2,400 {@code subscriptionsv2.get} calls a
@@ -36,14 +39,18 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param reconcile    drift repair and the acknowledgement retry
  * @param voidedSweep  the refund backstop
  * @param cancellation the account-deletion cancellation janitor
+ * @param notificationRetention the RTDN ledger retention sweep
  */
 @ConfigurationProperties("whereis.play")
-public record ReconcileProperties(Reconcile reconcile, VoidedSweep voidedSweep, Cancellation cancellation) {
+public record ReconcileProperties(Reconcile reconcile, VoidedSweep voidedSweep, Cancellation cancellation,
+                                  NotificationRetention notificationRetention) {
 
     public ReconcileProperties {
         reconcile = reconcile == null ? new Reconcile(null, null, null, null, null, null) : reconcile;
         voidedSweep = voidedSweep == null ? new VoidedSweep(null, null, null, null) : voidedSweep;
         cancellation = cancellation == null ? new Cancellation(null, null) : cancellation;
+        notificationRetention =
+                notificationRetention == null ? new NotificationRetention(null) : notificationRetention;
     }
 
     /**
@@ -110,6 +117,28 @@ public record ReconcileProperties(Reconcile reconcile, VoidedSweep voidedSweep, 
         public Cancellation {
             enabled = enabled == null || enabled;
             batchSize = batchSize == null || batchSize <= 0 ? 20 : batchSize;
+        }
+    }
+
+    /**
+     * @param enabled default true
+     *
+     * <p><strong>One flag and nothing else</strong>, because the only other number this component
+     * has is not ours to choose. How long a Google billing notification is kept is stated on BOTH
+     * public pages in both languages, so {@link PlayNotificationJanitor} reads it from
+     * {@code whereis.legal.billing-log-retention-days} — the same property the pages are rendered
+     * from, which {@code LegalPages} already refuses to boot without. That is the coupling
+     * {@code whereis.legal.cancellation-retry-days} has with the cancellation janitor and
+     * {@code WHEREIS_LEGAL_BACKUP_RETENTION_DAYS} has with {@code deploy/db_backup.sh}; a second,
+     * un-rendered copy of the window here is the mistake this project has already made once.
+     *
+     * <p>No {@code batchSize} either: the sweep is ONE {@code DELETE} rather than a per-row drain,
+     * so there is nothing to page through.
+     */
+    public record NotificationRetention(Boolean enabled) {
+
+        public NotificationRetention {
+            enabled = enabled == null || enabled;
         }
     }
 }

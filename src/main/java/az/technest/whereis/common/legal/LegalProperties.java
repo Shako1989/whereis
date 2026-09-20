@@ -3,7 +3,8 @@ package az.technest.whereis.common.legal;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * The five facts the legal pages state that only the operator can supply.
+ * The facts the legal pages state that only the operator can supply, plus the two retention
+ * windows the pages promise and the code must honour.
  *
  * They are deployment configuration, not source: the repository is public, and an operator's
  * postal address committed to it is in the history for good, while a value in {@code deploy/.env}
@@ -31,6 +32,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *                            constant and the page must change together or the page lies. Because
  *                            {@code LegalPages} refuses to boot on an unset marker, the cross-check
  *                            comes for free
+ * @param billingLogRetentionDays how long a Google Play billing notification stays in the RTDN
+ *                            ledger ({@code play_notifications}). The THIRD number on this record
+ *                            that is a promise rather than a preference, and read by
+ *                            {@code PlayNotificationJanitor} as its cutoff for the same reason the
+ *                            two above are read by the backup job and the cancellation janitor: the
+ *                            page and the sweep must move together or the page lies. It has a hard
+ *                            FLOOR the janitor enforces at startup — Cloud Pub/Sub retains an
+ *                            unacknowledged message for up to 7 days, and the ledger's primary key
+ *                            is what makes a redelivery a no-op, so a window at or under 7 days
+ *                            would trade a privacy promise for a double-applied notification
  */
 @ConfigurationProperties(prefix = "whereis.legal")
 public record LegalProperties(
@@ -39,6 +50,7 @@ public record LegalProperties(
         String legalAddress,
         String effectiveDate,
         String backupRetentionDays,
-        String cancellationRetryDays
+        String cancellationRetryDays,
+        String billingLogRetentionDays
 ) {
 }

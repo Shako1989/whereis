@@ -41,6 +41,7 @@ whereis:
     effective-date: ${WHEREIS_LEGAL_EFFECTIVE_DATE}
     backup-retention-days: ${WHEREIS_LEGAL_BACKUP_RETENTION_DAYS}
     cancellation-retry-days: ${WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS}
+    billing-log-retention-days: ${WHEREIS_LEGAL_BILLING_LOG_RETENTION_DAYS}
 
   # The Play Developer API. THE DEFAULT HERE IS `disabled`, and it is the safe direction: billing
   # off cannot grant a tier by any route, while everything non-billing — the free tier, the limits,

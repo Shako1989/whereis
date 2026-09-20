@@ -217,7 +217,7 @@ class SubscriptionReconcilerTest {
     private static ReconcileProperties properties(boolean enabled) {
         return new ReconcileProperties(
                 new ReconcileProperties.Reconcile(enabled, 25, null, null, null, Duration.ZERO),
-                null, null);
+                null, null, null);
     }
 
     private static PlanCatalog catalog() {

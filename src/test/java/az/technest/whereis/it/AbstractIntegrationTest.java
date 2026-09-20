@@ -100,6 +100,10 @@ public abstract class AbstractIntegrationTest {
         registry.add("whereis.play.reconcile.enabled", () -> "false");
         registry.add("whereis.play.voided-sweep.enabled", () -> "false");
         registry.add("whereis.play.cancellation.enabled", () -> "false");
+        // The ledger retention sweep joins them. Its cutoff is 30 days back so it could not touch a
+        // row a test just inserted, but AccountDeletionIT ages one row past the window ON PURPOSE
+        // and then asserts the effect of ONE pass — a background tick could do it first.
+        registry.add("whereis.play.notification-retention.enabled", () -> "false");
     }
 
     /** Check 1: the {@code ?key=} of the registered push URL. */

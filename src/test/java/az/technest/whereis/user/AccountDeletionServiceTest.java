@@ -48,6 +48,8 @@ class AccountDeletionServiceTest {
     private AssistantMessageService assistantMessageService;
     @Mock
     private az.technest.whereis.plan.SubscriptionCancellationService subscriptionCancellations;
+    @Mock
+    private az.technest.whereis.plan.rtdn.PlayNotificationPurgeService playNotifications;
     private AccountDeletionService service;
 
     private final UUID userId = UUID.randomUUID();
@@ -57,7 +59,7 @@ class AccountDeletionServiceTest {
         // Real verifier, not a mock: the test must prove the service refuses on a genuine BCrypt mismatch.
         service = new AccountDeletionService(userRepository, new PasswordVerifier(encoder),
                 spaceService, locationService, itemService, assistantMessageService,
-                subscriptionCancellations);
+                subscriptionCancellations, playNotifications);
     }
 
     private User user() {
@@ -75,7 +77,8 @@ class AccountDeletionServiceTest {
                     assertThat(((ApiException) e).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
                     assertThat(((ApiException) e).code()).isEqualTo(ErrorCode.INVALID_CREDENTIALS);
                 });
-        verifyNoInteractions(spaceService, locationService, itemService, assistantMessageService);
+        verifyNoInteractions(spaceService, locationService, itemService, assistantMessageService,
+                subscriptionCancellations, playNotifications);
         verify(userRepository, never()).delete(any());
     }
 
@@ -88,6 +91,7 @@ class AccountDeletionServiceTest {
         when(itemService.deleteAllForUser(userId)).thenReturn(new ItemDeletionSummary(3, 4));
         when(locationService.deleteAllForUser(userId)).thenReturn(5);
         when(spaceService.deleteAllForUser(userId)).thenReturn(1);
+        when(playNotifications.purgeForUser(userId)).thenReturn(2);
 
         service.deleteOwnAccount(userId, "password123");
 
@@ -97,13 +101,19 @@ class AccountDeletionServiceTest {
         // cannot go); the user last (refresh_tokens cascade). A unit test cannot see the FK
         // reasons, so this ordering assertion is the cheap guard that makes any future reorder
         // fail the build without Docker.
-        InOrder order = inOrder(spaceService, subscriptionCancellations, assistantMessageService,
-                itemService, locationService, userRepository);
+        InOrder order = inOrder(spaceService, subscriptionCancellations, playNotifications,
+                assistantMessageService, itemService, locationService, userRepository);
         order.verify(spaceService).lockAllSpacesOfUser(userId);
         // FIRST of the writes: stop the money before dismantling the account, and before the rows
         // it reads cascade away with the users row. Google Play does NOT cancel a subscription when
         // a user deletes their app account.
         order.verify(subscriptionCancellations).enqueueFor(userId);
+        // SECOND, and it has the same deadline for the same reason: play_notifications has no
+        // user_id, so the only thing that links a notification to this account is its purchase
+        // token, and that join runs through user_subscriptions — which the users cascade takes
+        // away at the end. Move this step after userRepository.delete and it silently purges
+        // nothing, leaving Google's tokens and raw payloads behind a page that says otherwise.
+        order.verify(playNotifications).purgeForUser(userId);
         order.verify(assistantMessageService).deleteAllForUser(userId);
         order.verify(itemService).deleteAllForUser(userId);
         order.verify(locationService).deleteAllForUser(userId);
@@ -111,7 +121,8 @@ class AccountDeletionServiceTest {
         order.verify(userRepository).delete(user);
         // The summary line counts them from the returned value, never from a second query.
         assertThat(output.getOut()).contains("7 assistant messages").contains("3 items").contains("5 locations")
-                .contains("subscription cancellations enqueued");
+                .contains("subscription cancellations enqueued")
+                .contains("2 billing notifications purged");
     }
 
     @Test
@@ -121,7 +132,8 @@ class AccountDeletionServiceTest {
         assertThatThrownBy(() -> service.deleteOwnAccount(userId, "password123"))
                 .isInstanceOf(ApiException.class)
                 .satisfies(e -> assertThat(((ApiException) e).code()).isEqualTo(ErrorCode.INVALID_CREDENTIALS));
-        verifyNoInteractions(spaceService, locationService, itemService, assistantMessageService);
+        verifyNoInteractions(spaceService, locationService, itemService, assistantMessageService,
+                subscriptionCancellations, playNotifications);
         verify(userRepository, never()).delete(any());
     }
 }

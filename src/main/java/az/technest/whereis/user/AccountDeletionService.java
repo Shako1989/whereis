@@ -5,6 +5,7 @@ import az.technest.whereis.item.ItemDeletionSummary;
 import az.technest.whereis.item.ItemService;
 import az.technest.whereis.location.LocationService;
 import az.technest.whereis.plan.SubscriptionCancellationService;
+import az.technest.whereis.plan.rtdn.PlayNotificationPurgeService;
 import az.technest.whereis.space.SpaceService;
 import java.util.List;
 import java.util.UUID;
@@ -29,6 +30,15 @@ import org.springframework.transaction.annotation.Transactional;
  *       no Play call, which is what keeps this a single {@code @Transactional} method and keeps
  *       {@code OwnershipScopingArchTest#noTransactionalMethodCallsThePlayPort} green;
  *       {@code PlayCancellationJanitor} drains it afterwards;</li>
+ *   <li><strong>purge the RTDN ledger</strong> — immediately after the enqueue, because both steps
+ *       read {@code user_subscriptions} and neither can run once the {@code users} row has
+ *       cascaded. {@code play_notifications} has no {@code user_id} and no foreign key by V10's
+ *       design, so the ONLY thing that links a notification to this account is its purchase token,
+ *       and the join that resolves it exists only while the subscription rows do. Without this step
+ *       the ledger keeps Google's purchase tokens, order ids, product ids and raw payload
+ *       indefinitely for an account the public page says has been erased. What it cannot reach is a
+ *       notification that arrives AFTER the deletion — {@code PlayNotificationJanitor} ages those
+ *       out;</li>
  *   <li>assistant messages — the {@code users} cascade would remove them anyway, but going first
  *       means their ON DELETE SET NULL triggers on {@code item_id}/{@code space_id} never fire
  *       during the two bulk deletes below, and the summary count is exact;</li>
@@ -56,6 +66,7 @@ public class AccountDeletionService {
     private final ItemService itemService;
     private final AssistantMessageService assistantMessageService;
     private final SubscriptionCancellationService subscriptionCancellations;
+    private final PlayNotificationPurgeService playNotifications;
 
     /**
      * @param userId      the JWT subject — never client input
@@ -72,6 +83,10 @@ public class AccountDeletionService {
 
         List<UUID> spaceIds = spaceService.lockAllSpacesOfUser(userId);
         int cancellations = subscriptionCancellations.enqueueFor(userId);
+        // After the enqueue and before anything else: the queue row carries the token forward for
+        // the cancellation, and this purge removes the ledger rows that token can still be traced
+        // through. Both read user_subscriptions, which the users cascade takes away at the end.
+        int notifications = playNotifications.purgeForUser(userId);
         int assistantMessages = assistantMessageService.deleteAllForUser(userId);
         ItemDeletionSummary items = itemService.deleteAllForUser(userId);
         int locations = locationService.deleteAllForUser(userId);
@@ -79,8 +94,9 @@ public class AccountDeletionService {
         userRepository.delete(user);
 
         log.info("Account {} deleted: {} spaces (locked {}), {} locations, {} items, {} assistant messages, "
-                        + "{} photo deletions enqueued, {} subscription cancellations enqueued",
+                        + "{} photo deletions enqueued, {} subscription cancellations enqueued, "
+                        + "{} billing notifications purged",
                 userId, spaces, spaceIds.size(), locations, items.items(), assistantMessages,
-                items.filesEnqueued(), cancellations);
+                items.filesEnqueued(), cancellations, notifications);
     }
 }

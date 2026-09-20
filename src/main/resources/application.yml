@@ -95,7 +95,7 @@ ai:
     # One retry, not the SDK default of two: /assistant/remember is synchronous.
     max-retries: ${AI_CLAUDE_MAX_RETRIES:1}
 
-# The five facts the public legal pages state. Deployment configuration, not source: the repository
+# The facts the public legal pages state. Deployment configuration, not source: the repository
 # is public, and these are rendered into the pages at startup rather than committed into them.
 # The defaults below are deliberately UNUSABLE (.invalid is reserved by RFC 2606 for exactly this)
 # so a build that reaches a user with them still in place is obvious. application-prod.yml declares
@@ -111,6 +111,14 @@ whereis:
     # retried. The SAME number PlayCancellationJanitor gives up after — it reads this property, so
     # the page and the code cannot drift. Stated on /legal/delete-account in both languages.
     cancellation-retry-days: ${WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS:7}
+    # How long a Google Play billing notification stays in the RTDN ledger (play_notifications).
+    # Stated on both public pages in both languages, and read by PlayNotificationJanitor as its
+    # cutoff — one value, so the page cannot lie. It has a FLOOR the janitor refuses to boot under:
+    # Pub/Sub retains an unacknowledged message for up to 7 days and the ledger's primary key is
+    # what makes a redelivery a no-op, so a window of 7 days or less trades the promise for a
+    # double-applied notification. 30 days is four times that floor and one billing cycle, which is
+    # the window in which a disputed charge is actually diagnosed from these payloads.
+    billing-log-retention-days: ${WHEREIS_LEGAL_BILLING_LOG_RETENTION_DAYS:30}
 
   # The tier ladder. Product rules rather than deployment secrets, so they are plain values here
   # instead of .env placeholders — relaxed binding still lets WHEREIS_PLANS_PRO_ITEMS retune a
@@ -229,3 +237,13 @@ whereis:
       delay: ${PLAY_CANCELLATION_DELAY:PT5M}
       initial-delay: ${PLAY_CANCELLATION_INITIAL_DELAY:PT2M}
       batch-size: ${PLAY_CANCELLATION_BATCH_SIZE:20}
+
+    # Ages rows out of the RTDN ledger. The WINDOW is deliberately not here — it is
+    # whereis.legal.billing-log-retention-days, the same number both public pages state. This is
+    # also the one scheduled billing component that does NOT check whether Play billing is
+    # configured: it makes no Play call, and a deployment that switches billing off must still
+    # purge the ledger it already accumulated.
+    notification-retention:
+      enabled: ${PLAY_NOTIFICATION_RETENTION_ENABLED:true}
+      delay: ${PLAY_NOTIFICATION_RETENTION_DELAY:PT24H}
+      initial-delay: ${PLAY_NOTIFICATION_RETENTION_INITIAL_DELAY:PT5M}

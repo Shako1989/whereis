@@ -52,7 +52,7 @@
           yalnız sizə açılır</td></tr>
     <tr><td>Sorğu jurnalı: vaxt, yol, status kodu və <code>X-Correlation-Id</code></td>
         <td>Nasazlıqların araşdırılması. Şifrə, token və köməkçiyə yazdığınız mətn jurnala yazılmır</td></tr>
-    <tr><td>Köməkçiyə yazdığınız cümlələr və modelin onları necə şərh etdiyi</td>
+    <tr><td>Köməkçiyə yazdığınız — və ya səslə dediyiniz — cümlələr və modelin onları necə şərh etdiyi</td>
         <td>Səhvlərin araşdırılması və tətbiqin sizə əvvəl nə yazdığınızı göstərə bilməsi üçün; hesabınızla
           birlikdə saxlanılır və onunla birlikdə silinir</td></tr>
     <tr><td>Google Play abunəliyinin qeydi: satınalma nişanı (purchase token), məhsul kodu, səviyyə,
@@ -60,19 +60,42 @@
         <td>Nəyin ödənildiyini yoxlamaq və hesaba hansı imkanların açıq olduğunu müəyyən etmək.
           Kart və ödəniş məlumatları whereis-ə heç vaxt çatmır — onları yalnız Google Play emal
           edir</td></tr>
+    <tr><td>Google-un abunəlik bildirişləri: satınalma nişanı, sifariş və məhsul kodu, hadisənin
+        vaxtı və Google-un göndərdiyi bildirişin özü</td>
+        <td>Bir ödəniş hadisəsinin iki dəfə tətbiq edilməməsi, hadisələrin düzgün ardıcıllıqla
+          işlənməsi və ödəniş səhvlərinin araşdırılması. Saxlanma müddəti aşağıda</td></tr>
   </table>
-  <p>Reklam identifikatoru, dəqiq məkan (GPS), kontaktlar və ya cihaz məlumatları toplanmır. Analitika və
-    izləmə SDK-ları istifadə edilmir.</p>
+  <p>Reklam identifikatoru, dəqiq məkan (GPS), kontaktlar və ya cihaz məlumatları toplanmır.
+    Tətbiqə bizim tərəfimizdən heç bir analitika və ya izləmə SDK-sı əlavə edilməmişdir. Bununla
+    belə, ödənişlər üçün istifadə olunan Google Play Billing kitabxanası Google-un öz
+    komponentlərini daşıyır və onlar Google-a texniki diaqnostika məlumatı göndərə bilər; bu, həmin
+    kitabxananın bir hissəsidir və bizim nəzarətimizdə deyil.</p>
 
   <h3>Süni intellekt köməkçisi və üçüncü tərəf emalçılar</h3>
   <p>Köməkçi funksiyası aktiv olduqda, köməkçiyə yazdığınız mətn (məsələn, «pasportu yataq otağındakı
-    şkafın yuxarı siyirməsinə qoydum») və məkanlarınızın adları cümləni başa düşmək üçün model
-    provayderinə göndərilir. Konfiqurasiyadan asılı olaraq bu, <strong>Anthropic</strong> (Claude modelləri)
-    və ya OpenAI ilə uyğun API təqdim edən başqa provayder ola bilər. Göndərilən mətn yalnız həmin sorğuya
-    cavab vermək üçün istifadə olunur. Modelin cavabı etibarsız sayılır və yoxlamadan keçməyincə heç nəyə
+    şkafın yuxarı siyirməsinə qoydum») model provayderinə göndərilir. Həmin mətnlə birlikdə
+    <strong>hər dəfə</strong> — cümlədə hər hansı məkanın adı çəkilib-çəkilmədiyindən asılı
+    olmayaraq — sizin öz məkanlarınızın adlarından ən çoxu 20-si də göndərilir: bu, modelin başqa
+    dildə yazılmış bir ifadəni («evdə») artıq mövcud olan məkanla («Home») uyğunlaşdırmasına imkan
+    verir. Yalnız adlar göndərilir — identifikatorlar, əşyalarınız, fotolarınız və ya başqa
+    istifadəçilərin məlumatları yox.</p>
+  <p>Konfiqurasiyadan asılı olaraq provayder <strong>Anthropic</strong> (Claude modelləri)
+    və ya OpenAI ilə uyğun API təqdim edən başqa provayder ola bilər. Anthropic bu məlumatları
+    <strong>bizim adımızdan, emalçı qismində və bizim göstərişimizlə</strong> emal edir: mətn
+    yalnız həmin sorğuya cavab vermək üçün istifadə olunur, Anthropic-in API şərtlərinə görə
+    modellərin təlimi üçün istifadə edilmir, və biz məlumatlarınızı başqa məqsəd üçün heç kimə
+    vermirik. Bu, bizim onlarla olan müqavilə münasibətimizin təsviridir; onların daxili
+    proseslərini biz özümüz yoxlaya bilmirik.</p>
+  <p>Modelin cavabı etibarsız sayılır və yoxlamadan keçməyincə heç nəyə
     təsir etmir; model heç vaxt verilənlər bazasına birbaşa yazmır — bütün yazılar yalnız serverimiz
     tərəfindən, sizin öz məlumatlarınız əsasında aparılır. Provayder söndürülübsə, mətn cihazınızdan
     yalnız bizim serverə gedir.</p>
+  <p><strong>Səslə daxiletmə.</strong> Köməkçidə mikrofon düyməsi var, lakin nitqi whereis
+    tanımır: cihazınızın öz nitq tanıma xidməti işə salınır və biz yalnız onun qaytardığı
+    <strong>mətni</strong> alırıq. Səs yazısı nə bizə göndərilir, nə də bizdə saxlanılır. Həmin
+    xidmət səsi cihazdan kənarda (öz serverlərində) emal edə bilər — bu, artıq onun provayderinin
+    (adətən cihaz istehsalçısı və ya Google) şərtləri və məxfilik siyasəti ilə tənzimlənir. Səslə
+    yazılmış mətn bizdə əlinizlə yazdığınız cümlə ilə tamamilə eyni qaydada saxlanılır.</p>
   <p><strong>Google LLC / Google Play</strong> abunəliklərin ödəniş emalçısıdır. Abunəlik alındıqda
     Google-un satınalma nişanı (purchase token) və məhsul kodu Google Play Developer API-yə göndərilir:
     ödənişi yoxlamaq, təsdiqləmək (acknowledge) və — hesabı sildikdə — abunəliyi dayandırmaq üçün.
@@ -84,11 +107,16 @@
   <h3>Saxlanma müddəti</h3>
   <p>Bütün məlumatlar hesabınızı silənə qədər saxlanılır. Hesab silindikdə hesab, məkanlar, yerləşmələr,
     əşyalar, tarixçə, köməkçiyə yazdığınız cümlələr, foto metadata və sessiyalar dərhal silinir; fotoların özləri obyekt yaddaşından qısa
-    müddət sonra asinxron silinir. Şifrələnmiş ehtiyat nüsxələr silinmiş məlumatları ən çox
-    {{BACKUP_RETENTION_DAYS}} gün saxlaya bilər və sonra rotasiya ilə silinir.</p>
-  <p>Yeganə istisna Google-un satınalma nişanı (purchase token) və məhsul kodudur: onlar abunəliyin
+    müddət sonra asinxron silinir. Ehtiyat nüsxələr silinmiş məlumatları ən çox
+    {{BACKUP_RETENTION_DAYS}} gün saxlaya bilər və sonra rotasiya ilə silinir. Nüsxələr serverin
+    özündə saxlanılır və yalnız fəlakət halında bərpa üçün istifadə olunur.</p>
+  <p>Google-un satınalma nişanı (purchase token) və məhsul kodu abunəliyin
     dayandırılması sorğusunu başa çatdırmaq üçün hesab silindikdən sonra ən çoxu
     {{CANCELLATION_RETRY_DAYS}} gün saxlanılır və sorğu uğurla tamamlanan kimi silinir.</p>
+  <p>Google Play abunəliklərdəki dəyişiklikləri (yenilənmə, ləğv, geri ödəniş) bizə bildirir və hər
+    bildiriş texniki jurnalda qeyd olunur — bu, ödənişin iki dəfə tətbiq edilməməsi və səhvlərin
+    araşdırılması üçün lazımdır. Hesabınızla əlaqələndirilə bilən bildirişlər hesabla birlikdə
+    silinir; jurnalın qalan hissəsi {{BILLING_LOG_RETENTION_DAYS}} gündən sonra tamamilə silinir.</p>
 
   <h3>Hüquqlarınız</h3>
   <ul>
@@ -131,25 +159,47 @@
           10 minutes, only to you</td></tr>
     <tr><td>Request log: time, path, status code and <code>X-Correlation-Id</code></td>
         <td>Troubleshooting. Passwords, tokens and the text you type into the assistant are never logged</td></tr>
-    <tr><td>The sentences you type to the assistant, with the model's interpretation of them</td>
+    <tr><td>The sentences you type — or dictate — to the assistant, with the model's interpretation of them</td>
         <td>So mistakes can be investigated and so the app can show you what you originally said; stored with
           your account and deleted with it</td></tr>
     <tr><td>Google Play subscription record: purchase token, product code, tier, state and expiry</td>
         <td>Verifying what was paid for and deciding what the account may use. Card and payment
           details never reach whereis — they are handled only by Google Play</td></tr>
+    <tr><td>Google's subscription notifications: purchase token, order and product code, event time
+        and the notification Google sent</td>
+        <td>Making sure one billing event is never applied twice, that events are applied in the
+          right order, and that a billing error can be investigated. Retention below</td></tr>
   </table>
   <p>No advertising identifiers, precise location (GPS), contacts or device inventories are collected.
-    No analytics or tracking SDKs are used.</p>
+    <strong>We have integrated no analytics or tracking SDK into the app.</strong> The Google Play
+    Billing Library used for subscriptions does, however, carry Google's own components, which may
+    send technical diagnostic data to Google; that is part of the library rather than something we
+    added, and it is not under our control.</p>
 
   <h3>AI assistant and third-party processors</h3>
   <p>When the assistant feature is enabled, the text you type into it (for example "I put my passport in
-    the bedroom wardrobe top drawer") together with the names of your spaces is sent to the model provider
-    so the sentence can be understood. Depending on configuration this is <strong>Anthropic</strong>
-    (Claude models) or another provider exposing an OpenAI-compatible API. The text is used only to
-    answer that request. The model's answer is treated as untrusted and has no effect until it passes
+    the bedroom wardrobe top drawer") is sent to the model provider so the sentence can be understood.
+    Sent with it, <strong>on every such request</strong> and whether or not the sentence mentions one,
+    are up to 20 of the names of your own spaces — that is what lets the model match a phrase in
+    another language ("evdə") to a space you already have ("Home"). Names only: no identifiers, none
+    of your items, none of your photos, and nothing belonging to any other user.</p>
+  <p>Depending on configuration the provider is <strong>Anthropic</strong> (Claude models) or another
+    provider exposing an OpenAI-compatible API. Anthropic processes this data
+    <strong>on our behalf, as a processor, and under our instructions</strong>: the text is used only
+    to answer that request, Anthropic's API terms state that it is not used to train their models,
+    and we do not make your data available to anyone for any other purpose. That describes our
+    contractual relationship with them — it is not a claim that we have independently audited their
+    internal processing.</p>
+  <p>The model's answer is treated as untrusted and has no effect until it passes
     validation; the model never writes to the database directly — every write is performed by our server
     against your own data only. If the provider is disabled, the text leaves your device only to reach
     our server.</p>
+  <p><strong>Voice input.</strong> The assistant offers a microphone button, but whereis does not do
+    the speech recognition: it hands the request to your device's own speech service and receives
+    back only the resulting <strong>text</strong>. No audio recording is sent to us or stored by us.
+    That service may process the audio off your device, on its provider's servers, under that
+    provider's terms and privacy policy (usually your device manufacturer's or Google's). The
+    transcribed text is then treated exactly like a sentence you had typed yourself.</p>
   <p><strong>Google LLC / Google Play</strong> is the billing processor for subscriptions. When a
     subscription is purchased, Google's purchase token and the product code are sent to the Google
     Play Developer API to verify the purchase, acknowledge it, and — if you delete your account —
@@ -161,11 +211,17 @@
   <h3>Retention</h3>
   <p>Everything is kept until you delete your account. On deletion the account, spaces, locations, items,
     history, the sentences you typed to the assistant, photo metadata and sessions are removed immediately; the photo files are removed from object
-    storage asynchronously shortly after. Encrypted backups may hold deleted data for up to
-    {{BACKUP_RETENTION_DAYS}} days before rotating out.</p>
-  <p>The only exception is Google's purchase token and product code, which are kept for up to
+    storage asynchronously shortly after. Backups may hold deleted data for up to
+    {{BACKUP_RETENTION_DAYS}} days before rotating out. Backups are held on the server itself and are
+    used only for disaster recovery.</p>
+  <p>Google's purchase token and product code are kept for up to
     {{CANCELLATION_RETRY_DAYS}} days after deletion solely to complete the subscription-cancellation
     request, and are deleted as soon as it succeeds.</p>
+  <p>Google notifies us of changes to a subscription (a renewal, a cancellation, a refund) and each
+    notification is recorded in a technical log, which is what stops one billing event being applied
+    twice and is what a billing error is investigated from. Notifications that can be linked to your
+    account are deleted together with it; the rest of the log is deleted in full after
+    {{BILLING_LOG_RETENTION_DAYS}} days.</p>
 
   <h3>Your rights</h3>
   <ul>

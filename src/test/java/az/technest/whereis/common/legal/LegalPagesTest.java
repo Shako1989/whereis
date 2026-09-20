@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 class LegalPagesTest {
 
     private static LegalProperties filled() {
-        return new LegalProperties("help@example.com", "A Person", "1 Street, City", "2026-09-19", "14", "7");
+        return new LegalProperties("help@example.com", "A Person", "1 Street, City", "2026-09-19", "14", "7", "30");
     }
 
     @Test
@@ -49,9 +49,21 @@ class LegalPagesTest {
     }
 
     @Test
+    void theBillingLogRetentionWindowReachesBothPages() {
+        // Its OWN test rather than another line in the loop above, because this one is not merely
+        // "a configured value is used". PlayNotificationJanitor reads the same property as its
+        // cutoff, so a page that did not carry it would be a retention promise with no number and
+        // a sweep with no promise. Both pages, because both state it.
+        LegalPages pages = new LegalPages(filled());
+
+        assertThat(pages.page("privacy")).contains("30");
+        assertThat(pages.page("delete-account")).contains("30");
+    }
+
+    @Test
     void aMissingValueFailsStartupRatherThanServingTheMarker() {
         LegalProperties blankEmail =
-                new LegalProperties("  ", "A Person", "1 Street, City", "2026-09-19", "14", "7");
+                new LegalProperties("  ", "A Person", "1 Street, City", "2026-09-19", "14", "7", "30");
 
         assertThatThrownBy(() -> new LegalPages(blankEmail))
                 .isInstanceOf(IllegalStateException.class)
@@ -62,7 +74,7 @@ class LegalPagesTest {
     @Test
     void aNullValueIsTreatedTheSameAsABlankOne() {
         LegalProperties noAddress =
-                new LegalProperties("help@example.com", "A Person", null, "2026-09-19", "14", "7");
+                new LegalProperties("help@example.com", "A Person", null, "2026-09-19", "14", "7", "30");
 
         assertThatThrownBy(() -> new LegalPages(noAddress))
                 .isInstanceOf(IllegalStateException.class)

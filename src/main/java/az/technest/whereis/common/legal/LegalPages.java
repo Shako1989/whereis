@@ -45,6 +45,7 @@ public class LegalPages {
         values.put("EFFECTIVE_DATE", properties.effectiveDate());
         values.put("BACKUP_RETENTION_DAYS", properties.backupRetentionDays());
         values.put("CANCELLATION_RETRY_DAYS", properties.cancellationRetryDays());
+        values.put("BILLING_LOG_RETENTION_DAYS", properties.billingLogRetentionDays());
         for (String page : new String[] {"privacy", "delete-account"}) {
             rendered.put(page, render(page, read(page), values));
         }

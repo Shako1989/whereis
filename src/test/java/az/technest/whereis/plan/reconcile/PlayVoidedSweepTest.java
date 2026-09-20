@@ -174,7 +174,7 @@ class PlayVoidedSweepTest {
 
     private static ReconcileProperties properties(boolean enabled) {
         return new ReconcileProperties(null,
-                new ReconcileProperties.VoidedSweep(enabled, null, 20, Duration.ZERO), null);
+                new ReconcileProperties.VoidedSweep(enabled, null, 20, Duration.ZERO), null, null);
     }
 
     private static PlanCatalog catalog() {

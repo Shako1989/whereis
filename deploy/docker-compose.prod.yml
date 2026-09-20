@@ -74,7 +74,7 @@ services:
       AI_CLAUDE_MAX_OUTPUT_TOKENS: ${WHEREIS_AI_CLAUDE_MAX_OUTPUT_TOKENS:-4096}
       AI_CLAUDE_BASE_URL: ${WHEREIS_AI_CLAUDE_BASE_URL:-}
 
-      # The five facts the public legal pages state. `:?` on every one of them is deliberate, and
+      # The facts the public legal pages state. `:?` on every one of them is deliberate, and
       # unlike the Play variables below they KEEP it: these are rendered into two public pages that
       # Google cross-checks, the app fails startup without them anyway, and — the deciding
       # difference — they are values the operator can supply TODAY. A `:?` is right exactly when a
@@ -92,6 +92,11 @@ services:
       # the public page cannot drift — the coupling WHEREIS_LEGAL_BACKUP_RETENTION_DAYS already has
       # with db_backup.sh.
       WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS: ${WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS:?set WHEREIS_LEGAL_CANCELLATION_RETRY_DAYS in .env}
+      # How long a Google Play billing notification stays in the RTDN ledger. Same coupling again:
+      # PlayNotificationJanitor reads this property as its cutoff and both public pages state it.
+      # A value of 7 or less is a STARTUP FAILURE, not a tuning choice — Pub/Sub can redeliver for
+      # up to 7 days and the ledger's primary key is what makes that a no-op.
+      WHEREIS_LEGAL_BILLING_LOG_RETENTION_DAYS: ${WHEREIS_LEGAL_BILLING_LOG_RETENTION_DAYS:?set WHEREIS_LEGAL_BILLING_LOG_RETENTION_DAYS in .env}
       AI_CLAUDE_WORKSPACE_ID: ${WHEREIS_AI_CLAUDE_WORKSPACE_ID:-}
       AI_CLAUDE_MAX_RETRIES: ${WHEREIS_AI_CLAUDE_MAX_RETRIES:-1}
 
