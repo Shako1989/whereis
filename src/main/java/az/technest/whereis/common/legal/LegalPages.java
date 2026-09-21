@@ -34,7 +34,8 @@ public class LegalPages {
 
     private final Map<String, String> rendered = new LinkedHashMap<>();
 
-    public LegalPages(LegalProperties properties) {
+    public LegalPages(LegalProperties properties,
+            az.technest.whereis.storage.MinioProperties minio) {
         // A HashMap and not Map.of: Map.of rejects nulls with a bare NullPointerException, which
         // would replace this class's one useful error message ("set whereis.legal.*") with a stack
         // trace, for the most likely misconfiguration there is — an unset property.
@@ -46,6 +47,11 @@ public class LegalPages {
         values.put("BACKUP_RETENTION_DAYS", properties.backupRetentionDays());
         values.put("CANCELLATION_RETRY_DAYS", properties.cancellationRetryDays());
         values.put("BILLING_LOG_RETENTION_DAYS", properties.billingLogRetentionDays());
+        // NOT a new whereis.legal.* number: the real source already exists, and a hand-written
+        // "10 minutes" on a public page went false the moment an operator raised
+        // MINIO_PRESIGN_TTL. The same one-value-two-readers coupling as the retention windows,
+        // and a leftover marker still fails startup, so it is enforced for free.
+        values.put("PHOTO_LINK_MINUTES", String.valueOf(minio.presignTtl().toMinutes()));
         for (String page : new String[] {"privacy", "delete-account"}) {
             rendered.put(page, render(page, read(page), values));
         }

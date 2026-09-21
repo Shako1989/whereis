@@ -175,6 +175,12 @@ services:
 
       # Native Android clients do not send Origin, so this only matters if a web
       # client is added later. Keep it tight rather than permissive.
+      # The public marketplace board's per-IP budgets. It also needs
+      # `header_up X-Forwarded-For {remote_host}` in the Caddyfile (deploy/README.md Step 12a) —
+      # without it the limiter is bypassed with one header and nothing fails loudly.
+      WHEREIS_MARKET_READS_PER_MINUTE: ${WHEREIS_MARKET_READS_PER_MINUTE:-30}
+      WHEREIS_MARKET_REPORTS_PER_HOUR: ${WHEREIS_MARKET_REPORTS_PER_HOUR:-5}
+
       CORS_ALLOWED_ORIGINS: ${WHEREIS_CORS_ALLOWED_ORIGINS:-https://${WHEREIS_API_HOST}}
 
     healthcheck:

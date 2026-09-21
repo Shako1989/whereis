@@ -21,11 +21,11 @@ class FakePlaySubscriptionsApiTest {
 
     private static PlanCatalog catalog() {
         Map<Plan, TierConfig> tiers = new EnumMap<>(Plan.class);
-        tiers.put(Plan.FREE, new TierConfig(1, 100, null));
-        tiers.put(Plan.STANDARD, new TierConfig(3, 300, "whereis_standard_annual"));
-        tiers.put(Plan.PRO, new TierConfig(5, 600, "whereis_pro_annual"));
-        tiers.put(Plan.MAX, new TierConfig(10, null, "whereis_max_annual"));
-        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null));
+        tiers.put(Plan.FREE, new TierConfig(1, 100, 1, null));
+        tiers.put(Plan.STANDARD, new TierConfig(3, 300, 3, "whereis_standard_annual"));
+        tiers.put(Plan.PRO, new TierConfig(5, 600, 10, "whereis_pro_annual"));
+        tiers.put(Plan.MAX, new TierConfig(10, null, 25, "whereis_max_annual"));
+        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null, null));
         return new PlanCatalog(tiers);
     }
 

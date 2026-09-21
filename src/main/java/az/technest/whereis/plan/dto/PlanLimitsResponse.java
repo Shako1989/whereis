@@ -24,8 +24,12 @@ package az.technest.whereis.plan.dto;
  * product rule as configured, while the usage field has to say precisely what it counted, because
  * "items" would read as "all items" and archived ones do not count.
  *
- * @param spaces maximum number of spaces, or {@code null} for no ceiling on spaces
- * @param items  maximum number of ACTIVE items, or {@code null} for no ceiling on items
+ * @param spaces   maximum number of spaces, or {@code null} for no ceiling on spaces
+ * @param items    maximum number of ACTIVE items, or {@code null} for no ceiling on items
+ * @param listings maximum simultaneously ACTIVE marketplace listings, or {@code null} for no
+ *                 ceiling. MAX is the tier that makes the per-allowance null unavoidable: its
+ *                 {@code items} is null and its {@code listings} is NOT, because an unbounded
+ *                 public surface per account is a spam vector in a way a private inventory is not.
  */
-public record PlanLimitsResponse(Integer spaces, Integer items) {
+public record PlanLimitsResponse(Integer spaces, Integer items, Integer listings) {
 }

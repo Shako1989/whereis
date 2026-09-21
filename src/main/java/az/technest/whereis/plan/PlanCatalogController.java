@@ -33,7 +33,8 @@ public class PlanCatalogController {
     public List<PlanLadderRowResponse> ladder() {
         return catalog.ladder().stream()
                 .map(tier -> new PlanLadderRowResponse(tier, catalog.of(tier).productId(),
-                        new PlanLimitsResponse(catalog.spaceLimit(tier), catalog.itemLimit(tier))))
+                        new PlanLimitsResponse(catalog.spaceLimit(tier), catalog.itemLimit(tier),
+                                catalog.listingLimit(tier))))
                 .toList();
     }
 }

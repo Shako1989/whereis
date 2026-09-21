@@ -32,7 +32,8 @@ class OwnershipScopingArchTest {
             noClasses()
                     .that().resideInAnyPackage(
                             "..whereis.space..", "..whereis.location..", "..whereis.item..",
-                            "..whereis.search..", "..whereis.assistant..", "..whereis.storage..")
+                            "..whereis.search..", "..whereis.assistant..", "..whereis.storage..",
+                            "..whereis.marketplace..")
                     .should().callMethod(CrudRepository.class, "findById", Object.class)
                     .because("owned resources must be fetched with userId-scoped repository methods");
 
@@ -95,16 +96,24 @@ class OwnershipScopingArchTest {
      * that way.
      */
     @ArchTest
-    static final ArchRule onlyTheTwoCreationMethodsConsultThePlan =
+    static final ArchRule onlyTheThreeCreationMethodsConsultThePlan =
             noMethods()
                     .that(couldNotLegitimatelyRefuseACreation())
                     .should(callAMethodNamedStartingWith("requireRoom", PlanLimitEnforcer.class))
                     .because("limits refuse creation and nothing else; every other path must never refuse");
 
-    /** Everything except {@code SpaceService.create}, {@code ItemService.createAt} and {@code plan/} itself. */
+    /**
+     * Everything except the THREE creation methods and {@code plan/} itself.
+     *
+     * <p>The rule matches by NAME PREFIX {@code requireRoom}, so a new guard inherits the
+     * restriction automatically and its one legitimate call site has to be named here or the build
+     * fails. That is the intended cost: it is what keeps "limits refuse creation and NOTHING else"
+     * a build failure rather than a promise.
+     */
     private static DescribedPredicate<JavaMethod> couldNotLegitimatelyRefuseACreation() {
         return new DescribedPredicate<>(
-                "are not SpaceService.create, ItemService.createAt, or inside ..whereis.plan..") {
+                "are not SpaceService.create, ItemService.createAt, ListingService.publish,"
+                        + " or inside ..whereis.plan..") {
             @Override
             public boolean test(JavaMethod method) {
                 String owner = method.getOwner().getFullName();
@@ -115,7 +124,10 @@ class OwnershipScopingArchTest {
                         && "create".equals(method.getName());
                 boolean itemCreation = "az.technest.whereis.item.ItemService".equals(owner)
                         && "createAt".equals(method.getName());
-                return !spaceCreation && !itemCreation;
+                boolean listingCreation =
+                        "az.technest.whereis.marketplace.ListingService".equals(owner)
+                                && "publish".equals(method.getName());
+                return !spaceCreation && !itemCreation && !listingCreation;
             }
         };
     }

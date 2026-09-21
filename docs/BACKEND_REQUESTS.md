@@ -970,3 +970,63 @@ entitling `STANDARD` row beside a live `ON_HOLD` `MAX` row must badge `STANDARD`
   that table, because a notification can arrive for a token this server has never seen. The rows hold
   a purchase token and Google's payload. Legal review before the Data-safety form is submitted; the
   privacy page now names the token and Google as its processor, but not this table's retention.
+
+## BR-14 — the internal marketplace (V12) — **IMPLEMENTED 2026-09-21**
+
+**Raised by:** the product owner, not a client gap.
+**Status:** shipped. Users publish their OWN items to a board **anonymous visitors browse**.
+
+### What it is
+
+`POST /api/v1/items/{itemId}/listing` publishes; the board is `GET /api/v1/market/listings`
+and `GET /api/v1/market/listings/{id}`, both **unauthenticated**. Three things must be present
+before an item can be listed — a **photo**, a **price** and a **description of at least 40
+characters** — and the first two are NOT NULL in the schema rather than service conventions, so a
+listing row that exists IS a publishable listing.
+
+`POST /api/v1/market/listings/{id}/reports` is the only unauthenticated WRITE in this application.
+It answers **202 for everything that parses**, including an unknown id: an anonymous endpoint must
+have nothing to say to a prober.
+
+### The decisions worth keeping
+
+* **A listing is a SNAPSHOT, not a view of an item.** It owns its title, description, price, city
+  and phone. The board's `FROM` clause is one table, which turns "never publish the internal
+  location path" from a rule somebody must remember into a query that cannot express the leak. It
+  also stops `PUT /items/{id}` — which applies `description` unconditionally — from silently
+  blanking a live listing's public text from the already-shipped Android build.
+* **The board has its OWN security chain with no `oauth2ResourceServer`.** `permitAll` governs
+  authorization, not decoding: on the main chain an EXPIRED bearer would be 401'd before any
+  matcher ran, and with a 15-minute access TTL that is the normal case for a client that browses
+  continuously, not an edge case. Third time this trap has been solved here (`/auth/**`,
+  `/play/rtdn`). Consequence: a request to `/api/v1/market/**` is ALWAYS anonymous, `CurrentUser`
+  is an ArchUnit-forbidden dependency there, and anything needing a principal belongs elsewhere.
+* **The public photo is an opaque COPY.** The private object key is `u/{userId}/i/{itemId}/{fileId}`
+  and a presigned URL carries the key in its PATH — so serving the private object would publish the
+  seller's user UUID and the item UUID to every crawler, defeating the deliberate omission of
+  `sellerId` from the DTO. Publishing copies the object server-side to `p/{uuid}`.
+* **The operator kill-switch is `hidden_at`, not a fourth status.** The operator's decision and the
+  seller's are independent facts; as a status, marking a hidden listing sold would un-hide it. And
+  a hidden listing STILL occupies its item's one active slot — freeing it would let the seller
+  re-publish immediately and make moderation whack-a-mole.
+* **Listings are the THIRD plan allowance** (`whereis.plans.<tier>.listings`: FREE 1, STANDARD 3,
+  PRO 10, MAX 25). MAX has unlimited items and a FINITE listing cap, which is the clearest
+  demonstration of why a ceiling is nullable per allowance rather than per tier: an unbounded
+  PUBLIC surface per account is a spam vector in a way a private inventory is not.
+* **Nothing is stored about a reporter** — no IP, no hash of one. That would be a new category of
+  data about somebody who is not a user of this application, and therefore a new privacy paragraph
+  in both languages. The per-IP limit lives in memory and stores nothing.
+
+### Wire contract change for the client
+
+`GET /users/me/plan` and `GET /plans` are **additive**: `limits` gains `listings` and `usage` gains
+`activeListings`. Jackson serializes records by NAME, so the shipped Android build (which uses
+`ignoreUnknownKeys = true`) keeps working unchanged and simply does not render the third row.
+
+### Still open
+
+No in-app messaging (a later wave, and the strongest mitigation for the one risk below). One photo
+per listing. No admin API — hiding a listing is operator SQL, like every other operator action here.
+**A seller can publish somebody else's phone number and no technical control prevents it** without
+SMS verification; the mitigations are the `WRONG_OR_MISLEADING` report reason and the kill-switch.
+

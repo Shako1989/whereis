@@ -55,6 +55,8 @@ class ItemServiceTest {
     private FileStorageService fileStorageService;
     @Mock
     private PlanLimitEnforcer planLimits;
+    @Mock
+    private az.technest.whereis.marketplace.ListingRepository listingRepository;
 
     private ItemService itemService;
 
@@ -63,7 +65,7 @@ class ItemServiceTest {
     @BeforeEach
     void setUp() {
         itemService = new ItemService(itemRepository, historyRepository, locationService,
-                treeDao, fileStorageService, planLimits, new ItemMapperImpl());
+                treeDao, fileStorageService, planLimits, listingRepository, new ItemMapperImpl());
     }
 
     private Location location(UUID id, String name) {

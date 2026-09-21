@@ -135,23 +135,45 @@ whereis:
     free:
       spaces: 1
       items: 100
+      listings: 1
     standard:
       spaces: 3
       items: 300
+      listings: 3
       product-id: whereis_standard_annual
     pro:
       spaces: 5
       items: 600
+      listings: 10
       product-id: whereis_pro_annual
     max:
       spaces: 10
       # Blank, not a big number: null is "no ceiling on THIS allowance". Max is ten spaces and
       # unlimited items, which a single all-or-nothing flag could not express.
       items:
+      # ...and `listings` is deliberately NOT blank here. An unbounded PUBLIC surface per account
+      # is a spam vector in a way an unbounded private inventory is not, so MAX has unlimited items
+      # and a finite number of simultaneous listings. The asymmetry between these two lines is the
+      # clearest demonstration of why a ceiling is nullable per ALLOWANCE rather than per tier, and
+      # it also makes aHigherTierRaisesListings(MAX) false — so the 409 at MAX correctly offers no
+      # upgrade instead of advertising a product that would not help.
+      listings: 25
       product-id: whereis_max_annual
-    # `unlimited` is deliberately ABSENT: the operator grant has no ceiling on either allowance
+    # `unlimited` is deliberately ABSENT: the operator grant has no ceiling on ANY allowance
     # and no product-id, so there is nothing to configure. PlanCatalog supplies it and refuses to
     # start if this file ever gives it one.
+
+  # The public marketplace board — the only endpoints in this application whose cost is not bounded
+  # by an account, on a 768 MB container sharing a VM with a co-tenant application. The limiter is
+  # in the application rather than at the edge because stock Caddy has no rate_limit directive and
+  # the Caddy in front of this service belongs to that co-tenant. It DEPENDS on
+  # `header_up X-Forwarded-For {remote_host}` in deploy/Caddyfile.whereis: reverse_proxy APPENDS by
+  # default and Spring reads the FIRST entry, so without that line one curl header mints a fresh
+  # budget per request.
+  market:
+    rate-limit:
+      reads: ${WHEREIS_MARKET_READS_PER_MINUTE:30}
+      reports: ${WHEREIS_MARKET_REPORTS_PER_HOUR:5}
 
   # The Play Developer API, for verifying purchases. Same shape as ai.provider: a deterministic
   # fake is the default so `./gradlew build` and the whole integration suite run with no network,

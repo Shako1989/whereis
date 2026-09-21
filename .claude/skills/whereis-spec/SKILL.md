@@ -30,7 +30,12 @@ Photos live in MinIO; PostgreSQL holds only metadata.
 5. Deleting a location fails while it has children or items; deleting a space fails while it has locations.
 6. MinIO binaries are eventually deleted when their metadata rows go away (outbox + janitor);
    PostgreSQL and MinIO never pretend to share a transaction.
-7. Entitlement is a LADDER — FREE(1 space/100 items) < STANDARD(3/300) < PRO(5/600) < MAX(10/
+7. A user may PUBLISH one of their own items to the marketplace, and a published listing is
+   readable by anyone — the only exception to rule 2, opened one item at a time by its owner. What
+   becomes public is exactly what the seller typed (title, description, price, city, phone) plus
+   the photo they chose; the item's location path is never part of a listing and no column in V12
+   can reference it. Ending a listing removes it from the board but cannot recall copies.
+8. Entitlement is a LADDER — FREE(1 space/100 items) < STANDARD(3/300) < PRO(5/600) < MAX(10/
    unlimited items) < UNLIMITED(operator grant, never purchasable) — configured in
    `whereis.plans.*`. The effective tier is `max(users.plan, best entitling subscription)`, so an
    operator grant always wins and billing never writes `users.plan`. Beyond a tier's ceiling,
@@ -251,6 +256,22 @@ plan/      the tier ladder and Play purchase verification. `Plan` (FREE|STANDARD
            StorageJanitor#backoff), `ReconcileProperties`. All three are plain @Scheduled with an
            `enabled` flag AND an initialDelay, and each exposes `runOnce()` so the ITs can drive one
            pass with the flag off.
+marketplace/ the internal marketplace (V12, BR-14) — the FIRST surface in this application
+           readable without a JWT. `Listing` is a SNAPSHOT (its own title/description/price/city/
+           phone), never a view of an item, so the board's FROM clause is ONE table and the
+           internal location path is unreachable rather than merely unpublished. Statuses
+           ACTIVE|SOLD|WITHDRAWN are TERMINAL out of ACTIVE (re-listing is a new row, so a report
+           can never come to describe another price); the operator kill-switch is `hidden_at` +
+           `hidden_reason`, a SEPARATE column, and `ux_listings_item_active` is keyed on
+           `status = 'ACTIVE'` ALONE so a hidden listing still occupies its item's one slot.
+           `board/` is its own package behind its own @Order(1) SecurityFilterChain with NO
+           oauth2ResourceServer (permitAll governs authorization, not decoding — an EXPIRED bearer
+           would 401 on the main chain, and the access TTL is 15 minutes) and
+           `anyRequest().denyAll()`. `seller/` is on the main chain. Publish order is ownership ->
+           archived -> already-listed -> photo -> price -> description -> plan cap LAST (the more
+           specific answer wins, as DUPLICATE_NAME beats the space limit). The public photo is an
+           opaque server-side COPY at `p/{uuid}`, because a presigned URL carries the object key in
+           its path and the private key is u/{userId}/i/{itemId}/{fileId}.
 common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler; CurrentUser
            (JWT subject → UUID); CorrelationIdFilter (X-Correlation-Id → MDC); Names — the ONE
            normalizer used by every writer, lookup, and the AI resolution path. clean() is the
@@ -441,6 +462,16 @@ Same shape as the assistant's `501 AI_NOT_IMPLEMENTED`, which the client already
 absent feature. Client contract: keep the token, stop asking this session, do not show a payment
 failure. It is refused ahead of every other check, so it is the answer for EVERY request shape and
 costs zero statements. ·
+marketplace (BR-14): POST/GET/PUT/DELETE /items/{id}/listing and /listings/{id},
+POST /listings/{id}/sold, GET /users/me/listings — all JWT. **GET /market/listings?q&city&page&size
+and GET /market/listings/{id} are ANONYMOUS**, as is POST /market/listings/{id}/reports, which
+answers **202 for everything that parses** including an unknown id. A hidden, withdrawn and
+never-existed listing are the SAME 404. Board responses carry `Cache-Control: no-store` (they embed
+a presigned URL) and no total count (no COUNT(*) on an unauthenticated path, and a total tells a
+scraper how complete their mirror is). Errors: LISTING_NOT_FOUND(404),
+LISTING_ALREADY_ACTIVE/NOT_ACTIVE/HIDDEN/PHOTO_REQUIRED(409), LISTING_DESCRIPTION_TOO_SHORT(400 —
+the one new 400, because it carries a NUMBER the client renders), ITEM_ARCHIVED/ITEM_LISTED(409),
+RATE_LIMITED(429). ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
 Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
@@ -528,6 +559,10 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
   `NoTransactionAroundThePlayPortTest` asserts the absence directly for all six orchestrators;
   mutation check: put `@Transactional` on `SubscriptionReconciler` and that test must fail (ArchUnit
   will not).
+- **Nothing under `..whereis.marketplace..` may depend on `..location..`, `..item.dto..` or
+  `..search..`, and nothing under `..marketplace.board..` may depend on `CurrentUser`** — the three
+  packages that could carry a location path to an anonymous visitor, and the class that cannot
+  work on a chain with no decoder. `MarketplacePublicSurfaceArchTest`, mutation-checked.
 - Bulk `@Modifying` updates: think before `clearAutomatically` — it detaches managed entities
   the caller still mutates (this exact bug shipped once and was caught in review).
 - Login is enumeration-safe (dummy BCrypt verify + uniform INVALID_CREDENTIALS).
@@ -547,8 +582,8 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 497 unit tests — must stay green without Docker OR network
-./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 171 tests — needs Docker
+./gradlew build              # compile + 510 unit tests — must stay green without Docker OR network
+./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 187 tests — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
 
@@ -1228,6 +1263,82 @@ account with no purge job (a 2026-09-16 decision), which is consistent with the 
 only bound on assistant text is account deletion; (c) the privacy notice still describes the
 `openai` provider as a possibility, which production does not use — accurate but vague, and it is
 the kind of "depending on configuration" wording a reviewer can reasonably ask to have pinned down.
+
+**2026-09-21 — the internal marketplace (V12, BR-14): the first anonymous surface.** Users publish
+their own items to a board that unregistered visitors browse. This is the first time business rule
+2 ("users can only ever see or touch their own data") has an exception, so the whole wave is built
+so that widening it is a BUILD FAILURE rather than an oversight. Details in `docs/BACKEND_REQUESTS.md`
+BR-14; the decisions that must not be re-derived:
+
+* **A listing is a SNAPSHOT.** `listings` owns its title, description, price, city and phone;
+  nothing is read from `items` at board time. The board's `FROM` clause is ONE table, so
+  "never publish the location path" is a query that cannot express the leak rather than a rule to
+  remember. It also prevents a concrete regression: `ItemService.update` applies `description`
+  unconditionally, so a `PUT /items/{id}` omitting the field would have blanked a live listing.
+* **Its own `SecurityFilterChain`, `@Order(1)`, with NO `oauth2ResourceServer`.** Chains are now
+  0 rtdn, 1 market, 2 auth, 3 catch-all. `permitAll` governs authorization, not decoding — on the
+  main chain an EXPIRED bearer is 401'd before any matcher runs, and with a 15-minute access TTL
+  that is the NORMAL case for a client that browses continuously. `anyRequest().denyAll()` rather
+  than `permitAll()`, because the matcher covers a subtree that will grow. A request there is
+  always anonymous; `MarketplacePublicSurfaceArchTest` forbids `CurrentUser`, `..location..`,
+  `..item.dto..` and `..search..` inside `..marketplace..`.
+* **The public photo is an opaque server-side COPY** at `p/{uuid}` (`item_files
+  .published_object_key`, UNIQUE). The private key is `u/{userId}/i/{itemId}/{fileId}` and a
+  presigned URL carries the key in its PATH — serving the private object would publish both UUIDs
+  to every crawler and make omitting `sellerId` from the DTO pointless. `presignPublished` is
+  deliberately NOT `primaryImages`, whose contract is that the ids came from a userId-scoped
+  finder; here ownership is a FOREIGN KEY. `FileStorageService.delete` refuses a published file
+  with 409 `ITEM_LISTED`.
+* **The kill-switch is `hidden_at` + `hidden_reason`, not a fourth status** (the `voided_at`-vs-
+  `state` lesson), and `ux_listings_item_active`'s predicate is `status = 'ACTIVE'` ALONE — a
+  hidden listing still occupies its item's one slot, or moderation is whack-a-mole. `@DynamicUpdate`
+  on `Listing` is load-bearing for the same reason it is on `UserSubscription`: the operator hides
+  by raw SQL, and a seller's full-column UPDATE would write `hidden_at = NULL` from a stale snapshot.
+* **`fk_listings_cover_file_same_item` is NO ACTION, not RESTRICT.** Deleting an item fires TWO
+  cascades from one statement; RESTRICT is immediate and could abort `DELETE /items/{id}` and the
+  Play-mandated `DELETE /users/me` for any seller. Verified empirically against a real PostgreSQL
+  before any Java was written, along with the composite cover FK refusing another item's photo.
+* **Listings are the THIRD plan allowance.** MAX has unlimited items and a FINITE 25 listings —
+  the clearest case for a ceiling being nullable per ALLOWANCE. `PlanLimitsResponse` and
+  `PlanUsageResponse` gained a component each: additive on the wire (Jackson serializes records by
+  NAME), a compile error at every Java construction site, which is the good failure.
+  `OwnershipScopingArchTest#onlyTheThreeCreationMethodsConsultThePlan` gained the third exemption.
+* **Nothing is stored about a reporter.** A salted IP hash was designed and rejected: it would be
+  the only column collecting a new category of data about somebody who is not a user, and therefore
+  a new privacy paragraph in both languages. The per-IP limit is in memory; the per-listing daily
+  cap needs no identity.
+* **The rate limiter is in the APPLICATION, not Caddy** — stock Caddy has no `rate_limit` and the
+  Caddy in front of this service belongs to the co-tenant. A fixed 4096-slot `AtomicLongArray`
+  (an unbounded per-IP map is the exhaustion vector it exists to prevent; a collision degrades to
+  STRICTER limiting) plus a `Semaphore(4)` bulkhead so the board can never hold more than half the
+  pool. **It depends on one Caddyfile line that was MISSING and is now added:**
+  `header_up X-Forwarded-For {remote_host}` — `reverse_proxy` APPENDS by default and Spring reads
+  the FIRST entry, so one curl header minted a fresh budget per request. That also means the
+  request log has been recording a spoofable client address all along.
+
+Both public pages changed in AZ and EN: what publishing makes public, that the storage location is
+NEVER published, that the phone is per-listing and not held on the account, and — the honest one —
+that copies already taken cannot be recalled. One existing defect fixed on the way: the pages
+hard-coded "10 minutes" for the presigned-link lifetime while the real value is
+`MINIO_PRESIGN_TTL`; `LegalPages` now renders `{{PHOTO_LINK_MINUTES}}` from `MinioProperties`, so a
+leftover marker fails startup and the page cannot drift from the configuration.
+
+Account deletion gained a step at position 5 (after the RTDN ledger purge, before assistant
+messages, necessarily before the item cascade): explicit rather than left to the FK cascade,
+because a cascade REPORTS nothing and a public artefact leaving the internet is what an operator
+most needs in the log line.
+
+Two mutation checks were RUN rather than assumed: putting `requireRoomForAnotherListing` on
+`ListingService.update` fails `onlyTheThreeCreationMethodsConsultThePlan`, and injecting
+`LocationTreeDao` into the board service fails `theMarketplaceCannotSeeTheLocationTree`.
+
+Suites: **unit 510** (+13), **integration 187 across 23 classes** (+16: `MarketplaceBoardIT`).
+
+Still open: no in-app messaging (a later wave, and the strongest mitigation for the risk below);
+one photo per listing; no purge job for ended listings; and **a seller can publish somebody else's
+phone number with no technical control preventing it** — the mitigations are the
+`WRONG_OR_MISLEADING` report reason and the kill-switch, and this wants the owner's explicit
+sign-off.
 
 ## 9. Future extension points (design for, do not build)
 

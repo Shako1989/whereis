@@ -31,8 +31,8 @@ import java.util.List;
 public class SecurityConfig {
 
     /**
-     * The auth endpoints run WITHOUT the resource-server filter, and this chain is ordered first
-     * so it wins the match.
+     * The auth endpoints run WITHOUT the resource-server filter, and this chain is ordered ahead
+     * of the catch-all so it wins the match.
      *
      * <p>The reason is concrete rather than stylistic. A mobile client attaches its access token
      * to every request; when that token expires the client calls {@code /auth/refresh} — with the
@@ -48,7 +48,7 @@ public class SecurityConfig {
      * would arrive anonymous.
      */
     @Bean
-    @Order(1)
+    @Order(2)
     public SecurityFilterChain authFilterChain(HttpSecurity http,
             CorsConfigurationSource corsConfigurationSource) throws Exception {
         http
@@ -61,7 +61,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    @Order(2)
+    @Order(3)
     public SecurityFilterChain filterChain(HttpSecurity http, CorsConfigurationSource corsConfigurationSource,
             @Value("${springdoc.api-docs.enabled:true}") boolean apiDocsEnabled)
             throws Exception {

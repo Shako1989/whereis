@@ -5,12 +5,14 @@ import az.technest.whereis.common.error.NotFoundException;
 import az.technest.whereis.common.util.Names;
 import az.technest.whereis.item.ItemNotFoundException;
 import az.technest.whereis.item.ItemRepository;
+import az.technest.whereis.marketplace.ListingConflictException;
 import az.technest.whereis.storage.dto.ItemFileResponse;
 import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import az.technest.whereis.storage.dto.PresignedUrlResponse;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -100,6 +102,14 @@ public class FileStorageService {
     public void delete(UUID userId, UUID itemId, UUID fileId) {
         requireOwnedItem(userId, itemId);
         ItemFile file = requireFile(itemId, fileId);
+        // A published cover is referenced by listings.cover_file_id, whose composite FK is NO
+        // ACTION — so deleting it alone would fail at end of statement with a 23503 and a 500.
+        // This is the same "undo something first" answer the rest of this API already gives
+        // (LOCATION_NOT_EMPTY, SPACE_NOT_EMPTY), and it lives here rather than in marketplace/ so
+        // that storage does not depend on it.
+        if (file.getPublishedObjectKey() != null) {
+            throw ListingConflictException.itemListed("delete this photo");
+        }
         StorageDeletionQueueEntry entry = queueRepository.save(queueEntry(file));
         itemFileRepository.delete(file);
         sweepAfterCommit(List.of(entry));
@@ -115,8 +125,18 @@ public class FileStorageService {
         if (files.isEmpty()) {
             return;
         }
-        List<StorageDeletionQueueEntry> entries = queueRepository.saveAll(
-                files.stream().map(this::queueEntry).toList());
+        List<StorageDeletionQueueEntry> entries = new ArrayList<>(
+                queueRepository.saveAll(files.stream().map(this::queueEntry).toList()));
+        // ...and the PUBLIC copies. Without this the opaque p/ objects would outlive the account
+        // that published them, still reachable by anyone holding a presigned URL — the orphan the
+        // outbox exists to prevent, on the one class of object that faces the open internet.
+        List<ItemFile> published = files.stream()
+                .filter(file -> file.getPublishedObjectKey() != null)
+                .toList();
+        if (!published.isEmpty()) {
+            entries.addAll(queueRepository.saveAll(
+                    published.stream().map(this::publishedQueueEntry).toList()));
+        }
         sweepAfterCommit(entries);
     }
 
@@ -136,7 +156,81 @@ public class FileStorageService {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public int enqueueAllForUser(UUID userId) {
-        return queueRepository.enqueueAllFilesOfUser(userId);
+        return queueRepository.enqueueAllFilesOfUser(userId)
+                + queueRepository.enqueuePublishedCopiesOfUser(userId);
+    }
+
+    /**
+     * Copies this photo to an OPAQUE public key so the marketplace board can presign it without
+     * publishing {@code u/{userId}/i/{itemId}/{fileId}} to anonymous visitors, and records the key.
+     *
+     * <p>Deliberately NOT {@code @Transactional}, and the order is {@link #upload}'s verbatim: the
+     * object is copied FIRST, then a short metadata transaction records it, and a failure of the
+     * second compensates by enqueueing the copy — so a crash between the two leaves a queued
+     * object rather than a row pointing at nothing.
+     *
+     * <p>Idempotent: a photo that already has a copy keeps it. Re-publishing the same cover must
+     * not mint a second object nobody will ever collect.
+     */
+    public String publishPhoto(UUID userId, UUID itemId, UUID fileId) {
+        requireOwnedItem(userId, itemId);
+        ItemFile file = requireFile(itemId, fileId);
+        if (file.getPublishedObjectKey() != null) {
+            return file.getPublishedObjectKey();
+        }
+        // No user id, no item id, no file id, no listing id, no structure at all.
+        String publishedKey = "p/" + UUID.randomUUID();
+        adapter.copy(file.getObjectKey(), publishedKey);
+        try {
+            persister.recordPublishedKey(fileId, publishedKey);
+        } catch (RuntimeException e) {
+            compensateUpload(publishedKey);
+            throw e;
+        }
+        return publishedKey;
+    }
+
+    /**
+     * Drops the public copy in ONE transaction — clear the column, enqueue the object — which is
+     * {@link #delete}'s shape. The board 404s the listing the moment its row ends; this is what
+     * makes the already-minted presigned URLs expire early rather than at their TTL.
+     */
+    @Transactional
+    public void unpublishPhoto(UUID itemId, UUID fileId) {
+        ItemFile file = itemFileRepository.findByIdAndItemId(fileId, itemId).orElse(null);
+        if (file == null || file.getPublishedObjectKey() == null) {
+            return;
+        }
+        StorageDeletionQueueEntry entry = queueRepository.save(publishedQueueEntry(file));
+        file.setPublishedObjectKey(null);
+        sweepAfterCommit(List.of(entry));
+    }
+
+    /**
+     * Presigns the PUBLISHED copies of the given {@code item_files} ids, for the anonymous board.
+     *
+     * <p><strong>Deliberately not {@link #primaryImages}.</strong> That method's contract is "the
+     * ids must already have been produced by a userId-scoped finder", and this caller has no user
+     * at all. Here ownership is established by a FOREIGN KEY instead: these ids come from
+     * {@code listings.cover_file_id}, which only a publish request that had already proved
+     * ownership can write, and whose composite FK guarantees the file belongs to the listed item.
+     * Reusing {@code primaryImages} would leave it without a single honest precondition.
+     *
+     * <p>ONE query for the whole page. Presigning is a local HMAC, so read-only is fine.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, String> presignPublished(Collection<UUID> fileIds) {
+        if (fileIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, String> urls = new HashMap<>();
+        for (ItemFile file : itemFileRepository.findAllById(fileIds)) {
+            if (file.getPublishedObjectKey() != null) {
+                urls.put(file.getId(), adapter.presignGet(
+                        file.getPublishedObjectKey(), properties.presignTtl()));
+            }
+        }
+        return urls;
     }
 
     /**
@@ -194,6 +288,13 @@ public class FileStorageService {
                 cleanup.tryDeleteAfterCommit(entries);
             }
         });
+    }
+
+    private StorageDeletionQueueEntry publishedQueueEntry(ItemFile file) {
+        return StorageDeletionQueueEntry.builder()
+                .bucket(file.getBucket())
+                .objectKey(file.getPublishedObjectKey())
+                .build();
     }
 
     private StorageDeletionQueueEntry queueEntry(ItemFile file) {

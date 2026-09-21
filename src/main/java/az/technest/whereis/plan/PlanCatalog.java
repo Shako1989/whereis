@@ -48,7 +48,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * {@code whereis.plans.tiers.free.items} instead. {@code whereis.legal.*} and {@code whereis.play.*}
  * are simply ignored here, exactly as {@code ai.claude.*} is ignored by {@code AiProperties}.
  *
- * @param plans every {@link Plan} constant, each with its two ceilings and its product id
+ * @param plans every {@link Plan} constant, each with its three ceilings and its product id
  */
 @ConfigurationProperties("whereis")
 public record PlanCatalog(Map<Plan, TierConfig> plans) {
@@ -58,9 +58,14 @@ public record PlanCatalog(Map<Plan, TierConfig> plans) {
      *
      * @param spaces    maximum spaces, or {@code null} for no ceiling on spaces
      * @param items     maximum ACTIVE items, or {@code null} for no ceiling on items
+     * @param listings  maximum simultaneously ACTIVE marketplace listings, or {@code null} for no
+     *                  ceiling. MAX has an unbounded {@code items} and a FINITE {@code listings},
+     *                  and that asymmetry is the clearest demonstration of why a ceiling is
+     *                  nullable PER ALLOWANCE rather than per tier: an unbounded PUBLIC surface
+     *                  per account is a spam vector in a way that a private inventory is not.
      * @param productId the Play product that buys this tier; {@code null} for FREE and UNLIMITED
      */
-    public record TierConfig(Integer spaces, Integer items, String productId) {
+    public record TierConfig(Integer spaces, Integer items, Integer listings, String productId) {
     }
 
     public PlanCatalog {
@@ -80,7 +85,7 @@ public record PlanCatalog(Map<Plan, TierConfig> plans) {
         // here rather than required in the file — which is also the only workable answer, because
         // a YAML entry whose every value is blank binds to nothing at all and is indistinguishable
         // from an absent one. Writing it with a ceiling anyway is still refused, below.
-        copy.putIfAbsent(Plan.UNLIMITED, new TierConfig(null, null, null));
+        copy.putIfAbsent(Plan.UNLIMITED, new TierConfig(null, null, null, null));
         for (Plan tier : Plan.values()) {
             if (!copy.containsKey(tier)) {
                 throw new IllegalStateException("whereis.plans." + key(tier) + " is not configured");
@@ -90,6 +95,7 @@ public record PlanCatalog(Map<Plan, TierConfig> plans) {
             TierConfig config = copy.get(tier);
             requireUsable(tier, "spaces", config.spaces());
             requireUsable(tier, "items", config.items());
+            requireUsable(tier, "listings", config.listings());
             boolean hasProduct = config.productId() != null && !config.productId().isBlank();
             if (tier.isPurchasable() && !hasProduct) {
                 throw new IllegalStateException(
@@ -101,12 +107,13 @@ public record PlanCatalog(Map<Plan, TierConfig> plans) {
             }
         }
         TierConfig unlimited = copy.get(Plan.UNLIMITED);
-        if (unlimited.spaces() != null || unlimited.items() != null) {
-            throw new IllegalStateException(
-                    "whereis.plans.unlimited must leave both spaces and items blank (no ceiling)");
+        if (unlimited.spaces() != null || unlimited.items() != null || unlimited.listings() != null) {
+            throw new IllegalStateException("whereis.plans.unlimited must leave spaces, items and "
+                    + "listings all blank (no ceiling)");
         }
         requireMonotonic(copy, "spaces", TierConfig::spaces);
         requireMonotonic(copy, "items", TierConfig::items);
+        requireMonotonic(copy, "listings", TierConfig::listings);
         requireDistinctProductIds(copy);
         plans = Collections.unmodifiableMap(copy);
     }
@@ -124,6 +131,11 @@ public record PlanCatalog(Map<Plan, TierConfig> plans) {
     /** Maximum ACTIVE items for this tier, or {@code null} for no ceiling on items. */
     public Integer itemLimit(Plan tier) {
         return of(tier).items();
+    }
+
+    /** Maximum simultaneously ACTIVE listings for this tier, or {@code null} for no ceiling. */
+    public Integer listingLimit(Plan tier) {
+        return of(tier).listings();
     }
 
     /**
@@ -168,6 +180,11 @@ public record PlanCatalog(Map<Plan, TierConfig> plans) {
     /** Whether some purchasable tier above {@code tier} actually raises the ITEMS allowance. */
     public boolean aHigherTierRaisesItems(Plan tier) {
         return raises(tier, TierConfig::items);
+    }
+
+    /** Whether some purchasable tier above {@code tier} actually raises the LISTINGS allowance. */
+    public boolean aHigherTierRaisesListings(Plan tier) {
+        return raises(tier, TierConfig::listings);
     }
 
     private boolean raises(Plan tier, Function<TierConfig, Integer> allowance) {

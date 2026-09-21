@@ -24,11 +24,11 @@ class PlanCatalogTest {
 
     private static Map<Plan, TierConfig> shipped() {
         Map<Plan, TierConfig> tiers = new EnumMap<>(Plan.class);
-        tiers.put(Plan.FREE, new TierConfig(1, 100, null));
-        tiers.put(Plan.STANDARD, new TierConfig(3, 300, "whereis_standard_annual"));
-        tiers.put(Plan.PRO, new TierConfig(5, 600, "whereis_pro_annual"));
-        tiers.put(Plan.MAX, new TierConfig(10, null, "whereis_max_annual"));
-        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null));
+        tiers.put(Plan.FREE, new TierConfig(1, 100, 1, null));
+        tiers.put(Plan.STANDARD, new TierConfig(3, 300, 3, "whereis_standard_annual"));
+        tiers.put(Plan.PRO, new TierConfig(5, 600, 10, "whereis_pro_annual"));
+        tiers.put(Plan.MAX, new TierConfig(10, null, 25, "whereis_max_annual"));
+        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null, null));
         return tiers;
     }
 
@@ -143,7 +143,7 @@ class PlanCatalogTest {
         // goes down, and the message has to say so well enough to act on at 2am — otherwise the
         // container crash-loops on a production VM while the operator follows the runbook.
         Map<Plan, TierConfig> inverted = shipped();
-        inverted.put(Plan.FREE, new TierConfig(1, 999999, null));
+        inverted.put(Plan.FREE, new TierConfig(1, 999999, 1, null));
 
         assertThatThrownBy(() -> catalog(inverted))
                 .isInstanceOf(IllegalStateException.class)
@@ -154,17 +154,17 @@ class PlanCatalogTest {
 
         // And raising every tier above it, as the message says, boots.
         Map<Plan, TierConfig> raised = shipped();
-        raised.put(Plan.FREE, new TierConfig(1, 999999, null));
-        raised.put(Plan.STANDARD, new TierConfig(3, 999999, "whereis_standard_annual"));
-        raised.put(Plan.PRO, new TierConfig(5, 999999, "whereis_pro_annual"));
+        raised.put(Plan.FREE, new TierConfig(1, 999999, 1, null));
+        raised.put(Plan.STANDARD, new TierConfig(3, 999999, 3, "whereis_standard_annual"));
+        raised.put(Plan.PRO, new TierConfig(5, 999999, 10, "whereis_pro_annual"));
         assertThat(catalog(raised).itemLimit(Plan.FREE)).isEqualTo(999999);
     }
 
     @Test
     void aFiniteCeilingAboveAnUnlimitedOneIsAlsoALadderThatGoesDown() {
         Map<Plan, TierConfig> inverted = shipped();
-        inverted.put(Plan.PRO, new TierConfig(5, null, "whereis_pro_annual"));
-        inverted.put(Plan.MAX, new TierConfig(10, 600, "whereis_max_annual"));
+        inverted.put(Plan.PRO, new TierConfig(5, null, 10, "whereis_pro_annual"));
+        inverted.put(Plan.MAX, new TierConfig(10, 600, 25, "whereis_max_annual"));
 
         assertThatThrownBy(() -> catalog(inverted))
                 .isInstanceOf(IllegalStateException.class)
@@ -175,7 +175,7 @@ class PlanCatalogTest {
     @Test
     void aPurchasableTierWithoutAProductIdCannotBoot() {
         Map<Plan, TierConfig> tiers = shipped();
-        tiers.put(Plan.PRO, new TierConfig(5, 600, null));
+        tiers.put(Plan.PRO, new TierConfig(5, 600, 10, null));
 
         assertThatThrownBy(() -> catalog(tiers))
                 .isInstanceOf(IllegalStateException.class)
@@ -185,7 +185,7 @@ class PlanCatalogTest {
     @Test
     void anUnpurchasableTierWithAProductIdCannotBoot() {
         Map<Plan, TierConfig> tiers = shipped();
-        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, "whereis_unlimited_annual"));
+        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null, "whereis_unlimited_annual"));
 
         assertThatThrownBy(() -> catalog(tiers))
                 .isInstanceOf(IllegalStateException.class)
@@ -195,7 +195,7 @@ class PlanCatalogTest {
     @Test
     void twoTiersMayNotShareAProductId() {
         Map<Plan, TierConfig> tiers = shipped();
-        tiers.put(Plan.MAX, new TierConfig(10, null, "whereis_pro_annual"));
+        tiers.put(Plan.MAX, new TierConfig(10, null, 25, "whereis_pro_annual"));
 
         assertThatThrownBy(() -> catalog(tiers))
                 .isInstanceOf(IllegalStateException.class)
@@ -217,19 +217,19 @@ class PlanCatalogTest {
     }
 
     @Test
-    void theOperatorGrantMustBeUnlimitedOnBothAllowances() {
+    void theOperatorGrantMustBeUnlimitedOnEveryAllowance() {
         Map<Plan, TierConfig> tiers = shipped();
-        tiers.put(Plan.UNLIMITED, new TierConfig(20, null, null));
+        tiers.put(Plan.UNLIMITED, new TierConfig(20, null, 20, null));
 
         assertThatThrownBy(() -> catalog(tiers))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("whereis.plans.unlimited must leave both spaces and items blank");
+                .hasMessageContaining("whereis.plans.unlimited must leave spaces, items and listings");
     }
 
     @Test
     void aCeilingBelowOneIsATypoRatherThanAProductDecision() {
         Map<Plan, TierConfig> tiers = shipped();
-        tiers.put(Plan.FREE, new TierConfig(0, 100, null));
+        tiers.put(Plan.FREE, new TierConfig(0, 100, 0, null));
 
         assertThatThrownBy(() -> catalog(tiers))
                 .isInstanceOf(IllegalStateException.class)

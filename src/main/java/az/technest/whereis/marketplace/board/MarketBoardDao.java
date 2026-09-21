@@ -1,0 +1,104 @@
+package az.technest.whereis.marketplace.board;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+/**
+ * The only query in this application an unauthenticated stranger can run.
+ *
+ * <p><strong>Its {@code FROM} clause is one table.</strong> Not {@code items}, not
+ * {@code locations}, not {@code spaces}, not {@code users} — which is what turns "never publish the
+ * internal location path" from a rule somebody has to remember into a query that cannot express the
+ * leak: {@code locationPath} comes from {@code LocationTreeDao.resolvePaths}, and this DAO never
+ * has a location id to resolve. {@code MarketplacePublicSurfaceArchTest} makes the same statement a
+ * build failure.
+ *
+ * <p>Deliberately NOT a "public mode" of {@code SearchDao}: that SQL welds {@code :userId} into
+ * both its recursive CTE anchor and its main predicate, so a public variant would mean a userId
+ * that is sometimes null in a query whose whole job is to scope by userId.
+ *
+ * <p>There is no {@code COUNT(*)} anywhere, on purpose. It would be the most expensive thing on the
+ * endpoint, on every anonymous request, and the total tells a scraper exactly how complete their
+ * mirror is. The page fetches {@code size + 1} rows and reports {@code hasMore} instead.
+ */
+@Repository
+@RequiredArgsConstructor
+public class MarketBoardDao {
+
+    /**
+     * The visibility predicate IS {@code Listing#isPubliclyVisible()}, and both partial indexes are
+     * built on exactly it — so the planner never reads a hidden or ended row.
+     */
+    private static final String VISIBLE = "l.status = 'ACTIVE' AND l.hidden_at IS NULL";
+
+    private static final String COLUMNS = """
+            l.id, l.title, l.description, l.price_amount, l.price_currency,
+            l.city, l.contact_phone, l.cover_file_id, l.created_at
+            """;
+
+    private final NamedParameterJdbcTemplate jdbc;
+
+    /** One row of the board, projected explicitly: you cannot serialize a column you never selected. */
+    public record BoardRow(UUID id, String title, String description, BigDecimal price,
+                           String currency, String city, String phone, UUID coverFileId,
+                           Instant createdAt) {
+    }
+
+    /**
+     * @param normalizedQuery already {@code Names.normalize}d, or null for the unfiltered board
+     * @param normalizedCity  already {@code Names.normalize}d, or null for every city
+     * @param limit           the page size PLUS ONE — the caller uses the extra row as `hasMore`
+     */
+    public List<BoardRow> browse(String normalizedQuery, String normalizedCity, int limit, int offset) {
+        StringBuilder sql = new StringBuilder("SELECT " + COLUMNS + " FROM listings l WHERE " + VISIBLE);
+        if (normalizedQuery != null) {
+            // Trigram similarity on the title, plus a substring match so a short exact word still
+            // finds a long title. The description is matched by substring only: it is up to 4000
+            // characters and a trigram index on it would be the largest in the schema.
+            sql.append(" AND (l.title ILIKE :like OR l.description ILIKE :like)");
+        }
+        if (normalizedCity != null) {
+            sql.append(" AND l.normalized_city = :city");
+        }
+        sql.append(" ORDER BY l.created_at DESC, l.id DESC LIMIT :limit OFFSET :offset");
+
+        return jdbc.query(sql.toString(),
+                Map.of(
+                        "like", normalizedQuery == null ? "" : "%" + escapeLike(normalizedQuery) + "%",
+                        "city", normalizedCity == null ? "" : normalizedCity,
+                        "limit", limit,
+                        "offset", offset),
+                (rs, row) -> map(rs));
+    }
+
+    public java.util.Optional<BoardRow> findVisible(UUID id) {
+        List<BoardRow> rows = jdbc.query(
+                "SELECT " + COLUMNS + " FROM listings l WHERE " + VISIBLE + " AND l.id = :id",
+                Map.of("id", id), (rs, row) -> map(rs));
+        return rows.stream().findFirst();
+    }
+
+    private static BoardRow map(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new BoardRow(
+                rs.getObject("id", UUID.class),
+                rs.getString("title"),
+                rs.getString("description"),
+                rs.getBigDecimal("price_amount"),
+                rs.getString("price_currency"),
+                rs.getString("city"),
+                rs.getString("contact_phone"),
+                rs.getObject("cover_file_id", UUID.class),
+                rs.getTimestamp("created_at").toInstant());
+    }
+
+    /** The same escaping {@code SearchDao} applies, for the same reason. */
+    private static String escapeLike(String value) {
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    }
+}

@@ -1,6 +1,8 @@
 package az.technest.whereis.storage;
 
 import io.minio.BucketExistsArgs;
+import io.minio.CopyObjectArgs;
+import io.minio.CopySource;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
@@ -97,6 +99,30 @@ public class MinioAdapter {
             throw new StorageException("Failed to check stored file", e);
         } catch (Exception e) {
             throw new StorageException("Failed to check stored file", e);
+        }
+    }
+
+    /**
+     * Server-side copy inside the bucket. The bytes never travel through this JVM — which matters
+     * on a 768 MB container whose multipart ceiling is 10 MB per file — and the copy is what gives
+     * the marketplace an OPAQUE public key instead of republishing
+     * {@code u/{userId}/i/{itemId}/{fileId}} to anonymous visitors.
+     *
+     * <p>Uses the OPS client, like every other SDK call: the presign client is pointed at the
+     * browser-facing host and may not be reachable from inside this container at all.
+     */
+    public void copy(String sourceKey, String destinationKey) {
+        try {
+            opsClient.copyObject(CopyObjectArgs.builder()
+                    .bucket(properties.bucket())
+                    .object(destinationKey)
+                    .source(CopySource.builder()
+                            .bucket(properties.bucket())
+                            .object(sourceKey)
+                            .build())
+                    .build());
+        } catch (Exception e) {
+            throw new StorageException("Failed to copy object", e);
         }
     }
 
