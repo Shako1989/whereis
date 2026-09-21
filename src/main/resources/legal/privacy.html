@@ -49,7 +49,9 @@
         <td>Sizin daxil etdiyiniz məzmun — xidmətin özü</td></tr>
     <tr><td>Əşya fotoları</td>
         <td>Özəl (qapalı) obyekt yaddaşında saxlanır və yalnız {{PHOTO_LINK_MINUTES}} dəqiqə etibarlı,
-          imzalanmış linklərlə verilir. Bazarda dərc etdiyiniz foto isə təyinatı etibarilə hər kəsə görünür</td></tr>
+          imzalanmış linklərlə verilir. Bazarda dərc etdiyiniz foto isə təyinatı etibarilə hər kəsə
+          görünür — müddəti bitməyən ictimai ünvanda — və <strong>dərc olunan nüsxədən kameranın
+          yazdığı məlumatlar, GPS koordinatları da daxil olmaqla, silinir</strong></td></tr>
     <tr><td>Bazar elanı: başlıq, təsvir, qiymət, şəhər/rayon, əlaqə telefonu və seçdiyiniz foto</td>
         <td>Elanın dərc olunması. <strong>Bu sahələr internetdə hər kəsə — hesabı olmayanlara da —
           görünür.</strong> Elan yerləşdirmək tamamilə könüllüdür</td></tr>
@@ -68,7 +70,11 @@
         <td>Bir ödəniş hadisəsinin iki dəfə tətbiq edilməməsi, hadisələrin düzgün ardıcıllıqla
           işlənməsi və ödəniş səhvlərinin araşdırılması. Saxlanma müddəti aşağıda</td></tr>
   </table>
-  <p>Reklam identifikatoru, dəqiq məkan (GPS), kontaktlar və ya cihaz məlumatları toplanmır.
+  <p>Tətbiq məkan icazəsi istəmir; reklam identifikatoru, kontaktlar və ya cihaz məlumatları
+    toplanmır. Koordinatların bizə çata biləcəyi yeganə yer yüklədiyiniz fotonun içidir: kameralar
+    çəkiliş yerini şəkil faylının özünə yazır. O fayl göndərdiyiniz kimi özəl saxlanılır və
+    sizdən başqa heç kimə göstərilmir — bazarda dərc etdiyiniz foto isə əvvəlcə bu məlumatlardan
+    təmizlənir («Daxili bazar» bölməsinə bax).
     Tətbiqə bizim tərəfimizdən heç bir analitika və ya izləmə SDK-sı əlavə edilməmişdir. Bununla
     belə, ödənişlər üçün istifadə olunan Google Play Billing kitabxanası Google-un öz
     komponentlərini daşıyır və onlar Google-a texniki diaqnostika məlumatı göndərə bilər; bu, həmin
@@ -115,6 +121,17 @@
     yerləşmələriniz və əşyanın saxlanma yolu (məsələn «Ev › Yataq otağı › Şkaf») elanın tərkibinə
     daxil deyil və heç kimə göndərilmir. Alıcının gördüyü yer yalnız sizin özünüzün yazdığı
     şəhər/rayondur.</p>
+  <p><strong>Foto dərc olunmazdan əvvəl kameranın yazdığı məlumatlar silinir.</strong> Şəkil
+    faylında adətən kameranın yazdığı gizli məlumat bloku olur: şəklin çəkildiyi yer (GPS enlik və
+    uzunluq), çəkiliş vaxtı, cihazın markası, modeli və seriya nömrəsi. Elan fotosu ictimailəşməzdən
+    əvvəl whereis şəkil faylını yenidən yazır və bunların hamısını atır. Şəklin özü yenidən
+    sıxılmır, keyfiyyəti dəyişmir. <strong>Öz əşyanız üçün saxlanılan özəl nüsxə isə yüklədiyiniz
+    kimi olduğu kimi qalır</strong> — o sizin faylınızdır və onu yalnız siz görürsünüz.</p>
+  <p><strong>Dərc olunmuş foto müddəti bitməyən ictimai ünvanda yerləşir.</strong> Bu, fotonuzun
+    ayrı, təmizlənmiş nüsxəsidir və nə sizin, nə əşyanın barəsində heç nə demeyən təsadüfi adla
+    saxlanılır. Elanı geri götürdüyünüzdə və ya «satıldı» kimi işarələdiyinizdə bu nüsxə dərhal
+    silinir. Brauzerin və ya aralıq keşin artıq endirdiyi nüsxə bundan sonra ən çox bir gün yaşaya
+    bilər; insanın saxladığı nüsxəni isə heç bir halda geri qaytarmaq mümkün deyil.</p>
   <p><strong>Telefon nömrəsi hər elanda sizin özünüzün yazdığınız nömrədir.</strong> whereis
     hesabınızda telefon nömrəsi saxlamır və onu cihazınızdan götürmür; fərqli elanlarda fərqli
     nömrə yaza bilərsiniz.</p>
@@ -178,7 +195,8 @@
     <tr><td>Item photos</td>
         <td>Stored in a private object-storage bucket and served only through signed links valid for
           {{PHOTO_LINK_MINUTES}} minutes. A photo you publish on a marketplace listing is, by design,
-          visible to anyone</td></tr>
+          visible to anyone, at a public address with no expiry — and <strong>the camera information
+          in it, including GPS coordinates, is removed from the published copy</strong></td></tr>
     <tr><td>Marketplace listing: the title, description, price, city/district, contact phone number
           and photo you choose when you publish an item</td>
         <td>Publishing the listing. <strong>These fields are visible to anyone on the internet,
@@ -196,8 +214,12 @@
         <td>Making sure one billing event is never applied twice, that events are applied in the
           right order, and that a billing error can be investigated. Retention below</td></tr>
   </table>
-  <p>No advertising identifiers, precise location (GPS), contacts or device inventories are collected.
-    <strong>We have integrated no analytics or tracking SDK into the app.</strong> The Google Play
+  <p>The app asks for no location permission and collects no advertising identifier, no contacts and
+    no device inventory. <strong>We have integrated no analytics or tracking SDK into the app.</strong>
+    The one place coordinates can reach us is inside a photograph you upload: cameras write the
+    capture location into the image file itself. That file is stored privately, exactly as you sent
+    it, and is never shown to anyone but you — and a photo you publish on a marketplace listing is
+    stripped of it first (see “Marketplace”). The Google Play
     Billing Library used for subscriptions does, however, carry Google's own components, which may
     send technical diagnostic data to Google; that is part of the library rather than something we
     added, and it is not under our control.</p>
@@ -242,6 +264,18 @@
     the storage path of the item (for example “Home › Bedroom › Wardrobe”) are not part of a listing
     and are never sent to anyone. The only location a buyer sees is the city or district you type
     yourself.</p>
+  <p><strong>The camera information in the photo is removed before it is published.</strong> A
+    photograph normally carries a hidden block of data your camera wrote into the file: where the
+    picture was taken (GPS latitude and longitude), when it was taken, and the make, model and
+    serial number of the device. Before a listing photo is made public, whereis rewrites the image
+    file and drops all of it. The picture itself is not re-compressed and its quality is unchanged.
+    <strong>The copy kept privately for your own item is left exactly as you uploaded it</strong> —
+    it is your file, and only you can see it.</p>
+  <p><strong>A published photo is at a public address with no expiry.</strong> It is a separate,
+    stripped copy of your photo, stored under a random name that says nothing about you or the item.
+    Withdrawing a listing or marking it sold deletes that copy immediately. A copy that a browser or
+    an intermediate cache has already downloaded may survive for up to one day after that; a copy
+    that a person saved cannot be recalled at all.</p>
   <p><strong>The phone number is the one you type on each listing.</strong> whereis does not store a
     phone number on your account and never takes one from your device; you may give a different
     number on different listings.</p>

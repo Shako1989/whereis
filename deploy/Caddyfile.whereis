@@ -47,25 +47,59 @@
 
 # ---- whereis item photos ----
 #
-# Unlike the BakuParts cdn vhost, this bucket is PRIVATE and there is no anonymous
-# read. Every object is fetched through a presigned GET (10 min TTL) minted by the
-# API, so MinIO validates the SigV4 signature on each request and Caddy needs no
-# authorization logic of its own.
+# ONE vhost, TWO classes of object, and the difference is the bucket in the path:
 #
-# GET/HEAD only: uploads go through the API's multipart endpoint, never a presigned
-# PUT, so there is no write path to expose here.
+#   /$WHEREIS_MINIO_BUCKET/u/...         PRIVATE. One object per uploaded item photo, fetched
+#                                        through a presigned GET (MINIO_PRESIGN_TTL, 10 min) minted
+#                                        by the API. MinIO validates the SigV4 signature on each
+#                                        request, so Caddy needs no authorization logic of its own.
 #
-# No CORS block: the client is native Android and sends no Origin. Add one only if
-# a browser client is introduced.
+#   /$WHEREIS_MINIO_PUBLIC_BUCKET/p/...  PUBLIC (V14). The metadata-stripped copy of a published
+#                                        marketplace listing's photo, at a PERMANENT unsigned
+#                                        address. The bucket carries an anonymous s3:GetObject
+#                                        policy — and deliberately NOT s3:ListBucket, so the opaque
+#                                        p/{uuid} keys cannot be enumerated (README Step 4b).
+#                                        The object carries its own `Cache-Control: public,
+#                                        max-age=86400`, set by the API at PUT time, so this vhost
+#                                        needs no per-path knowledge to make it cacheable and a CDN
+#                                        can be put in front unchanged.
+#
+# GET/HEAD only: uploads go through the API's multipart endpoint, never a presigned PUT, so there is
+# no write path to expose here.
+#
+# No CORS block: the client is native Android and sends no Origin. Add one only if a browser client
+# is introduced.
 {$WHEREIS_MEDIA_HOST} {
     encode zstd gzip
+
+    # NO ACCESS LOG ON THIS VHOST, AND THIS IS A FIX RATHER THAN A PREFERENCE.
+    #
+    # Caddy's default access log records the full URI. On this vhost that URI is, for every private
+    # photo, `/{bucket}/u/{userId}/i/{itemId}/{fileId}?X-Amz-Credential=...&X-Amz-Signature=...`.
+    # So without this the log has been writing BOTH halves of the thing the marketplace design
+    # works hardest to keep apart — the seller's user UUID and the item UUID — plus a live SigV4
+    # signature, to disk on every image fetch, and then the nightly backup has been archiving it.
+    # The signature expires in ten minutes; the user and item ids do not expire at all, and a log
+    # of them is a ready-made map from one account to everything it owns.
+    #
+    # `log_skip` is the same answer, for the same reason, as the /play/rtdn block above: a redaction
+    # filter that stops matching after a Caddy upgrade fails silently and in the wrong direction,
+    # while dropping the line cannot leak the value by accident. Little of value is lost — MinIO
+    # keeps its own access log, and the API's request log records the presign that preceded the
+    # fetch.
+    #
+    # The matcher form is used rather than a bare `log_skip` because it is the form already proven
+    # in this file.
+    @media path /*
+    log_skip @media
 
     @read method GET HEAD
     handle @read {
         reverse_proxy minio:9000 {
             # SigV4 signs the Host header. MinIO must see the same public hostname
             # the presigner used, not the docker-internal minio:9000 — otherwise
-            # every image 403s with SignatureDoesNotMatch.
+            # every image 403s with SignatureDoesNotMatch. The public bucket needs no
+            # signature, so this is harmless there and required here.
             header_up Host {host}
         }
     }

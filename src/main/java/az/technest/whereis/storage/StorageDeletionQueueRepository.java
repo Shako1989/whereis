@@ -41,11 +41,18 @@ public interface StorageDeletionQueueRepository extends JpaRepository<StorageDel
      * <p>Without this, deleting an account would leave the published copies in MinIO with nothing
      * left in the database to find them by — the orphan the outbox exists to prevent, and on the
      * one class of object that is reachable from the open internet.
+     *
+     * <p><strong>{@code f.published_bucket}, never {@code f.bucket}</strong> (V14). A published copy
+     * lives in the world-readable bucket, not the private one, so selecting {@code f.bucket} here
+     * would enqueue a correct key against the wrong bucket: the janitor would delete nothing,
+     * succeed, drop the row, and leave the public object on the internet forever. It is NOT NULL
+     * whenever the key is, by {@code ck_item_files_published_pair} — which is what lets this insert
+     * satisfy {@code storage_deletion_queue.bucket}'s NOT NULL.
      */
     @Modifying
     @Query(value = """
             INSERT INTO storage_deletion_queue (id, bucket, object_key, attempts, next_attempt_at, created_at)
-            SELECT gen_random_uuid(), f.bucket, f.published_object_key, 0, now(), now()
+            SELECT gen_random_uuid(), f.published_bucket, f.published_object_key, 0, now(), now()
             FROM item_files f
             JOIN items i ON i.id = f.item_id
             WHERE i.user_id = :userId AND f.published_object_key IS NOT NULL

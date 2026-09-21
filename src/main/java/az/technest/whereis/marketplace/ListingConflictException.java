@@ -34,6 +34,19 @@ public class ListingConflictException extends ConflictException {
                 "Add a photo to this item before listing it.");
     }
 
+    /**
+     * The publish-time refusal when a photo's metadata cannot be stripped (V14).
+     *
+     * <p>The message names the fix rather than the cause, because the cause is either an exotic
+     * file or a bug in the rewriter and the seller can act on neither. What it must never become is
+     * a publish that stores the original bytes: the whole point of the strip is that a listing
+     * exposes a city and not the coordinates the camera recorded.
+     */
+    public static ListingConflictException photoUnpublishable() {
+        return new ListingConflictException(ErrorCode.LISTING_PHOTO_UNPUBLISHABLE,
+                "This photo could not be prepared for publishing. Choose another photo for this listing.");
+    }
+
     public static ListingConflictException itemArchived() {
         return new ListingConflictException(ErrorCode.ITEM_ARCHIVED,
                 "Unarchive this item before listing it.");

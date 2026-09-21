@@ -10,8 +10,13 @@ import az.technest.whereis.location.dto.LocationResponse;
 import az.technest.whereis.space.SpaceType;
 import az.technest.whereis.space.dto.CreateSpaceRequest;
 import az.technest.whereis.space.dto.SpaceResponse;
+import az.technest.whereis.storage.TestImages;
 import az.technest.whereis.storage.dto.ItemFileResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.minio.BucketExistsArgs;
+import io.minio.MakeBucketArgs;
+import io.minio.MinioClient;
+import io.minio.SetBucketPolicyArgs;
 import java.io.IOException;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -65,9 +70,45 @@ public abstract class AbstractIntegrationTest {
             .waitingFor(Wait.forHttp("/minio/health/ready").forPort(9000)
                     .withStartupTimeout(Duration.ofSeconds(90)));
 
+    /**
+     * The world-readable bucket published marketplace photos go to (V14). Created here with an
+     * anonymous GET-only policy — which is exactly what {@code deploy/README.md} Step 4b tells an
+     * operator to apply — because the APPLICATION deliberately never creates it: it cannot grant
+     * that policy, and a bucket without it makes every listing image 403 with nothing saying why.
+     */
+    protected static final String PUBLIC_BUCKET = "whereis-public-test";
+
     static {
         POSTGRES.start();
         MINIO.start();
+        createPublicBucket();
+    }
+
+    /**
+     * {@code s3:GetObject} and NOTHING ELSE. No {@code s3:ListBucket}: an anonymous list would let
+     * a crawler enumerate every published photo in one request, and then the opaque {@code p/}
+     * keys would buy nothing at all.
+     */
+    private static void createPublicBucket() {
+        try (MinioClient client = MinioClient.builder()
+                .endpoint(MINIO.getS3URL())
+                .credentials(MINIO.getUserName(), MINIO.getPassword())
+                .region("us-east-1")
+                .build()) {
+            if (!client.bucketExists(BucketExistsArgs.builder().bucket(PUBLIC_BUCKET).build())) {
+                client.makeBucket(MakeBucketArgs.builder().bucket(PUBLIC_BUCKET).build());
+            }
+            client.setBucketPolicy(SetBucketPolicyArgs.builder()
+                    .bucket(PUBLIC_BUCKET)
+                    .config("""
+                            {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+                             "Principal":{"AWS":["*"]},"Action":["s3:GetObject"],
+                             "Resource":["arn:aws:s3:::%s/*"]}]}
+                            """.formatted(PUBLIC_BUCKET))
+                    .build());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to prepare the public MinIO bucket", e);
+        }
     }
 
     @DynamicPropertySource
@@ -79,6 +120,10 @@ public abstract class AbstractIntegrationTest {
         registry.add("minio.external-endpoint", MINIO::getS3URL);
         registry.add("minio.access-key", MINIO::getUserName);
         registry.add("minio.secret-key", MINIO::getPassword);
+        // Published photos ON, which is the configured production state after Step 4b. The DEGRADED
+        // state (this property unset) cannot be covered here — a @TestPropertySource would fork the
+        // shared Testcontainers context — so FileStorageServiceTest covers it as a unit.
+        registry.add("minio.public-bucket", () -> PUBLIC_BUCKET);
 
         // THE RTDN AND SCHEDULER SETTINGS LIVE HERE, on the SHARED registry, and not on a
         // per-class @TestPropertySource. §8 records why: the ITs deliberately run with the REAL
@@ -143,9 +188,17 @@ public abstract class AbstractIntegrationTest {
     /** The password every {@link #register()} call uses — needed by tests that re-authenticate. */
     protected static final String PASSWORD = "password123";
 
-    /** Smallest byte sequence that passes the JPEG magic-byte check. */
-    protected static final byte[] JPEG_BYTES =
-            {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 10, 20, 30, 40, 50, 60, 70, 80};
+    /**
+     * <strong>A real JPEG carrying real GPS EXIF</strong>, not the twelve magic bytes this used to
+     * be. Every upload in the suite therefore carries metadata, and every publish has something to
+     * strip — so a strip that silently stopped working would fail a test somewhere rather than
+     * only in the one class that thought to check.
+     *
+     * <p>It has to be a well-formed container now for a second reason: the publish path parses it,
+     * and a twelve-byte stub whose APP0 segment declares a length past the end of the file is
+     * refused (correctly) with 409 LISTING_PHOTO_UNPUBLISHABLE.
+     */
+    protected static final byte[] JPEG_BYTES = TestImages.jpegWithGpsExif();
 
     private static final ObjectMapper JSON = new ObjectMapper();
 

@@ -1,8 +1,7 @@
 package az.technest.whereis.storage;
 
 import io.minio.BucketExistsArgs;
-import io.minio.CopyObjectArgs;
-import io.minio.CopySource;
+import io.minio.GetObjectArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
@@ -13,6 +12,7 @@ import io.minio.errors.ErrorResponseException;
 import io.minio.http.Method;
 import java.io.InputStream;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -35,6 +35,7 @@ public class MinioAdapter {
         this.properties = properties;
     }
 
+    /** The PRIVATE bucket: everything a user uploads. */
     public String bucket() {
         return properties.bucket();
     }
@@ -56,24 +57,50 @@ public class MinioAdapter {
         }
     }
 
+    /**
+     * Whether a bucket exists. Used to REPORT on the public bucket at startup, never to create it:
+     * this application must not own the world-readable bucket's lifecycle, because it would create
+     * it without the anonymous-read policy and every published image would 403.
+     */
+    public boolean bucketExists(String bucket) {
+        try {
+            return opsClient.bucketExists(BucketExistsArgs.builder().bucket(bucket).build());
+        } catch (Exception e) {
+            throw new StorageException("Failed to check MinIO bucket '" + bucket + "'", e);
+        }
+    }
+
     public void put(String objectKey, InputStream stream, long size, String contentType) {
+        put(properties.bucket(), objectKey, stream, size, contentType, Map.of());
+    }
+
+    /**
+     * @param headers stored HTTP response headers MinIO replays on every GET — this is how a
+     *                published object carries its own {@code Cache-Control} instead of the reverse
+     *                proxy needing to know which path is public
+     */
+    public void put(String bucket, String objectKey, InputStream stream, long size,
+                    String contentType, Map<String, String> headers) {
         try {
             opsClient.putObject(PutObjectArgs.builder()
-                    .bucket(properties.bucket())
+                    .bucket(bucket)
                     .object(objectKey)
                     .stream(stream, size, -1)
                     .contentType(contentType)
+                    .headers(headers)
                     .build());
         } catch (Exception e) {
             throw new StorageException("Failed to store file", e);
         }
     }
 
-    public void remove(String objectKey) {
-        remove(properties.bucket(), objectKey);
-    }
-
-    /** Outbox consumers pass the bucket recorded per entry — entries can outlive a bucket reconfiguration. */
+    /**
+     * The ONE deletion entry point, and the bucket is always explicit. Producers record it per row
+     * ({@code item_files.bucket}, {@code item_files.published_bucket},
+     * {@code storage_deletion_queue.bucket}) so an entry can outlive a bucket reconfiguration, and
+     * so a private object and a published copy — now in two different buckets — cannot be removed
+     * from the wrong one.
+     */
     public void remove(String bucket, String objectKey) {
         try {
             opsClient.removeObject(RemoveObjectArgs.builder()
@@ -85,10 +112,10 @@ public class MinioAdapter {
         }
     }
 
-    public boolean exists(String objectKey) {
+    public boolean exists(String bucket, String objectKey) {
         try {
             opsClient.statObject(StatObjectArgs.builder()
-                    .bucket(properties.bucket())
+                    .bucket(bucket)
                     .object(objectKey)
                     .build());
             return true;
@@ -103,29 +130,41 @@ public class MinioAdapter {
     }
 
     /**
-     * Server-side copy inside the bucket. The bytes never travel through this JVM — which matters
-     * on a 768 MB container whose multipart ceiling is 10 MB per file — and the copy is what gives
-     * the marketplace an OPAQUE public key instead of republishing
-     * {@code u/{userId}/i/{itemId}/{fileId}} to anonymous visitors.
+     * Reads a whole object into memory — <strong>the only READ operation in this adapter, and it
+     * replaced a server-side {@code copyObject}</strong>.
      *
-     * <p>Uses the OPS client, like every other SDK call: the presign client is pointed at the
-     * browser-facing host and may not be reachable from inside this container at all.
+     * <p>Why the copy had to go: {@code copyObject} is byte-identical by definition, which is
+     * exactly what made a published photo carry the camera's GPS coordinates. Stripping metadata
+     * means rewriting the container, and rewriting means the bytes must pass through this JVM.
+     *
+     * <p><strong>What that costs, and why it is the exposure this service already had.</strong>
+     * {@code MinioConfig}'s 60-second IO timeout is a socket-read timeout, so a black-holed MinIO
+     * can hold the calling Tomcat worker for that long — the reason the SDK's five-minute default
+     * was overridden. {@code put} on the upload path already carries that risk for the same number
+     * of bytes, and both are on authenticated endpoints whose volume is bounded by an account's
+     * plan. The anonymous board never reaches this method: it reads a URL out of a database row.
+     *
+     * @param maxBytes hard ceiling; an object larger than this is refused rather than allocated,
+     *                 so a bucket written to out of band cannot exhaust a 768 MB container
      */
-    public void copy(String sourceKey, String destinationKey) {
-        try {
-            opsClient.copyObject(CopyObjectArgs.builder()
-                    .bucket(properties.bucket())
-                    .object(destinationKey)
-                    .source(CopySource.builder()
-                            .bucket(properties.bucket())
-                            .object(sourceKey)
-                            .build())
-                    .build());
+    public byte[] get(String bucket, String objectKey, int maxBytes) {
+        try (InputStream in = opsClient.getObject(GetObjectArgs.builder()
+                .bucket(bucket)
+                .object(objectKey)
+                .build())) {
+            byte[] bytes = in.readNBytes(maxBytes);
+            if (in.read() != -1) {
+                throw new StorageException("Stored object is larger than " + maxBytes + " bytes", null);
+            }
+            return bytes;
+        } catch (StorageException e) {
+            throw e;
         } catch (Exception e) {
-            throw new StorageException("Failed to copy object", e);
+            throw new StorageException("Failed to read stored file", e);
         }
     }
 
+    /** Private objects only: a published copy needs no signature and is never presigned. */
     public String presignGet(String objectKey, Duration ttl) {
         try {
             return presignClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()

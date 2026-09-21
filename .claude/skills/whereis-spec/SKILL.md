@@ -275,8 +275,12 @@ marketplace/ the internal marketplace (V12, BR-14) — the FIRST surface in this
            BLOCK -> archived -> already-listed -> photo -> price -> description -> plan cap LAST (the
            more specific answer wins, as DUPLICATE_NAME beats the space limit; the block goes second
            because no listing-level fix gets past it). The public photo is an
-           opaque server-side COPY at `p/{uuid}`, because a presigned URL carries the object key in
-           its path and the private key is u/{userId}/i/{itemId}/{fileId}.
+           opaque COPY at `p/{uuid}`, because a presigned URL carries the object key in
+           its path and the private key is u/{userId}/i/{itemId}/{fileId}. V14 made it a
+           METADATA-STRIPPED copy in a SECOND, world-readable bucket at a PERMANENT unsigned URL
+           (`ImageMetadataStripper`, `item_files.published_bucket`, `minio.public-bucket`): the old
+           server-side `copyObject` was byte-identical and therefore published the camera's GPS, and
+           the old destination was the private bucket, so every board image expired in 10 minutes.
            `moderation/` (V13, BR-15) is the SELLER-level sanction and the FIRST operator endpoint in
            this codebase — `blocked_sellers` (user_id PK, ON DELETE CASCADE, reason+note+blocked_by),
            `SellerBlockReason`, `SellerBlockService`, `SellerModerationController` at
@@ -300,7 +304,7 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
            diacritics; only the key is folded, display is untouched.
 ```
 
-## 4. Database invariants (Flyway V1–V13)
+## 4. Database invariants (Flyway V1–V14)
 
 - `users.email` unique on `lower(email)`; `refresh_tokens.token_hash` **varchar(64)** — NEVER
   char(N) anywhere: Hibernate 6.6 validate treats bpchar as a type mismatch and the app won't boot.
@@ -427,6 +431,23 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
   block list degenerates to a zero-row scan, **deepest legal page (99 of 50) roughly DOUBLES**
   (5,016 -> 10,291 buffers) because the probe runs once per row EXAMINED — bounded by `MAX_PAGE`
   today, and the argument for keyset pagination if the board ever pages deeper.
+- `item_files.published_bucket` (V14): WHICH bucket a published marketplace photo's public copy is
+  in, because **there are now TWO buckets** — `item_files.bucket` means the PRIVATE one.
+  `ck_item_files_published_pair` makes it and `published_object_key` set or absent TOGETHER, and that
+  CHECK is load-bearing: it is what lets `enqueuePublishedCopiesOfUser` select `f.published_bucket`
+  on the predicate `published_object_key IS NOT NULL` and still satisfy
+  `storage_deletion_queue.bucket`'s NOT NULL, so the single-transaction account deletion cannot abort
+  on it. Recorded per row for the reason `bucket` already is — an outbox entry must be able to name
+  the bucket its object is actually in. **Every outbox CONSUMER needed no change** (they already
+  honour a per-row bucket); the two PRODUCERS did, and selecting `f.bucket` for a published copy is
+  the quietest bug in the storage layer: the janitor deletes nothing, reports success, drops the
+  queue row, and leaves a photo on the open internet with nothing left to find it by.
+  `StorageDeletionQueueRepositoryTest` pins both statements' bucket column by reading the `@Query`.
+  V14 also **unpublishes every copy made before it** (enqueue in the private bucket, then NULL the
+  pair): those objects are byte-identical to the originals, so they carry the GPS the strip exists to
+  remove, and they are in a bucket no permanent public URL can reach. A pre-V14 listing therefore
+  stays ACTIVE and loses its picture; `imageUrl` comes out null, which is the shape the board already
+  degrades to. No index — read by primary key or by the outbox's one-user scan.
 - Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java
   enums; each has a test that computes the effective constraint across migrations (`PlanTest`,
   `SubscriptionStateTest`, `SubscriptionTierTest`, `PurchaseProvenanceTest`, `AssistantOutcomeTest`,
@@ -642,6 +663,50 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
   `SellerBlockServiceTest`, and moving the path under `/api/v1/market/` fails all twelve new ITs
   (the board's chain has no decoder, so `CurrentUser` would throw a 500 and an unmatched POST would
   be denied by `denyAll`).
+- **A PUBLISHED photo is a STRIPPED COPY in a SECOND bucket, and both halves are the guard** (V14).
+  `ImageMetadataStripper` rewrites the CONTAINER — JPEG marker segments, PNG chunks, RIFF chunks —
+  keeping only what a decoder needs for the pixels and dropping everything else, which is why it
+  handles all three accepted formats and why the compressed image data is byte-identical (no
+  re-encode, no quality loss). An allowlist, never a denylist: each format has more than one hiding
+  place (JPEG EXIF/XMP in APP1, IPTC in APP13, COM, trailing bytes after EOI; PNG `eXIf`/`tEXt`/
+  `zTXt`/`iTXt`; WebP `EXIF`/`XMP `). **No image dependency was added** — no single library covers
+  the three formats losslessly (Commons Imaging has no PNG or WebP writer, the JDK has no WebP writer
+  at all), so a library would have bought one third of the problem. **A strip failure REFUSES the
+  publish** (409 `LISTING_PHOTO_UNPUBLISHABLE`, logged at ERROR with the file id and never the
+  bytes); falling back to the original is the hole reopening quietly and there is no code path that
+  can. The server-side `MinioAdapter.copy` is GONE — byte-identical is exactly the defect — replaced
+  by the adapter's first READ. Pinned by `MarketplacePhotoPrivacyIT`, which fetches the published
+  object over HTTP and looks for real GPS rationals in real bytes; a test asserting a flag or a code
+  path would pass against a strip that did nothing.
+- **The published copy's URL is PERMANENT and UNSIGNED, and `minio.presign-ttl` must stay off the
+  marketplace.** That one global property (10 min) governs every private photo; presigning the public
+  copy made board images uncacheable (the signature rotates per request) and would hand a website
+  links that expire mid-page. `FileStorageService.publishedImageUrls` is string concatenation over
+  two columns — no MinIO call, no signature — and takes the bucket from the ROW, not the
+  configuration. Revocation is therefore DELETING the object (withdraw, mark-sold, account deletion,
+  the operator's outbox insert), bounded afterwards only by the object's own
+  `Cache-Control: public, max-age=86400`; that day is stated on both public privacy pages.
+- **`minio.public-bucket` unset is a DEPLOYABLE state that DEGRADES**, the same shape
+  `whereis.play.provider=disabled` uses: `publishPhoto` is a no-op, listings publish, the board serves
+  them with a null `imageUrl`, one INFO line at startup states the mode. The application NEVER
+  creates that bucket — it cannot grant the anonymous-read policy, and a bucket without it 403s every
+  image with nothing saying why — so a named-but-absent bucket is a startup WARN plus a loud 502 on
+  publish. The policy grants `s3:GetObject` and **deliberately not `s3:ListBucket`**: an anonymous
+  bucket listing would enumerate every opaque `p/` key and the opacity would buy nothing.
+  `MinioProperties` refuses to start if it equals `minio.bucket`. Covered by unit test, not IT — a
+  `@TestPropertySource` would fork the shared Testcontainers context.
+- **The marketplace board's rate limiter is exercised by `MarketBoardRateLimitFilterTest` and by
+  nothing else**, because `AbstractIntegrationTest` raises both budgets to 100000 and
+  `TestRestTemplate` cannot vary the client address. A mock request can, so that is where the
+  budgets, the per-address separation, the fixed-window re-open and the `Semaphore(4)` bulkhead are
+  checked. Do not re-lower the IT budgets to "get coverage" — the whole suite shares one slot from
+  127.0.0.1 and would trip in whichever test happened to run last.
+- **The media vhost carries `log_skip`** (`deploy/Caddyfile.whereis`). Caddy's default access log
+  records the full URI, which for a private photo is
+  `/{bucket}/u/{userId}/i/{itemId}/{fileId}?X-Amz-Signature=…` — both UUIDs the marketplace design
+  works hardest to keep apart, plus a live signature, written to a disk `db_backup.sh` archives. Same
+  answer and same reasoning as the `/play/rtdn` block: dropping the line cannot leak by accident,
+  where a redaction filter fails silently after a Caddy upgrade.
 - Bulk `@Modifying` updates: think before `clearAutomatically` — it detaches managed entities
   the caller still mutates (this exact bug shipped once and was caught in review).
 - Login is enumeration-safe (dummy BCrypt verify + uniform INVALID_CREDENTIALS).
@@ -661,8 +726,8 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 529 unit tests — must stay green without Docker OR network
-./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 199 tests — needs Docker
+./gradlew build              # compile + 571 unit tests — must stay green without Docker OR network
+./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 213 tests — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
 
@@ -675,7 +740,10 @@ executed ZERO tests — this has already produced a wave whose "green" first run
 API even on a machine with the key exported. `ClaudeLiveApiTest` is the ONLY test that leaves the
 machine; it is skipped, not failed, when the key is absent.
 
-Integration tests are `@Tag("integration")`, singleton containers in `AbstractIntegrationTest`.
+Integration tests are `@Tag("integration")`, singleton containers in `AbstractIntegrationTest`,
+whose static block ALSO creates the world-readable MinIO bucket with an anonymous GET-only policy —
+the application never creates it, so the suite performs deploy/README.md Step 4b itself and thereby
+proves those operator steps produce a working public URL.
 **One class forks the Spring context and must**: `BillingDisabledProdIT` runs `@ActiveProfiles("prod")`
 with NO `whereis.play.*` property set, which the shared registry (verifier=`fake`) makes unreachable
 by construction. It also takes its OWN database inside the same PostgreSQL container, because
@@ -1361,13 +1429,16 @@ BR-14; the decisions that must not be re-derived:
   than `permitAll()`, because the matcher covers a subtree that will grow. A request there is
   always anonymous; `MarketplacePublicSurfaceArchTest` forbids `CurrentUser`, `..location..`,
   `..item.dto..` and `..search..` inside `..marketplace..`.
-* **The public photo is an opaque server-side COPY** at `p/{uuid}` (`item_files
-  .published_object_key`, UNIQUE). The private key is `u/{userId}/i/{itemId}/{fileId}` and a
-  presigned URL carries the key in its PATH — serving the private object would publish both UUIDs
-  to every crawler and make omitting `sellerId` from the DTO pointless. `presignPublished` is
-  deliberately NOT `primaryImages`, whose contract is that the ids came from a userId-scoped
-  finder; here ownership is a FOREIGN KEY. `FileStorageService.delete` refuses a published file
-  with 409 `ITEM_LISTED`.
+* **The public photo is an opaque COPY** at `p/{uuid}` (`item_files.published_object_key`, UNIQUE).
+  The private key is `u/{userId}/i/{itemId}/{fileId}` and a presigned URL carries the key in its
+  PATH — serving the private object would publish both UUIDs to every crawler and make omitting
+  `sellerId` from the DTO pointless. `publishedImageUrls` is deliberately NOT `primaryImages`, whose
+  contract is that the ids came from a userId-scoped finder; here ownership is a FOREIGN KEY.
+  `FileStorageService.delete` refuses a published file with 409 `ITEM_LISTED`. **V14 superseded two
+  details of this bullet and kept its shape**: the copy is no longer server-side (it is read,
+  metadata-stripped and re-written, because a `copyObject` is byte-identical and therefore published
+  the camera's GPS) and it no longer lives in the private bucket or gets presigned (§6). The opaque
+  key, the recorded column and the FOREIGN-KEY ownership argument are unchanged.
 * **The kill-switch is `hidden_at` + `hidden_reason`, not a fourth status** (the `voided_at`-vs-
   `state` lesson), and `ux_listings_item_active`'s predicate is `status = 'ACTIVE'` ALONE — a
   hidden listing still occupies its item's one slot, or moderation is whack-a-mole. `@DynamicUpdate`
@@ -1452,7 +1523,8 @@ content. That is the gap that gets an app removed, so it went first. Details in
 Two other things this wave found in the merged code and fixed: `ListingRepository.findVisible` was
 an UNCALLED JPQL copy of the public visibility rule (deleted — see §6), and three javadocs pointed
 at a `ListingStatusTest` that does not exist (repointed at the tests that do the work). And one it
-found and did NOT fix: **nothing tests the board's rate limiter**, whose production budgets
+found and did NOT fix (~~closed 2026-09-21~~ — `MarketBoardRateLimitFilterTest`, §6):
+**nothing tests the board's rate limiter**, whose production budgets
 (30 reads/min, 5 reports/hour per address) were an undeclared ceiling on how many board ITs could
 ever exist — the whole suite shares one slot from 127.0.0.1 and was already within a few requests
 of tripping it. The shared registry now raises both, which is what
@@ -1464,6 +1536,46 @@ Suites: **unit 529** (+19: `SellerBlockServiceTest` 10, `MarketBoardVisibilityTe
 **integration 199 across 23 classes** (+12, all in `MarketplaceBoardIT`, now 28). All thirteen migrations re-applied in order against a real
 PostgreSQL 16 before any Java was written, and the board plans were read out of
 `EXPLAIN (ANALYZE, BUFFERS)` on 20,000 seeded listings rather than reasoned about.
+
+**2026-09-21 — the published-photo path (V14): EXIF was public and the URL died in ten minutes.**
+Two holes the merged marketplace left open. Neither failed anything at build time and neither threw
+at runtime, which is why both are written down in §4 and §6 rather than only in the migration.
+
+* **The photo carried the camera's GPS.** Publishing was a server-side `copyObject` — byte-identical
+  by definition — and nothing in `src/main/java` decoded or rewrote an image (`build.gradle`
+  declared no image library at all). So a listing photo shipped `GPSLatitude`, `GPSLongitude`,
+  `DateTimeOriginal` and the device make/model/serial, defeating the decision the whole feature was
+  designed around: a listing exposes a CITY, never where the item is kept. A crawler that downloaded
+  one photo had the coordinates anyway.
+* **The public copy was in the PRIVATE bucket.** `copy()` used one bucket for source and destination,
+  so the board had to presign it and every image URL expired after `minio.presign-ttl` — one global
+  10-minute property shared with every private photo. Board images were cacheable by nobody, and the
+  planned website would have been handed links that expire mid-page.
+
+The decisions not to re-derive: the container rewrite over a re-encode (and why no library fits all
+three formats), the refusal rather than a fallback, the second bucket and the per-row
+`published_bucket`, and unset-means-degraded — all in §6, with the schema half in §4. **The
+server-side copy was DELETED, not kept**: a byte-identical copy is the defect, so leaving the method
+would leave the hole one caller away.
+
+Three smaller things this wave closed on the way. **The board's rate limiter had no test at all** —
+BR-15 raised the IT budgets to 100000, correctly, and `TestRestTemplate` cannot vary the client
+address; `MarketBoardRateLimitFilterTest` drives the filter with mock requests from different
+addresses instead (§6). **The media vhost had no `log_skip`**, so Caddy had been writing private
+object keys and live presigned signatures to a log the nightly backup archives (§6). And **both
+public privacy pages were corrected in AZ and EN**: "precise location (GPS) is not collected" was
+false while EXIF was published verbatim, so the pages now say where coordinates CAN reach us (inside
+an uploaded photo), that the published copy is stripped, that the owner's own copy is not, and that
+a published photo sits at a permanent public address whose cached copies survive deletion by up to
+one day.
+
+`MinioAdapter` gained its first READ operation as a result, so `MinioConfig`'s 60-second IO timeout
+now bounds a publish as well as an upload — the same exposure, the same number of bytes, on an
+authenticated endpoint. The anonymous board reaches none of it: it reads a URL out of two columns.
+
+Suites: **unit 571** (+42: `ImageMetadataStripperTest` 17, `FileStorageServiceTest` +11,
+`MarketBoardRateLimitFilterTest` 9, `StorageDeletionQueueRepositoryTest` 3, `ListingSchemaTest` +2),
+**integration 213 across 24 classes** (+14, all in the new `MarketplacePhotoPrivacyIT`).
 
 ## 9. Future extension points (design for, do not build)
 

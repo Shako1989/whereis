@@ -9,6 +9,7 @@ import az.technest.whereis.marketplace.ListingConflictException;
 import az.technest.whereis.storage.dto.ItemFileResponse;
 import az.technest.whereis.storage.dto.ItemPrimaryImage;
 import az.technest.whereis.storage.dto.PresignedUrlResponse;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
@@ -19,6 +20,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,9 +29,31 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class FileStorageService {
+
+    /**
+     * Ceiling on a photo publish reads into memory. {@code spring.servlet.multipart.max-file-size}
+     * is 10 MB, so nothing uploaded through this API can exceed it; the extra headroom is for an
+     * object written to the bucket out of band, which must be refused rather than allocated on a
+     * 768 MB container.
+     */
+    private static final int MAX_PUBLISHABLE_BYTES = 12 * 1024 * 1024;
+
+    /**
+     * Stored on the published object, so the header comes from the ORIGIN and a CDN or a browser
+     * needs no cooperation from the reverse proxy to cache it. The key is a random UUID and the
+     * object is never overwritten, so the URL-to-bytes mapping is immutable.
+     *
+     * <p>One day and not one year, deliberately: withdrawing a listing DELETES the object, and this
+     * number is the only bound on how long an already-cached copy can outlive that. A day keeps a
+     * board page and a CDN edge useful while keeping the revocation window something an operator
+     * can state on the public privacy page.
+     */
+    private static final Map<String, String> PUBLIC_OBJECT_HEADERS =
+            Map.of(HttpHeaders.CACHE_CONTROL, "public, max-age=86400");
 
     private final ItemRepository itemRepository;
     private final ItemFileRepository itemFileRepository;
@@ -66,7 +91,7 @@ public class FileStorageService {
                     .build(), primary);
             return toResponse(saved);
         } catch (RuntimeException e) {
-            compensateUpload(objectKey);
+            compensate(adapter.bucket(), objectKey);
             throw e;
         }
     }
@@ -74,13 +99,16 @@ public class FileStorageService {
     /**
      * Compensation for "object stored but metadata insert failed": try to remove the object;
      * if MinIO is also failing, fall back to the deletion outbox so the janitor removes it later.
+     *
+     * <p>The bucket is a parameter because there are now two: the private one an upload writes to,
+     * and the world-readable one a publish writes to.
      */
-    private void compensateUpload(String objectKey) {
+    private void compensate(String bucket, String objectKey) {
         try {
-            adapter.remove(objectKey);
+            adapter.remove(bucket, objectKey);
         } catch (RuntimeException cleanupFailure) {
             queueRepository.save(StorageDeletionQueueEntry.builder()
-                    .bucket(adapter.bucket())
+                    .bucket(bucket)
                     .objectKey(objectKey)
                     .build());
         }
@@ -161,16 +189,37 @@ public class FileStorageService {
     }
 
     /**
-     * Copies this photo to an OPAQUE public key so the marketplace board can presign it without
-     * publishing {@code u/{userId}/i/{itemId}/{fileId}} to anonymous visitors, and records the key.
+     * Writes a METADATA-STRIPPED copy of this photo into the world-readable bucket under an OPAQUE
+     * key, and records both so the board can hand out a permanent URL.
      *
-     * <p>Deliberately NOT {@code @Transactional}, and the order is {@link #upload}'s verbatim: the
-     * object is copied FIRST, then a short metadata transaction records it, and a failure of the
-     * second compensates by enqueueing the copy — so a crash between the two leaves a queued
-     * object rather than a row pointing at nothing.
+     * <p><strong>Two things this replaced, and why each had to go.</strong> It used to be a
+     * server-side {@code copyObject} inside the private bucket. That copy is byte-identical by
+     * definition, so the published photo carried whatever the camera wrote — GPS coordinates
+     * included — which defeats a listing exposing only a city. And the destination being the
+     * PRIVATE bucket meant the board had to presign it, so every board image URL expired after
+     * {@code minio.presign-ttl} (10 minutes, shared with every private photo) and could be cached
+     * by nobody. The opaque {@code p/} key survives both changes untouched: it is what keeps the
+     * seller's user id and the item id out of a URL a crawler keeps.
+     *
+     * <p><strong>Failure is loud and there is no fallback.</strong> If the container cannot be
+     * rewritten the publish is REFUSED — a 409 asking for a different photo — because the only other
+     * option is storing the original bytes, which is this hole reopening quietly. If the public
+     * bucket is configured but missing, {@code put} throws and the seller gets a 502; the startup
+     * log already named the operator step.
+     *
+     * <p><strong>Degraded mode returns null.</strong> With {@code minio.public-bucket} unset there
+     * is nowhere legitimate to put a world-readable object, so nothing is written and the listing
+     * goes on the board without an image — see {@link MinioProperties#publishedPhotosEnabled()}.
+     *
+     * <p>Deliberately NOT {@code @Transactional}: it reads and writes MinIO. The order is
+     * {@link #upload}'s verbatim — object first, then a short metadata transaction, with a failure
+     * of the second compensated by removing or enqueueing the object — so a crash between the two
+     * leaves a collectable object rather than a row pointing at nothing.
      *
      * <p>Idempotent: a photo that already has a copy keeps it. Re-publishing the same cover must
      * not mint a second object nobody will ever collect.
+     *
+     * @return the published object key, or null when published photos are switched off
      */
     public String publishPhoto(UUID userId, UUID itemId, UUID fileId) {
         requireOwnedItem(userId, itemId);
@@ -178,22 +227,57 @@ public class FileStorageService {
         if (file.getPublishedObjectKey() != null) {
             return file.getPublishedObjectKey();
         }
+        String publicBucket = properties.publicBucket();
+        if (publicBucket == null) {
+            log.info("Published photos are switched off (minio.public-bucket unset): listing cover "
+                    + "{} gets no public copy and the board will serve the listing without an image",
+                    fileId);
+            return null;
+        }
+        // Checked from the recorded size first, so an object far too large to strip costs no read.
+        if (file.getFileSize() > MAX_PUBLISHABLE_BYTES) {
+            throw ListingConflictException.photoUnpublishable();
+        }
+        byte[] stripped = stripped(file, fileId);
         // No user id, no item id, no file id, no listing id, no structure at all.
         String publishedKey = "p/" + UUID.randomUUID();
-        adapter.copy(file.getObjectKey(), publishedKey);
+        adapter.put(publicBucket, publishedKey, new ByteArrayInputStream(stripped), stripped.length,
+                file.getContentType(), PUBLIC_OBJECT_HEADERS);
         try {
-            persister.recordPublishedKey(fileId, publishedKey);
+            persister.recordPublishedKey(fileId, publicBucket, publishedKey);
         } catch (RuntimeException e) {
-            compensateUpload(publishedKey);
+            compensate(publicBucket, publishedKey);
             throw e;
         }
         return publishedKey;
     }
 
     /**
-     * Drops the public copy in ONE transaction — clear the column, enqueue the object — which is
+     * The byte read and the strip, together, because neither is useful without the other: a read
+     * whose result is not stripped is the hole, and a strip has nothing to work on without the read.
+     *
+     * <p>The refusal is ERROR-level and names the FILE ID and the parse failure — never the bytes,
+     * never the object key (which carries the owner's user id).
+     */
+    private byte[] stripped(ItemFile file, UUID fileId) {
+        byte[] original = adapter.get(file.getBucket(), file.getObjectKey(), MAX_PUBLISHABLE_BYTES);
+        try {
+            return ImageMetadataStripper.strip(original);
+        } catch (UnstrippableImageException e) {
+            log.error("Refusing to publish photo {}: its metadata could not be removed ({})",
+                    fileId, e.getMessage());
+            throw ListingConflictException.photoUnpublishable();
+        }
+    }
+
+    /**
+     * Drops the public copy in ONE transaction — clear the columns, enqueue the object — which is
      * {@link #delete}'s shape. The board 404s the listing the moment its row ends; this is what
-     * makes the already-minted presigned URLs expire early rather than at their TTL.
+     * removes the photo from the internet at the same moment.
+     *
+     * <p>The public URL is permanent, so DELETING THE OBJECT is the whole of the revocation — there
+     * is no expiring signature doing half the work any more. What survives is a copy a cache already
+     * took, bounded by the one-day {@code Cache-Control} on the object and by nothing else.
      */
     @Transactional
     public void unpublishPhoto(UUID itemId, UUID fileId) {
@@ -203,11 +287,21 @@ public class FileStorageService {
         }
         StorageDeletionQueueEntry entry = queueRepository.save(publishedQueueEntry(file));
         file.setPublishedObjectKey(null);
+        file.setPublishedBucket(null);
         sweepAfterCommit(List.of(entry));
     }
 
     /**
-     * Presigns the PUBLISHED copies of the given {@code item_files} ids, for the anonymous board.
+     * The PERMANENT public URLs of the given {@code item_files} ids' published copies, for the
+     * anonymous board.
+     *
+     * <p><strong>No presigning, and that is the point.</strong> These objects are in a
+     * world-readable bucket, so the URL is a plain address a browser and a CDN can cache. It used to
+     * be a presigned GET bounded by {@code minio.presign-ttl} — one global 10-minute property
+     * shared with every private photo — which made a board page's images uncacheable (the signature
+     * rotates on every request) and would have handed a future website links that expire while
+     * somebody is still reading the page. {@code minio.presign-ttl} is untouched: it still governs
+     * every private photo, and nothing here reads it.
      *
      * <p><strong>Deliberately not {@link #primaryImages}.</strong> That method's contract is "the
      * ids must already have been produced by a userId-scoped finder", and this caller has no user
@@ -216,18 +310,25 @@ public class FileStorageService {
      * ownership can write, and whose composite FK guarantees the file belongs to the listed item.
      * Reusing {@code primaryImages} would leave it without a single honest precondition.
      *
-     * <p>ONE query for the whole page. Presigning is a local HMAC, so read-only is fine.
+     * <p>ONE query for the whole page, and no MinIO call at all — the URL is string concatenation
+     * over two columns, so read-only is fine and there is nothing to time out.
+     *
+     * <p>A file with no published copy is simply ABSENT from the map, which is what makes the
+     * unconfigured-bucket mode degrade: the board renders a listing with a null {@code imageUrl}
+     * rather than failing.
      */
     @Transactional(readOnly = true)
-    public Map<UUID, String> presignPublished(Collection<UUID> fileIds) {
+    public Map<UUID, String> publishedImageUrls(Collection<UUID> fileIds) {
         if (fileIds.isEmpty()) {
             return Map.of();
         }
         Map<UUID, String> urls = new HashMap<>();
         for (ItemFile file : itemFileRepository.findAllById(fileIds)) {
-            if (file.getPublishedObjectKey() != null) {
-                urls.put(file.getId(), adapter.presignGet(
-                        file.getPublishedObjectKey(), properties.presignTtl()));
+            // The pair CHECK makes one-without-the-other unrepresentable; read both anyway, because
+            // a null bucket would otherwise build the string "null" into a public URL.
+            if (file.getPublishedObjectKey() != null && file.getPublishedBucket() != null) {
+                urls.put(file.getId(), properties.publicUrlOf(
+                        file.getPublishedBucket(), file.getPublishedObjectKey()));
             }
         }
         return urls;
@@ -290,9 +391,14 @@ public class FileStorageService {
         });
     }
 
+    /**
+     * {@code published_bucket}, never {@code bucket}: the public copy is in a different bucket, and
+     * enqueueing the right key against the wrong bucket would have the janitor delete nothing,
+     * report success, drop the row, and leave a photo on the open internet for good.
+     */
     private StorageDeletionQueueEntry publishedQueueEntry(ItemFile file) {
         return StorageDeletionQueueEntry.builder()
-                .bucket(file.getBucket())
+                .bucket(file.getPublishedBucket())
                 .objectKey(file.getPublishedObjectKey())
                 .build();
     }

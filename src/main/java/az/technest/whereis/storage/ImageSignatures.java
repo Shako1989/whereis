@@ -18,6 +18,9 @@ public final class ImageSignatures {
 
     public static final Set<String> ALLOWED_CONTENT_TYPES = Set.of("image/jpeg", "image/png", "image/webp");
 
+    /** Bytes needed to tell the three accepted formats apart — WebP's marker ends at byte 11. */
+    static final int HEAD_BYTES = 12;
+
     private ImageSignatures() {
     }
 
@@ -29,29 +32,41 @@ public final class ImageSignatures {
         if (contentType == null || !ALLOWED_CONTENT_TYPES.contains(contentType)) {
             throw unsupported();
         }
-        byte[] head = readHead(file);
-        boolean matches = switch (contentType) {
-            case "image/jpeg" -> startsWith(head, new int[]{0xFF, 0xD8, 0xFF});
-            case "image/png" -> startsWith(head, new int[]{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A});
-            case "image/webp" -> startsWith(head, new int[]{0x52, 0x49, 0x46, 0x46})
-                    && head.length >= 12
-                    && head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P';
-            default -> false;
-        };
-        if (!matches) {
+        // The DECLARED type must equal what the bytes actually are: a PNG announced as a JPEG is
+        // refused, which is what makes the recorded content_type trustworthy later on.
+        if (!contentType.equals(sniff(readHead(file)))) {
             throw unsupported();
         }
     }
 
+    /**
+     * The content type the LEADING BYTES say this is, or null for anything else. The one place
+     * magic numbers are compared, so the publish-time metadata strip dispatches on exactly what
+     * upload validated rather than on a second, drifting copy of the same table.
+     */
+    static String sniff(byte[] head) {
+        if (startsWith(head, 0xFF, 0xD8, 0xFF)) {
+            return "image/jpeg";
+        }
+        if (startsWith(head, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)) {
+            return "image/png";
+        }
+        if (startsWith(head, 0x52, 0x49, 0x46, 0x46) && head.length >= HEAD_BYTES
+                && head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P') {
+            return "image/webp";
+        }
+        return null;
+    }
+
     private static byte[] readHead(MultipartFile file) {
         try (InputStream in = file.getInputStream()) {
-            return in.readNBytes(12);
+            return in.readNBytes(HEAD_BYTES);
         } catch (IOException e) {
             throw new StorageException("Failed to read uploaded file", e);
         }
     }
 
-    private static boolean startsWith(byte[] data, int[] signature) {
+    private static boolean startsWith(byte[] data, int... signature) {
         if (data.length < signature.length) {
             return false;
         }

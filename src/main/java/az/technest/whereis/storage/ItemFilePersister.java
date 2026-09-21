@@ -1,5 +1,6 @@
 package az.technest.whereis.storage;
 
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,12 +25,17 @@ public class ItemFilePersister {
     }
 
     /**
-     * Records the public copy's key in its OWN short transaction, so the MinIO copy that precedes
-     * it is never inside one — the same reason {@link #saveNew} exists.
+     * Records the public copy's bucket AND key in its OWN short transaction, so the MinIO read and
+     * write that precede it are never inside one — the same reason {@link #saveNew} exists.
+     *
+     * <p>Both columns or neither: {@code ck_item_files_published_pair} refuses a half-written pair,
+     * because the deletion outbox reads them together.
      */
     @Transactional
-    public void recordPublishedKey(java.util.UUID fileId, String publishedObjectKey) {
-        itemFileRepository.findById(fileId)
-                .ifPresent(file -> file.setPublishedObjectKey(publishedObjectKey));
+    public void recordPublishedKey(UUID fileId, String publishedBucket, String publishedObjectKey) {
+        itemFileRepository.findById(fileId).ifPresent(file -> {
+            file.setPublishedBucket(publishedBucket);
+            file.setPublishedObjectKey(publishedObjectKey);
+        });
     }
 }

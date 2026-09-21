@@ -51,6 +51,11 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-item-images}
+      # Blank by default, so a local stack behaves like the production default: listings publish and
+      # the board serves them without an image. To exercise published photos locally, create the
+      # bucket and give it an anonymous s3:GetObject policy first (deploy/README.md Step 4b) — this
+      # application never creates it, because it cannot grant that policy.
+      MINIO_PUBLIC_BUCKET: ${MINIO_PUBLIC_BUCKET-}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (at least 32 bytes)}
       AI_PROVIDER: ${AI_PROVIDER:-mock}
       AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}

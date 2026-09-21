@@ -63,7 +63,7 @@ public class MarketBoardService {
         boolean hasMore = rows.size() > safeSize;
         List<MarketBoardDao.BoardRow> visible = hasMore ? rows.subList(0, safeSize) : rows;
 
-        Map<UUID, String> images = presign(visible);
+        Map<UUID, String> images = imageUrls(visible);
         List<PublicListingSummary> listings = new ArrayList<>(visible.size());
         for (MarketBoardDao.BoardRow row : visible) {
             listings.add(new PublicListingSummary(row.id(), row.title(), row.price(), row.currency(),
@@ -76,7 +76,7 @@ public class MarketBoardService {
     public PublicListingDetail detail(UUID listingId) {
         MarketBoardDao.BoardRow row = dao.findVisible(listingId)
                 .orElseThrow(ListingNotFoundException::new);
-        String imageUrl = presign(List.of(row)).get(row.coverFileId());
+        String imageUrl = imageUrls(List.of(row)).get(row.coverFileId());
         return new PublicListingDetail(row.id(), row.title(), row.description(), row.price(),
                 row.currency(), row.city(), row.phone(), imageUrl, row.createdAt());
     }
@@ -105,13 +105,19 @@ public class MarketBoardService {
     }
 
     /**
-     * Presigns the PUBLISHED copies — never {@code primaryImages}, whose contract is that the ids
-     * came from a userId-scoped finder. These ids come from {@code listings.cover_file_id}, which
-     * only an authenticated publish could write. ONE statement for the whole page.
+     * The PUBLISHED copies' permanent public URLs — never {@code primaryImages}, whose contract is
+     * that the ids came from a userId-scoped finder. These ids come from
+     * {@code listings.cover_file_id}, which only an authenticated publish could write. ONE statement
+     * for the whole page, and no MinIO call: the URL is built from two columns.
+     *
+     * <p>A cover with no published copy is absent from the map, so {@code imageUrl} comes out null
+     * and the listing is served without a picture. That is the deployment state before the public
+     * bucket exists, and a listing published before V14 moved published copies out of the private
+     * bucket.
      */
-    private Map<UUID, String> presign(List<MarketBoardDao.BoardRow> rows) {
+    private Map<UUID, String> imageUrls(List<MarketBoardDao.BoardRow> rows) {
         List<UUID> fileIds = rows.stream().map(MarketBoardDao.BoardRow::coverFileId).toList();
-        return fileStorageService.presignPublished(fileIds);
+        return fileStorageService.publishedImageUrls(fileIds);
     }
 
     private static String normalizeFilter(String raw, int minimumLength) {

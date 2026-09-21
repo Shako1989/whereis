@@ -60,6 +60,19 @@ minio:
   access-key: ${MINIO_ACCESS_KEY:}
   secret-key: ${MINIO_SECRET_KEY:}
   bucket: ${MINIO_BUCKET:item-images}
+  # THE SECOND BUCKET: world-readable, holds only the metadata-stripped public copies of published
+  # marketplace photos (opaque `p/{uuid}` keys). BLANK IS A SUPPORTED DEPLOYABLE STATE and the
+  # default — the same shape whereis.play.provider=disabled uses. Unset, listings still publish and
+  # the board still serves them, without an image; nothing fails to start and nothing 500s. Set it
+  # only once the bucket exists AND has an anonymous download policy (deploy/README.md Step 4b) —
+  # this application deliberately does not create it, because it cannot grant that policy and a
+  # bucket without it makes every listing image 403 with nothing saying why.
+  #
+  # It must never be the same bucket as `bucket` above: anonymous read is granted per BUCKET, so
+  # one bucket for both would publish every private photo. MinioProperties refuses to start on that.
+  public-bucket: ${MINIO_PUBLIC_BUCKET:}
+  # PRIVATE photos only, and NOT the marketplace. A published copy is at a permanent public address
+  # and is never presigned, which is what lets a browser and a CDN cache it.
   presign-ttl: ${MINIO_PRESIGN_TTL:10m}
 
 storage:

@@ -56,6 +56,23 @@ services:
       MINIO_ACCESS_KEY: ${WHEREIS_MINIO_ACCESS_KEY:?set WHEREIS_MINIO_ACCESS_KEY in .env}
       MINIO_SECRET_KEY: ${WHEREIS_MINIO_SECRET_KEY:?set WHEREIS_MINIO_SECRET_KEY in .env}
       MINIO_BUCKET: ${WHEREIS_MINIO_BUCKET:-whereis-item-images}
+      # The SECOND, world-readable bucket: metadata-stripped public copies of published marketplace
+      # photos, at permanent unsigned URLs (V14).
+      #
+      # NO DEFAULT, AND THAT IS THE POINT — the same argument as PLAY_PROVIDER=disabled below.
+      # Unset, published photos are switched off: listings publish, the board serves them without an
+      # image, nothing fails to start and nothing 500s. A DEFAULT would be worse than no value,
+      # because the bucket has to be created with an anonymous-read policy the application cannot
+      # grant itself (README Step 4b) — so a name pointing at a bucket that does not exist yet would
+      # turn `up -d` into a deployment where every publish answers 502.
+      #
+      # Colon-less: a blank value must stay blank rather than being substituted, because blank IS
+      # the off switch. Set it in .env only AFTER Step 4b, and it must never equal
+      # WHEREIS_MINIO_BUCKET — anonymous read is granted per BUCKET, so one bucket for both would
+      # publish every private photo. The application refuses to start on that.
+      MINIO_PUBLIC_BUCKET: ${WHEREIS_MINIO_PUBLIC_BUCKET-}
+      # PRIVATE photos only. Deliberately untouched by V14: a published copy is never presigned, so
+      # this governs exactly what it always did and raising it would widen every private link.
       MINIO_PRESIGN_TTL: ${WHEREIS_MINIO_PRESIGN_TTL:-10m}
 
       AI_PROVIDER: ${WHEREIS_AI_PROVIDER:-mock}

@@ -28,11 +28,15 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code MarketplacePublicSurfaceArchTest} makes it a build failure instead of a runtime
  * discovery. An endpoint that needs a principal belongs at a different path.
  *
- * <p>{@code ResponseEntity} is used only to set {@code Cache-Control: no-store}, which these
- * responses need because they embed a presigned URL — a short-lived credential a proxy or CDN must
- * not cache and re-serve after it has expired. {@code LegalPagesController} and
- * {@code RtdnController} are the precedent for deviating from the no-ResponseEntity house style
- * when there are headers to set.
+ * <p>{@code ResponseEntity} is used only to set {@code Cache-Control: no-store}. <strong>The
+ * reason for it changed in V14 and the header did not.</strong> It used to be that the body
+ * embedded a presigned URL — a short-lived credential a proxy must not cache and re-serve after it
+ * has expired. Published photos now live at permanent public addresses and carry their own
+ * one-day {@code Cache-Control}, so that argument is gone; what remains is the listing DATA, where
+ * a stale cache serves a withdrawn listing, a moderated one, or last week's price to a stranger who
+ * cannot refresh their way out of it. The image is cacheable and the listing is not, which is the
+ * correct split. {@code LegalPagesController} and {@code RtdnController} are the precedent for
+ * deviating from the no-ResponseEntity house style when there are headers to set.
  */
 @RestController
 @RequestMapping(MarketBoardController.PATH)

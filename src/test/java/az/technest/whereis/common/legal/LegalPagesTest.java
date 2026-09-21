@@ -94,7 +94,7 @@ class LegalPagesTest {
     /** Only presignTtl is read by LegalPages; the rest are the required non-blank values. */
     private static az.technest.whereis.storage.MinioProperties minio() {
         return new az.technest.whereis.storage.MinioProperties(
-                "http://minio:9000", null, "key", "secret", "bucket",
+                "http://minio:9000", null, "key", "secret", "bucket", "public-bucket",
                 java.time.Duration.ofMinutes(10));
     }
 }

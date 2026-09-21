@@ -53,9 +53,10 @@ public class ListingService {
 
     /**
      * Publishes an item the caller owns. NOT {@code @Transactional} as a whole: {@link
-     * FileStorageService#publishPhoto} copies an object in MinIO, and no database transaction may
-     * span that call. The row is written afterwards, by {@link ListingWriter}, and a failure there
-     * leaves a copied object the compensation inside {@code publishPhoto} has already queued.
+     * FileStorageService#publishPhoto} reads and writes objects in MinIO, and no database
+     * transaction may span those calls. The row is written afterwards, by {@link ListingWriter},
+     * and a failure there leaves a published object the compensation inside {@code publishPhoto}
+     * has already queued.
      */
     public MyListingResponse publish(UUID userId, UUID itemId, ListingRequest request) {
         // 1. Ownership first, always, and a miss is a 404 rather than a 403. Ahead of the block
@@ -86,8 +87,12 @@ public class ListingService {
         // 5. The cap is the LAST check and the one immediately before the write.
         planLimits.requireRoomForAnotherListing(userId);
 
-        // 6. Copy the photo to its opaque public key BEFORE the row exists, so a listing can never
-        //    be visible with a cover the board cannot serve.
+        // 6. Write the metadata-stripped public copy BEFORE the row exists, so a listing can never
+        //    be visible with a cover the board cannot serve, and so a photo whose camera metadata
+        //    cannot be removed refuses the publish instead of appearing with the GPS intact
+        //    (409 LISTING_PHOTO_UNPUBLISHABLE — the one check that runs after the plan cap, because
+        //    it is not a decision about the account and it needs the resolved cover). With
+        //    minio.public-bucket unset this is a no-op and the listing goes up without an image.
         fileStorageService.publishPhoto(userId, itemId, coverFileId);
 
         // `false` by construction: step 2 just proved it, and re-reading the row here would be a
@@ -138,8 +143,10 @@ public class ListingService {
         }
         listing.setStatus(status);
         listing.setEndedAt(Instant.now());
-        // The public copy goes now rather than at the presign TTL, so the board stops being able
-        // to serve the photo at the same moment it stops serving the listing.
+        // The public object is DELETED now. Since V14 its URL is permanent and unsigned, so this
+        // is the whole of the revocation — there is no expiring signature doing half the work. What
+        // can outlive it is a copy a cache already took, bounded by the object's one-day
+        // Cache-Control and by nothing else.
         fileStorageService.unpublishPhoto(listing.getItemId(), listing.getCoverFileId());
         return MyListingResponse.of(listing, isBlocked(userId));
     }

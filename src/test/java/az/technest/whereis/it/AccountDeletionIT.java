@@ -388,7 +388,7 @@ class AccountDeletionIT extends AbstractIntegrationTest {
         Account alice = buildRealisticAccount();
         assertThat(fetch(alice.presignedUrl()).statusCode()).isEqualTo(200);
         for (String key : alice.objectKeys()) {
-            assertThat(minioAdapter.exists(key)).as(key).isTrue();
+            assertThat(minioAdapter.exists(minioAdapter.bucket(), key)).as(key).isTrue();
         }
 
         assertThat(deleteAccount(alice).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
@@ -399,7 +399,7 @@ class AccountDeletionIT extends AbstractIntegrationTest {
                 .until(() -> outboxRowsFor(alice) == 0);
         assertThat(fetch(alice.presignedUrl()).statusCode()).isNotEqualTo(200);
         for (String key : alice.objectKeys()) {
-            assertThat(minioAdapter.exists(key)).as(key).isFalse();
+            assertThat(minioAdapter.exists(minioAdapter.bucket(), key)).as(key).isFalse();
         }
     }
 

@@ -48,6 +48,11 @@ public enum ErrorCode {
     // one intact as evidence.
     LISTING_HIDDEN,
     LISTING_PHOTO_REQUIRED,
+    // The cover photo's container could not be rewritten, so its camera metadata could not be
+    // proven removed (V14). A 409 and not a 500: the actionable answer in both the "unusual file"
+    // and the "our bug" case is the same one, "publish a different photo", and the alternative —
+    // publishing the original bytes — is the GPS leak this refusal exists to prevent.
+    LISTING_PHOTO_UNPUBLISHABLE,
     // The ONE new 400 that is not VALIDATION_ERROR, because it carries a NUMBER the client must
     // render ("at least 40 characters"). server.error.include-binding-errors is `never`, so a
     // generic code would tell the user nothing at all.

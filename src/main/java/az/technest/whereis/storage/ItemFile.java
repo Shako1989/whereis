@@ -33,6 +33,7 @@ public class ItemFile {
     @Column(name = "item_id", nullable = false)
     private UUID itemId;
 
+    /** The PRIVATE bucket this object is in. Per row, so an entry can outlive a reconfiguration. */
     @Column(nullable = false, length = 100)
     private String bucket;
 
@@ -58,11 +59,26 @@ public class ItemFile {
      * key in its PATH, so serving the private object to the anonymous marketplace board would
      * publish the seller's user UUID and the item's UUID to every visitor and every crawler — a
      * stable correlation key that would let a scraper cluster every listing to one person, which is
-     * exactly what leaving sellerId out of the public DTO is meant to prevent. Publishing copies
-     * the object server-side to an opaque {@code p/{uuid}} key instead, and this records it.
+     * exactly what leaving sellerId out of the public DTO is meant to prevent. Publishing writes a
+     * metadata-stripped copy under an opaque {@code p/{uuid}} key instead, and this records it.
      */
     @Column(name = "published_object_key", columnDefinition = "text")
     private String publishedObjectKey;
+
+    /**
+     * The bucket the PUBLIC copy is in, which is a DIFFERENT bucket from {@link #bucket}: the
+     * published copy lives in a world-readable one so its URL is a plain, cacheable, permanent
+     * address instead of a presigned link bounded by {@code minio.presign-ttl}.
+     *
+     * <p>Recorded per row rather than read from configuration at deletion time, for the reason
+     * {@link #bucket} already is: the deletion outbox must be able to name the bucket an object is
+     * actually in, whatever the configuration says by the time the janitor gets there. V14's
+     * {@code ck_item_files_published_pair} makes this and {@link #publishedObjectKey} set or absent
+     * together, which is what keeps {@code storage_deletion_queue.bucket} NOT NULL satisfiable by
+     * the bulk enqueue.
+     */
+    @Column(name = "published_bucket", length = 100)
+    private String publishedBucket;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

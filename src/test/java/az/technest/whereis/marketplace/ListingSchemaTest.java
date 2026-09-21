@@ -115,6 +115,48 @@ class ListingSchemaTest {
         assertThat(body).doesNotContain("unblocked_at");
     }
 
+    /**
+     * V14's column, and the invariant that keeps the deletion outbox able to find a published copy.
+     */
+    @Test
+    void aPublishedCopyRecordsItsOwnBucketAndNeverHalfOfThePair() {
+        String sql = Migrations.allStatements();
+
+        assertThat(sql).as("the published copy's bucket, recorded per row like item_files.bucket")
+                .containsPattern("ALTER TABLE item_files\\s+ADD COLUMN published_bucket varchar\\(100\\)");
+        // Both or neither. This CHECK is load-bearing rather than tidy: it is what lets
+        // enqueuePublishedCopiesOfUser select published_bucket on the predicate
+        // "published_object_key IS NOT NULL" and still satisfy storage_deletion_queue.bucket's
+        // NOT NULL — otherwise the Play-mandated DELETE /users/me could abort with a 500.
+        assertThat(Migrations.effectiveCheckBody("ck_item_files_published_pair"))
+                .contains("published_object_key IS NULL")
+                .contains("published_bucket IS NULL");
+    }
+
+    /**
+     * What happened to a photo published BEFORE the strip existed, stated as SQL rather than left
+     * implicit. Those copies are byte-identical to the originals (so they carry the GPS coordinates
+     * the strip exists to remove) AND they sit in the private bucket, where no permanent public URL
+     * can reach them — so V14 enqueues them for deletion and unpublishes them. The visible
+     * consequence is that a pre-V14 listing stays ACTIVE and loses its picture, which is the same
+     * shape the board already degrades to when the public bucket is unconfigured.
+     */
+    @Test
+    void v14UnpublishesEveryCopyMadeBeforeTheMetadataStripExisted() {
+        String v14 = Migrations.all().stream()
+                .filter(migration -> migration.version() == 14)
+                .findFirst().orElseThrow().sql();
+
+        assertThat(v14)
+                .as("the old copies are handed to the deletion outbox, in the PRIVATE bucket they "
+                        + "are actually in")
+                .containsPattern("INSERT INTO storage_deletion_queue[\\s\\S]*?f\\.bucket, "
+                        + "f\\.published_object_key");
+        assertThat(v14)
+                .as("and the rows are unpublished, so a re-publish mints a fresh stripped copy")
+                .containsPattern("UPDATE item_files[\\s\\S]*?SET published_object_key = NULL");
+    }
+
     @Test
     void nothingInTheListingsTableNamesTheLocationTree() {
         // The absence IS the design: a listing that carried a location id would be one careless

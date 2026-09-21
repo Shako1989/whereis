@@ -1097,9 +1097,14 @@ are required by the server precisely so the composer cannot quietly promote the 
 and private note to a public listing.
 
 Errors to branch on: `LISTING_DESCRIPTION_TOO_SHORT` (400 — the message names the number, render
-it), `LISTING_PHOTO_REQUIRED`, `ITEM_ARCHIVED`, `LISTING_ALREADY_ACTIVE`, `LISTING_HIDDEN`,
-`LISTING_NOT_ACTIVE`, `MARKETPLACE_BLOCKED`, `PLAN_LIMIT_REACHED` (all 409),
-`ITEM_NOT_FOUND` / `FILE_NOT_FOUND` (404).
+it), `LISTING_PHOTO_REQUIRED`, `LISTING_PHOTO_UNPUBLISHABLE`, `ITEM_ARCHIVED`,
+`LISTING_ALREADY_ACTIVE`, `LISTING_HIDDEN`, `LISTING_NOT_ACTIVE`, `MARKETPLACE_BLOCKED`,
+`PLAN_LIMIT_REACHED` (all 409), `ITEM_NOT_FOUND` / `FILE_NOT_FOUND` (404).
+
+`LISTING_PHOTO_UNPUBLISHABLE` (V14) means this photo's file could not be rewritten to remove its
+camera metadata, so the server refused to publish it rather than publish it with the GPS intact.
+Render the server's message and **offer the photo picker again** — the fix is a different photo, and
+nothing about the listing needs changing. Do not retry the same file.
 
 `MyListingResponse.hidden` + `hiddenReason` mean a moderator took it off the board. Show it —
 a listing that vanished without explanation reads as a broken app. Editing is refused while hidden;
@@ -1152,9 +1157,23 @@ browsing — but the endpoints are anonymous by design and nothing there varies 
 `hasMore`. `q` shorter than two characters is ignored rather than rejected, so a search-as-you-type
 field needs no debounce guard against 400s.
 
-`imageUrl` is a presigned link that **expires** (10 minutes by default). Cache the image against
-the listing `id`, not the URL, and re-fetch the listing when it 404s. Board responses are
-`Cache-Control: no-store` — do not cache the JSON.
+`imageUrl` is a **permanent, unsigned public URL** and it is **nullable** — this changed with V14
+and it changes the client rule. It no longer expires, so the URL itself is a perfectly good image
+cache key and the object carries `Cache-Control: public, max-age=86400`: let the HTTP cache do the
+work and do not re-fetch the listing to refresh a link. (It used to be a presigned link valid for
+~10 minutes, which is why the old advice was to key the cache on the listing `id`. That advice still
+applies to `primaryImageUrl` and `…/files/{id}/url`, which ARE presigned and are unchanged.)
+
+**Render a listing whose `imageUrl` is null** — a placeholder, not an error and not a skipped row.
+It means the deployment has published photos switched off, or the listing predates V14. Withdrawing
+a listing deletes the object, so an image URL you cached can start answering 404; treat that as
+"gone" and fall back to the placeholder rather than retrying.
+
+The published photo is a **stripped copy**: the backend removes all camera metadata (GPS, capture
+time, device make/model/serial) before it is public. **Do not strip or re-encode client-side** and
+do not upload a second "clean" copy — the server does it, on a copy, and the user's own photo is
+deliberately left intact. Board responses are still `Cache-Control: no-store` — cache the images,
+never the JSON.
 
 `429 RATE_LIMITED` carries `Retry-After`; `503` means the board is shedding load. Both are
 transient — back off, do not sign the user out.

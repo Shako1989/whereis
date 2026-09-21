@@ -162,7 +162,7 @@ Reusing the shell variables loaded in step 3. Write the policy as one single-quo
 no heredoc:
 
 ```sh
-printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::whereis-item-images"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::whereis-item-images/*"]}]}' > /tmp/whereis-policy.json
+printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::whereis-item-images","arn:aws:s3:::whereis-public-images"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::whereis-item-images/*","arn:aws:s3:::whereis-public-images/*"]}]}' > /tmp/whereis-policy.json
 ```
 
 Confirm it parses, because a malformed policy fails inside `mc` in a confusing way:
@@ -195,13 +195,94 @@ later; it overwrites rather than erroring.
 `s3:ListBucket` is not optional — `MinioAdapter.ensureBucket()` issues a `HeadBucket` at
 startup and the app fails to boot without it.
 
+`s3:GetObject` on the second ARN pair matters even though this bucket does not exist yet: the app
+READS the private original and WRITES the stripped public copy, so a publish needs both. Step 4b
+creates the bucket itself.
+
 **Do not run `mc anonymous set download` on this bucket.** That is correct for the BakuParts
 cdn bucket, whose objects are deliberately world-readable; whereis item photos are private
-user data served only through short-lived presigned GETs.
+user data served only through short-lived presigned GETs. It is also correct for the SEPARATE
+public bucket in Step 4b — that separation is exactly why there are two buckets.
+
+## Step 4b — Optional: the PUBLIC bucket for published marketplace photos (V14)
+
+**Skip this and deploy.** With `WHEREIS_MINIO_PUBLIC_BUCKET` unset — which is how `.env.example`
+ships — published photos are switched off: sellers publish listings, the anonymous board serves
+them, and each listing simply has no image. Nothing fails to start and nothing answers 500. The
+startup log states the mode in one INFO line. Come back to this step when you want listing photos.
+
+**What the second bucket is for.** A published photo is a *copy*: the application rewrites the
+image container to strip every scrap of camera metadata (GPS coordinates, capture time, device
+make/model/serial) and writes the result under an opaque `p/{uuid}` key. That copy needs a
+**permanent, unsigned URL** so a browser and a CDN can cache it — a listing page whose images are
+presigned cannot be cached at all, because the signature rotates on every request, and a website
+would be handed links that expire while somebody is reading the page. A world-readable bucket is
+the only way to have that without weakening `MINIO_PRESIGN_TTL`, which governs every *private*
+photo and is deliberately left alone.
+
+**The application never creates this bucket**, on purpose: it cannot grant the anonymous-read
+policy, and a bucket without that policy makes every listing image 403 with nothing saying why. A
+configured-but-absent bucket is a startup WARN plus a 502 on publish, which is loud on purpose.
+
+Reusing the shell variables from step 3. The policy grants **`s3:GetObject` and nothing else**:
+
+```sh
+printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::whereis-public-images/*"]}]}' > /tmp/whereis-public-policy.json
+python3 -m json.tool /tmp/whereis-public-policy.json
+```
+
+**`s3:ListBucket` is deliberately absent, and `mc anonymous set download` is the wrong command
+here** — it grants ListBucket too. The keys are opaque precisely so one photo cannot be tied to a
+seller or an item; an anonymous bucket listing would hand over every key in a single request and
+the opacity would buy nothing.
+
+```sh
+docker run --rm --network deploy_default \
+  -v /tmp/whereis-public-policy.json:/policy.json:ro \
+  -e RU="$MINIO_ROOT_USER" -e RP="$MINIO_ROOT_PASSWORD" \
+  --entrypoint sh minio/mc -c '
+    set -e
+    mc alias set m http://minio:9000 "$RU" "$RP"
+    mc mb --ignore-existing m/whereis-public-images
+    mc anonymous set-json /policy.json m/whereis-public-images
+    mc anonymous list m/whereis-public-images'
+
+rm /tmp/whereis-public-policy.json
+```
+
+Then in `deploy/.env`:
+
+```sh
+WHEREIS_MINIO_PUBLIC_BUCKET=whereis-public-images
+```
+
+and `docker compose -f docker-compose.prod.yml --env-file .env up -d`. No rebuild.
+
+Verify both halves — a published object must be readable and the bucket must not be listable:
+
+```sh
+# Publish a listing from the app, take its imageUrl, then:
+curl -sI "<imageUrl>"                                     # 200, Cache-Control: public, max-age=86400
+curl -s -o /dev/null -w '%{http_code}\n' \
+     "https://$WHEREIS_MEDIA_HOST/whereis-public-images/"  # expect 403 — not listable
+```
+
+**It must not be the same bucket as `WHEREIS_MINIO_BUCKET`.** Anonymous read is granted per bucket,
+so one bucket for both would publish every private item photo; the application refuses to start on
+that rather than let it happen.
+
+**Turning it back off** is one blank variable and a restart. Listings already published keep their
+`published_object_key`, so their images keep working — the board reads the bucket out of the row,
+not out of the configuration. Only NEW publishes go imageless.
 
 ## Step 5 — Add the Caddy vhosts
 
 1. Append `Caddyfile.whereis` (in this directory) to `autoparts-api/deploy/Caddyfile`.
+   **If you appended an earlier version of this file, re-copy the media vhost:** it now carries
+   `log_skip`. Without it Caddy writes `/{bucket}/u/{userId}/i/{itemId}/{fileId}?X-Amz-Signature=…`
+   to the access log on every image fetch — both UUIDs the marketplace design works hardest to keep
+   apart, plus a live SigV4 signature — and `db_backup.sh` archives that log. Nothing breaks without
+   the line, which is why it is called out here.
 2. Add these two lines to that stack's `caddy` service `environment:` block:
    ```yaml
          WHEREIS_API_HOST: ${WHEREIS_API_HOST}
@@ -232,9 +313,11 @@ A 2 vCPU box builds this in a few minutes; watch `free -h` in another shell. Wit
 from step 2 this should hold, but if the build is still OOM-killed, `docker stop autoparts-api`
 for the duration and start it again afterwards.
 
-Healthy when the log shows `Started WhereisApplication` and Flyway reports 11 migrations applied.
+Healthy when the log shows `Started WhereisApplication` and Flyway reports 14 migrations applied.
 You will also see one INFO line stating that Play Billing is not configured — that is the expected
-state until Step 11e, and it lists everything the mode switches off. `depends_on` cannot cross compose projects, so if Postgres is briefly unavailable the
+state until Step 11e, and it lists everything the mode switches off. A second INFO line states
+whether published marketplace photos are on or off (Step 4b); "DISABLED" is the expected state
+until you have created the public bucket. `depends_on` cannot cross compose projects, so if Postgres is briefly unavailable the
 app retries via `flyway.connect-retries: 10` and then `restart: unless-stopped`.
 
 ## Step 7 — Verify
@@ -249,6 +332,9 @@ curl -s -o /dev/null -w '%{http_code}\n' \
      https://$WHEREIS_API_HOST/api/v1/spaces               # expect 401 — auth required
 curl -s -o /dev/null -w '%{http_code}\n' \
      https://$WHEREIS_MEDIA_HOST/whereis-item-images/x     # expect 403 — bucket is private
+curl -s -o /dev/null -w '%{http_code}\n' \
+     https://$WHEREIS_MEDIA_HOST/whereis-public-images/    # 404 before Step 4b, 403 after
+                                                           # (readable, never listable)
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
      https://$WHEREIS_API_HOST/play/rtdn                   # expect 401 — billing off denies all
 ```
@@ -895,15 +981,32 @@ UPDATE listings
 `WRONG_OR_MISLEADING`, `ABUSE_REPORTS`, `OTHER` — a CHECK enforces it, and `hidden_at` and
 `hidden_reason` must be set together.
 
-**The photo copy outlives the hide by up to the presign TTL** (`MINIO_PRESIGN_TTL`, 10 minutes),
-because a URL already handed out stays valid. To kill it immediately:
+**Hiding a listing does not remove its photo from the internet, and since V14 there is no TTL
+doing it for you.** The published copy is at a permanent, unsigned public URL, so anyone who
+already has that URL keeps fetching it until the OBJECT is deleted. (Before V14 the link expired
+after `MINIO_PRESIGN_TTL`; that property now governs private photos only.) To take the photo down,
+hand the object to the deletion outbox — the janitor removes it within a minute:
 
 ```sql
 INSERT INTO storage_deletion_queue (id, bucket, object_key, attempts, next_attempt_at, created_at)
-SELECT gen_random_uuid(), f.bucket, f.published_object_key, 0, now(), now()
+SELECT gen_random_uuid(), f.published_bucket, f.published_object_key, 0, now(), now()
   FROM item_files f JOIN listings l ON l.cover_file_id = f.id
  WHERE l.id = '<uuid>' AND f.published_object_key IS NOT NULL;
+
+-- ...and clear the pair, or the board keeps offering a URL that now 404s. Both columns together:
+-- ck_item_files_published_pair refuses one without the other.
+UPDATE item_files f
+   SET published_object_key = NULL, published_bucket = NULL
+  FROM listings l
+ WHERE l.cover_file_id = f.id AND l.id = '<uuid>';
 ```
+
+**`f.published_bucket`, never `f.bucket`.** The public copy is in the world-readable bucket; the
+private original is not. Enqueueing the right key against the wrong bucket makes the janitor delete
+nothing, report success, drop the queue row, and leave the photo up permanently.
+
+A copy a browser or a CDN already cached survives for up to a day (the object's own
+`Cache-Control: public, max-age=86400`). That bound is stated on `/legal/privacy`.
 
 Un-hiding is `SET hidden_at = NULL, hidden_reason = NULL` — it restores nothing, because it
 overwrote nothing.
@@ -1012,9 +1115,10 @@ and neither erases the other. Unblocking an account that was not blocked is a 20
 **What a block deliberately does NOT do**, so nobody expects it:
 
 * It does not delete the published photo copies. A block is reversible and destroying the artefact
-  would leave an unblocked listing the board cannot show a picture for. A presigned URL already
-  handed out stays valid for `MINIO_PRESIGN_TTL`; 12b's `storage_deletion_queue` insert is the
-  escape hatch when minutes matter.
+  would leave an unblocked listing the board cannot show a picture for. Since V14 those copies are
+  at permanent public URLs, so anyone holding one keeps fetching it — there is no TTL that ends it.
+  12b's `storage_deletion_queue` insert is the escape hatch, and it is now the ONLY thing that
+  takes a published photo off the internet.
 * It does not survive account deletion. The row is keyed on `users.id` and cascades, so a blocked
   seller who uses `DELETE /users/me` and registers again is a new account with no sanction. Keeping
   anything about a deleted person would contradict `/legal/delete-account`. **A block is not an
