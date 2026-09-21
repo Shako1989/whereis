@@ -44,6 +44,7 @@ public class ListingService {
     private static final int MAX_PAGE_SIZE = 50;
 
     private final ListingRepository listingRepository;
+    private final BlockedSellerRepository blockedSellerRepository;
     private final ItemService itemService;
     private final ItemFileRepository itemFileRepository;
     private final FileStorageService fileStorageService;
@@ -57,16 +58,23 @@ public class ListingService {
      * leaves a copied object the compensation inside {@code publishPhoto} has already queued.
      */
     public MyListingResponse publish(UUID userId, UUID itemId, ListingRequest request) {
-        // 1. Ownership first, always, and a miss is a 404 rather than a 403.
+        // 1. Ownership first, always, and a miss is a 404 rather than a 403. Ahead of the block
+        //    because it is this API's global contract and it leaks nothing new: any registered
+        //    account can already probe item ids and be told 404.
         Item item = itemService.requireOwned(userId, itemId);
 
-        // 2. An archived item is invisible in the owner's own list; it must not be visible to the
+        // 2. THE SELLER-LEVEL SANCTION, ahead of every listing-level check. No amount of fixing
+        //    this item gets past it, so telling them about a missing photo would be advice that
+        //    cannot work — the same reason "you already listed this" beats "buy a bigger plan".
+        requireNotBlocked(userId);
+
+        // 3. An archived item is invisible in the owner's own list; it must not be visible to the
         //    whole internet.
         if (item.isArchived()) {
             throw ListingConflictException.itemArchived();
         }
 
-        // 3. One live listing per item. Told before the plan cap, because "you already listed this"
+        // 4. One live listing per item. Told before the plan cap, because "you already listed this"
         //    is the specific answer and "buy a bigger plan" would be a lie.
         if (listingRepository.existsByItemIdAndStatus(itemId, ListingStatus.ACTIVE)) {
             throw ListingConflictException.alreadyActive();
@@ -75,16 +83,18 @@ public class ListingService {
         Draft draft = validate(request);
         UUID coverFileId = resolveCover(userId, itemId, request.coverFileId());
 
-        // 4. The cap is the LAST check and the one immediately before the write.
+        // 5. The cap is the LAST check and the one immediately before the write.
         planLimits.requireRoomForAnotherListing(userId);
 
-        // 5. Copy the photo to its opaque public key BEFORE the row exists, so a listing can never
+        // 6. Copy the photo to its opaque public key BEFORE the row exists, so a listing can never
         //    be visible with a cover the board cannot serve.
         fileStorageService.publishPhoto(userId, itemId, coverFileId);
 
+        // `false` by construction: step 2 just proved it, and re-reading the row here would be a
+        // second answer to a question already settled inside this call.
         return MyListingResponse.of(writer.insert(userId, itemId, coverFileId, draft.title(),
                 draft.description(), draft.price(), draft.phone(), draft.city(),
-                draft.normalizedCity()));
+                draft.normalizedCity()), false);
     }
 
     /**
@@ -94,6 +104,10 @@ public class ListingService {
     @Transactional
     public MyListingResponse update(UUID userId, UUID listingId, ListingRequest request) {
         Listing listing = requireOwnedListing(userId, listingId);
+        // The account-level judgement, before any judgement about this row: a blocked seller
+        // editing their own SOLD listing should be told about the block, which is the fact that
+        // changes what they can do next.
+        requireNotBlocked(userId);
         if (listing.getStatus().isTerminal()) {
             throw ListingConflictException.notActive();
         }
@@ -105,7 +119,7 @@ public class ListingService {
         }
         Draft draft = validate(request);
         apply(listing, draft);
-        return MyListingResponse.of(listing);
+        return MyListingResponse.of(listing, false);
     }
 
     /** SOLD or WITHDRAWN. Both terminal; re-listing is a new row. */
@@ -116,8 +130,9 @@ public class ListingService {
                     "A listing can only be ended as SOLD or WITHDRAWN");
         }
         Listing listing = requireOwnedListing(userId, listingId);
-        // Deliberately allowed while hidden: a seller may always take their own thing down, even
-        // when a moderator got there first.
+        // Deliberately allowed while hidden AND while the seller is blocked: a seller may always
+        // take their own thing down, even when a moderator got there first. Taking that away would
+        // make a sanction reach into the one control the person still legitimately has.
         if (listing.getStatus().isTerminal()) {
             throw ListingConflictException.notActive();
         }
@@ -126,14 +141,19 @@ public class ListingService {
         // The public copy goes now rather than at the presign TTL, so the board stops being able
         // to serve the photo at the same moment it stops serving the listing.
         fileStorageService.unpublishPhoto(listing.getItemId(), listing.getCoverFileId());
-        return MyListingResponse.of(listing);
+        return MyListingResponse.of(listing, isBlocked(userId));
     }
 
     @Transactional(readOnly = true)
     public MyListingResponse get(UUID userId, UUID listingId) {
-        return MyListingResponse.of(requireOwnedListing(userId, listingId));
+        return MyListingResponse.of(requireOwnedListing(userId, listingId), isBlocked(userId));
     }
 
+    /**
+     * Every listing of the caller, with the account-level sanction read ONCE for the whole page
+     * rather than once per row — "batch, never per-row", the same rule that governs location paths
+     * and primary images.
+     */
     @Transactional(readOnly = true)
     public Page<MyListingResponse> list(UUID userId, int page, int size, boolean activeOnly) {
         Pageable pageable = PageRequest.of(Math.max(page, 0), clampSize(size),
@@ -141,7 +161,8 @@ public class ListingService {
         Page<Listing> rows = activeOnly
                 ? listingRepository.findAllByUserIdAndStatus(userId, ListingStatus.ACTIVE, pageable)
                 : listingRepository.findAllByUserId(userId, pageable);
-        return rows.map(MyListingResponse::of);
+        boolean blocked = isBlocked(userId);
+        return rows.map(listing -> MyListingResponse.of(listing, blocked));
     }
 
     /**
@@ -244,6 +265,25 @@ public class ListingService {
     private Listing requireOwnedListing(UUID userId, UUID listingId) {
         return listingRepository.findByIdAndUserId(listingId, userId)
                 .orElseThrow(ListingNotFoundException::new);
+    }
+
+    /**
+     * The publishing sanction, as a refusal that names its reason.
+     *
+     * <p><strong>This is the courtesy, not the invariant.</strong> What actually keeps a blocked
+     * seller off the board is the {@code NOT EXISTS} clause in {@code MarketBoardDao}'s visibility
+     * predicate, which is evaluated per request and therefore also catches a publish that was
+     * already in flight when the block committed. This check exists so the seller gets a sentence
+     * explaining what happened instead of a listing that silently nobody can see.
+     */
+    private void requireNotBlocked(UUID userId) {
+        blockedSellerRepository.findByUserId(userId).ifPresent(block -> {
+            throw MarketplaceBlockedException.of(block.getReason());
+        });
+    }
+
+    private boolean isBlocked(UUID userId) {
+        return blockedSellerRepository.findByUserId(userId).isPresent();
     }
 
     private static int clampSize(int size) {

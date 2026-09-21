@@ -104,7 +104,35 @@ public abstract class AbstractIntegrationTest {
         // row a test just inserted, but AccountDeletionIT ages one row past the window ON PURPOSE
         // and then asserts the effect of ONE pass — a background tick could do it first.
         registry.add("whereis.play.notification-retention.enabled", () -> "false");
+
+        // V13's moderator allowlist, on the SHARED registry for the same reason everything above is
+        // here: a @TestPropertySource would fork the Testcontainers context. It names ONE address,
+        // and MarketplaceBoardIT registers exactly that account — which is also what lets the same
+        // suite assert the FAIL-CLOSED half, because every other account in every other IT is
+        // automatically not a moderator.
+        registry.add("whereis.marketplace.moderation.moderator-emails", () -> MODERATOR_EMAIL);
+
+        // THE BOARD'S PER-ADDRESS BUDGETS, RAISED — which is the one thing these properties exist
+        // for (MarketBoardRateLimitProperties' own javadoc says so) and which nothing was actually
+        // doing. The whole suite reaches the board from 127.0.0.1, so every request in every board
+        // test shares ONE slot: production's 30 reads/minute and 5 reports/hour were an undeclared
+        // ceiling on how many board tests this class could ever contain, and it was ALREADY within
+        // a few requests of it. The failure would have been a 429 in whichever test happened to run
+        // last — not in the one that added the requests.
+        //
+        // The cost is explicit and worth stating: NO test exercises the limiter itself. Doing that
+        // needs a per-test client address, which TestRestTemplate cannot vary, so it is a real gap
+        // rather than something these two lines took away.
+        registry.add("whereis.market.rate-limit.reads", () -> "100000");
+        registry.add("whereis.market.rate-limit.reports", () -> "100000");
     }
+
+    /**
+     * The one account on the moderator allowlist. A fixed address rather than a random one because
+     * the allowlist is static configuration; {@code Names.normalize} of it is what
+     * {@code SellerBlockService} compares, so it must be lower-case and diacritic-free here.
+     */
+    protected static final String MODERATOR_EMAIL = "marketplace-moderator@technest.az";
 
     /** Check 1: the {@code ?key=} of the registered push URL. */
     protected static final String RTDN_SECRET = "integration-test-shared-secret";

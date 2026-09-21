@@ -871,10 +871,13 @@ for i in $(seq 1 40); do
 done | sort | uniq -c        # expect some 429s
 ```
 
-### 12b — taking a listing off the board
+### 12b — taking ONE listing off the board
 
-There is no admin API, for the same reason grants are SQL (Step 10): an admin endpoint needs an
-admin auth model this application does not have. **Review before you write:**
+Hiding a single listing is still SQL: it acts on one row an operator is already looking at, and
+the argument for keeping it out of the API is Step 10's — an admin endpoint needs an admin auth
+model. **Blocking a SELLER is different and is an endpoint (Step 12e)**: it changes what a whole
+account may do, and that has to leave a record of who decided and why by construction rather than
+by the diligence of whoever was at the keyboard. **Review before you write:**
 
 ```sql
 SELECT id, title, city, contact_phone, status, created_at FROM listings WHERE id = '<uuid>';
@@ -924,4 +927,100 @@ it when you check the backup log.
 `whereis.plans.<tier>.listings` (FREE 1, STANDARD 3, PRO 10, MAX 25), retunable per environment as
 `WHEREIS_PLANS_PRO_LISTINGS` and so on. The same monotonicity rule as the other two allowances:
 raising a lower tier means raising every tier above it, or startup fails naming both keys.
+
+### 12e — blocking a SELLER (V13)
+
+Hiding listings one at a time does not stop somebody who keeps posting: ten listings cost ten
+operations and nothing refuses the eleventh. **Google Play's user-generated-content policy requires
+a way to block a USER**, not only a way to remove content, and this is it.
+
+**A block is a marketplace sanction, not an account action.** Every listing the account has leaves
+the public board on the next request and they cannot publish another. Their items, spaces,
+locations, photos and history are untouched, they keep reading and editing all of it, and they can
+still withdraw or mark sold the listings they already have.
+
+#### Step 1 — configure who may do it, ONCE
+
+```sh
+# deploy/.env — comma-separated. UNSET MEANS NOBODY, which is what it means today.
+WHEREIS_MARKETPLACE_MODERATOR_EMAILS=you@example.com
+```
+
+Then restart whereis. The address must be an account that **exists and can log in** — the operator
+is a user of their own application and the JWT they already have is the credential. There is no
+role column and no admin account; this allowlist is the whole authorization model, and an unset or
+mistyped value answers **403 `NOT_A_MODERATOR`** to everybody rather than opening the endpoint up.
+The same address is written into `blocked_sellers.blocked_by`, so the action is attributable.
+
+#### Step 2 — find the seller behind a reported listing
+
+```sql
+-- Reported listings, worst first, WITH the seller id the block needs.
+SELECT l.user_id AS seller_id, l.id AS listing_id, l.title, l.city, count(*) AS reports
+  FROM listing_reports r JOIN listings l ON l.id = r.listing_id
+ WHERE r.reviewed_at IS NULL
+ GROUP BY l.user_id, l.id, l.title, l.city
+ ORDER BY reports DESC;
+
+-- Everything that seller has ever published, to judge a PATTERN rather than one row.
+SELECT id, title, price_amount, city, status, hidden_at, created_at
+  FROM listings WHERE user_id = '<seller_id>' ORDER BY created_at DESC;
+```
+
+#### Step 3 — block
+
+```sh
+TOKEN=$(curl -s -X POST "https://$WHEREIS_API_HOST/api/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"…"}' | jq -r .accessToken)
+
+curl -i -X POST "https://$WHEREIS_API_HOST/api/v1/moderation/sellers/<seller_id>/block" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason":"SCAM_OR_FRAUD","note":"three upheld reports, same fake IMEI"}'
+# 204 No Content
+```
+
+`reason` must be one of `SCAM_OR_FRAUD`, `PROHIBITED_ITEMS`, `OFFENSIVE_CONTENT`,
+`SPAM_OR_BULK_LISTINGS`, `REPEATED_VIOLATIONS`, `OTHER` — a CHECK enforces it and **the seller is
+shown it**, so pick the one you would be willing to defend to them. `note` is optional, capped at
+500 characters, internal, and never appears in any response. Blocking an already-blocked account
+replaces the reason, note, author and timestamp instead of adding a row. Every still-open report
+against any of their listings is closed as `UPHELD` in the same transaction, so 12c's queue does
+not re-surface what you just acted on.
+
+Other answers: **403 `NOT_A_MODERATOR`** (you are not on the allowlist, or nobody is),
+**404 `USER_NOT_FOUND`** (wrong seller id — the expected mistake, since you pasted it),
+**400** (a `reason` that is not in the list).
+
+#### Step 4 — verify, and unblock
+
+```sql
+SELECT user_id, reason, note, blocked_by, blocked_at FROM blocked_sellers;
+```
+
+```sh
+curl -i -X DELETE "https://$WHEREIS_API_HOST/api/v1/moderation/sellers/<seller_id>/block" \
+  -H "Authorization: Bearer $TOKEN"
+# 204 — and every listing they still have is back on the board, unchanged
+```
+
+**Unblocking really does restore the board**, because blocking mutated nothing: the listings stayed
+`ACTIVE` with `hidden_at` NULL and the board simply stopped selecting them. That is also why a
+per-listing hide you applied earlier (12b) survives an unblock — the two decisions are independent
+and neither erases the other. Unblocking an account that was not blocked is a 204, not a 404.
+
+**What a block deliberately does NOT do**, so nobody expects it:
+
+* It does not delete the published photo copies. A block is reversible and destroying the artefact
+  would leave an unblocked listing the board cannot show a picture for. A presigned URL already
+  handed out stays valid for `MINIO_PRESIGN_TTL`; 12b's `storage_deletion_queue` insert is the
+  escape hatch when minutes matter.
+* It does not survive account deletion. The row is keyed on `users.id` and cascades, so a blocked
+  seller who uses `DELETE /users/me` and registers again is a new account with no sanction. Keeping
+  anything about a deleted person would contradict `/legal/delete-account`. **A block is not an
+  identity ban** — if the same person returns, block them again.
+* It does not keep a history of lifted blocks. The row is deleted on unblock and the application
+  log line is the only surviving record, so grep for `unblocked seller` rather than expecting a
+  table.
+* Nothing alerts on any of this. Check 12c's queue when you check the backup log.
 

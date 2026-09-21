@@ -11,10 +11,15 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 /**
- * Every finder here is userId-scoped, as §6 requires, EXCEPT {@link #findVisible(UUID)} — the
- * board's one read, which by definition has no user. That method is the reason
- * {@code ..marketplace.board..} exists as its own package with its own ArchUnit rules: it is the
- * only query in this application an unauthenticated stranger can reach.
+ * <strong>Every finder here is userId-scoped</strong>, as §6 requires. Nothing on this interface is
+ * reachable by an anonymous visitor: the board has its own package, its own DAO and its own
+ * hand-written SQL, which is also why {@code ..marketplace.board..} carries its own ArchUnit rules.
+ *
+ * <p>A {@code findVisible} JPQL copy of the public visibility predicate used to live here and has
+ * been REMOVED (V13). It had no callers — {@code MarketBoardDao} has served the public detail read
+ * since V12 — and an unused second statement of the rule that decides what an anonymous stranger
+ * may see is worse than no statement at all: V13 widened that rule with the seller-level block, and
+ * a dormant copy admitting a blocked seller's listing was a trap waiting for its first caller.
  */
 public interface ListingRepository extends JpaRepository<Listing, UUID> {
 
@@ -32,14 +37,6 @@ public interface ListingRepository extends JpaRepository<Listing, UUID> {
     Page<Listing> findAllByUserId(UUID userId, Pageable pageable);
 
     Page<Listing> findAllByUserIdAndStatus(UUID userId, ListingStatus status, Pageable pageable);
-
-    /**
-     * The public detail read. The predicate IS {@link Listing#isPubliclyVisible()} expressed in
-     * JPQL, and {@code ListingStatusTest} pins that the two agree: drift here does not fail a build
-     * or a request, it publishes a withdrawn listing or hides every live one, silently.
-     */
-    @Query("select l from Listing l where l.id = :id and l.status = 'ACTIVE' and l.hiddenAt is null")
-    Optional<Listing> findVisible(@Param("id") UUID id);
 
     /**
      * Account deletion, in one statement. NO {@code clearAutomatically}: the deletion transaction

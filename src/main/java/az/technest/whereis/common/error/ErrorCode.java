@@ -56,6 +56,15 @@ public enum ErrorCode {
     // Archiving an item, or deleting its published cover photo, while it is on the board.
     ITEM_LISTED,
 
+    // Seller-level moderation (V13). The ACCOUNT is barred from the board, so no amount of fixing
+    // one listing gets past it — which is why it is a code of its own rather than LISTING_HIDDEN.
+    // 409 like every other account-state guard in this API (PLAN_LIMIT_REACHED, LISTING_HIDDEN);
+    // 403 is reserved for the caller's privilege, which is a different question.
+    MARKETPLACE_BLOCKED,
+    // 403 on the operator-only moderation endpoints. The allowlist FAILS CLOSED: unset means
+    // nobody, never everybody.
+    NOT_A_MODERATOR,
+
     // The public board is the only surface whose cost is not bounded by an account.
     RATE_LIMITED,
 

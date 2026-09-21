@@ -175,6 +175,22 @@ whereis:
       reads: ${WHEREIS_MARKET_READS_PER_MINUTE:30}
       reports: ${WHEREIS_MARKET_REPORTS_PER_HOUR:5}
 
+  # Seller-level moderation (V13). WHO MAY BLOCK A SELLER, as a comma-separated e-mail allowlist,
+  # and it FAILS CLOSED: this key unset — which is what every environment ships with until an
+  # operator sets it — means NOBODY may moderate, never everybody. There is no role column in this
+  # schema and no admin account; the operator is a user of their own application, so the JWT they
+  # already hold is the credential and their e-mail is both the authorization check and the audit
+  # value written into blocked_sellers.blocked_by.
+  #
+  # Compare against the STORED form: registration writes users.email through Names.normalize, and
+  # ModerationProperties normalizes each entry the same way, so case and diacritics here cannot
+  # silently match nobody. Deliberately NOT `${VAR:?}` in compose — a deployment with no moderator
+  # configured is a legitimate (and safe) state, and the refusal that matters is the 403 at request
+  # time, not a boot failure.
+  marketplace:
+    moderation:
+      moderator-emails: ${WHEREIS_MARKETPLACE_MODERATOR_EMAILS:}
+
   # The Play Developer API, for verifying purchases. Same shape as ai.provider: a deterministic
   # fake is the default so `./gradlew build` and the whole integration suite run with no network,
   # no Google credentials and no Play Console — which does not exist yet. The fake is REFUSED under

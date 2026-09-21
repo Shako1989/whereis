@@ -111,10 +111,15 @@ public class Listing extends AuditedEntity {
     private UUID coverFileId;
 
     /**
-     * The ONE visibility rule, in Java. {@code ListingRepository}'s browse queries say the same
-     * thing in JPQL, and {@code ListingStatusTest} pins that the two agree — drift here does not
-     * fail a build or a request, it publishes a withdrawn listing or hides every live one,
-     * silently.
+     * <strong>This row's half of the visibility rule</strong> — and since V13 it is only a half.
+     * The other half is the SELLER's standing, which no column of this table carries: a blocked
+     * seller's listing stays {@code ACTIVE} with {@code hidden_at} NULL and is still off the board,
+     * because the board excludes the account rather than mutating its rows. The whole rule lives in
+     * {@code MarketBoardDao.VISIBLE}, where {@code MarketBoardVisibilityTest} pins all three
+     * clauses against the SQL both public queries actually run.
+     *
+     * <p>Drift between the two does not fail a build or a request: it publishes a withdrawn listing
+     * or hides every live one, silently.
      */
     public boolean isPubliclyVisible() {
         return status.isPubliclyVisible() && hiddenAt == null;

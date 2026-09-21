@@ -1098,11 +1098,42 @@ and private note to a public listing.
 
 Errors to branch on: `LISTING_DESCRIPTION_TOO_SHORT` (400 — the message names the number, render
 it), `LISTING_PHOTO_REQUIRED`, `ITEM_ARCHIVED`, `LISTING_ALREADY_ACTIVE`, `LISTING_HIDDEN`,
-`LISTING_NOT_ACTIVE`, `PLAN_LIMIT_REACHED` (all 409), `ITEM_NOT_FOUND` / `FILE_NOT_FOUND` (404).
+`LISTING_NOT_ACTIVE`, `MARKETPLACE_BLOCKED`, `PLAN_LIMIT_REACHED` (all 409),
+`ITEM_NOT_FOUND` / `FILE_NOT_FOUND` (404).
 
 `MyListingResponse.hidden` + `hiddenReason` mean a moderator took it off the board. Show it —
 a listing that vanished without explanation reads as a broken app. Editing is refused while hidden;
 the route back is withdraw and publish a corrected listing.
+
+### When the whole ACCOUNT is blocked (BR-15)
+
+`MyListingResponse.sellerBlocked` is **a fact about the account and is independent of `hidden`**.
+A blocked seller's listings read `status: "ACTIVE"`, `hidden: false`, `sellerBlocked: true` — and
+they are NOT on the public board. Do not derive one from the other and do not treat ACTIVE as
+"visible to buyers": `sellerBlocked` is the only field that tells you it is not.
+
+```jsonc
+{ "id": "…", "status": "ACTIVE", "hidden": false, "hiddenReason": null,
+  "sellerBlocked": true,  /* the ACCOUNT is barred from the board */ … }
+```
+
+What the UI must do:
+
+* **`sellerBlocked: true` → one account-level banner on the listings screen**, not a badge repeated
+  on every row. Wording along the lines of "Your marketplace access is suspended. Your items and
+  photos are unaffected." The second sentence matters: the user's first fear is that their data is
+  gone, and it is not — nothing in their spaces, items, locations or photos changes.
+* **Hide or disable the publish affordance** while it is true. Publishing answers
+  **409 `MARKETPLACE_BLOCKED`** whose `message` names the reason; render the message rather than
+  composing your own, and do not offer a retry — nothing the user changes about the listing will
+  get past it.
+* **Editing is refused too** (same 409 and same code). **Withdraw and mark-sold still work** — keep
+  those controls enabled, because the user genuinely still owns the thing.
+* Everything else in the app — spaces, items, photos, search, the assistant, the plan screen —
+  behaves exactly as before. This is a marketplace sanction, not a suspended account, and the UI
+  must not read as one.
+* There is **no endpoint to appeal or to read the block** and none is planned for this wave; do not
+  build a screen that polls for one.
 
 ### Browsing (NO token)
 
@@ -1128,8 +1159,9 @@ the listing `id`, not the URL, and re-fetch the listing when it 404s. Board resp
 `429 RATE_LIMITED` carries `Retry-After`; `503` means the board is shedding load. Both are
 transient — back off, do not sign the user out.
 
-A listing that was never published, was withdrawn, or was hidden by a moderator all answer the
-**same 404**. Treat it as "gone", never as "removed for a reason".
+A listing that was never published, was withdrawn, was hidden by a moderator, or belongs to a
+**blocked seller** all answer the **same 404**. Treat it as "gone", never as "removed for a
+reason" — the board deliberately tells a caller nothing it could use as an oracle.
 
 ### Plan
 

@@ -8,8 +8,8 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * Every enum-ish column of V12 against its Java enum, byte for byte, using the EFFECTIVE constraint
- * across all migrations rather than a regex over one file.
+ * Every enum-ish column of the marketplace (V12, extended by V13) against its Java enum, byte for
+ * byte, using the EFFECTIVE constraint across all migrations rather than a regex over one file.
  */
 class ListingEnumsTest {
 
@@ -28,6 +28,21 @@ class ListingEnumsTest {
                 Migrations.effectiveCheckValues("ck_listings_hidden_reason", "hidden_reason");
 
         assertThat(Arrays.stream(ListingHiddenReason.values()).map(Enum::name).toList())
+                .containsExactlyInAnyOrderElementsOf(allowed);
+    }
+
+    /**
+     * V13's seller-level sanction. A SECOND reason enum rather than more values on
+     * {@link ListingHiddenReason}: that one answers "what is wrong with this listing", this one
+     * answers "what is wrong with this seller", and one enum would have forced every future value
+     * to make sense at both levels.
+     */
+    @Test
+    void sellerBlockReasonConstantsMatchTheEffectiveCheckByteForByte() {
+        List<String> allowed =
+                Migrations.effectiveCheckValues("ck_blocked_sellers_reason", "reason");
+
+        assertThat(Arrays.stream(SellerBlockReason.values()).map(Enum::name).toList())
                 .containsExactlyInAnyOrderElementsOf(allowed);
     }
 

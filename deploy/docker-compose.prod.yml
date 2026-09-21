@@ -181,6 +181,13 @@ services:
       WHEREIS_MARKET_READS_PER_MINUTE: ${WHEREIS_MARKET_READS_PER_MINUTE:-30}
       WHEREIS_MARKET_REPORTS_PER_HOUR: ${WHEREIS_MARKET_REPORTS_PER_HOUR:-5}
 
+      # Who may block a seller (V13). A COLON-LESS default, deliberately: `:-` would substitute on
+      # a blank value too, which is the same thing here — but the point is that BLANK IS A VALID
+      # AND SAFE STATE. It means nobody may moderate, so there is no `:?` to add and no startup
+      # refusal to write; the refusal that matters is the 403 at request time. Play's UGC policy
+      # wants this SET before the board faces real users (deploy/README.md Step 12e).
+      WHEREIS_MARKETPLACE_MODERATOR_EMAILS: ${WHEREIS_MARKETPLACE_MODERATOR_EMAILS-}
+
       CORS_ALLOWED_ORIGINS: ${WHEREIS_CORS_ALLOWED_ORIGINS:-https://${WHEREIS_API_HOST}}
 
     healthcheck:

@@ -34,7 +34,11 @@ Photos live in MinIO; PostgreSQL holds only metadata.
    readable by anyone — the only exception to rule 2, opened one item at a time by its owner. What
    becomes public is exactly what the seller typed (title, description, price, city, phone) plus
    the photo they chose; the item's location path is never part of a listing and no column in V12
-   can reference it. Ending a listing removes it from the board but cannot recall copies.
+   can reference it. Ending a listing removes it from the board but cannot recall copies. The
+   privilege is REVOCABLE PER ACCOUNT (V13, BR-15): an operator may BLOCK a seller, which removes
+   every listing they have from the board and refuses new ones, and which touches nothing they own
+   privately — items, spaces, locations, photos and history are untouched and still theirs. That
+   asymmetry is the rule: a marketplace sanction is never an account sanction.
 8. Entitlement is a LADDER — FREE(1 space/100 items) < STANDARD(3/300) < PRO(5/600) < MAX(10/
    unlimited items) < UNLIMITED(operator grant, never purchasable) — configured in
    `whereis.plans.*`. The effective tier is `max(users.plan, best entitling subscription)`, so an
@@ -268,10 +272,24 @@ marketplace/ the internal marketplace (V12, BR-14) — the FIRST surface in this
            oauth2ResourceServer (permitAll governs authorization, not decoding — an EXPIRED bearer
            would 401 on the main chain, and the access TTL is 15 minutes) and
            `anyRequest().denyAll()`. `seller/` is on the main chain. Publish order is ownership ->
-           archived -> already-listed -> photo -> price -> description -> plan cap LAST (the more
-           specific answer wins, as DUPLICATE_NAME beats the space limit). The public photo is an
+           BLOCK -> archived -> already-listed -> photo -> price -> description -> plan cap LAST (the
+           more specific answer wins, as DUPLICATE_NAME beats the space limit; the block goes second
+           because no listing-level fix gets past it). The public photo is an
            opaque server-side COPY at `p/{uuid}`, because a presigned URL carries the object key in
            its path and the private key is u/{userId}/i/{itemId}/{fileId}.
+           `moderation/` (V13, BR-15) is the SELLER-level sanction and the FIRST operator endpoint in
+           this codebase — `blocked_sellers` (user_id PK, ON DELETE CASCADE, reason+note+blocked_by),
+           `SellerBlockReason`, `SellerBlockService`, `SellerModerationController` at
+           **`/api/v1/moderation`** and NOT under `/api/v1/market/**` (that matcher is the board's
+           decoder-less @Order(1) chain ending in denyAll: a route there would 500 on `CurrentUser`
+           and 403 on an unmatched POST — mutation-checked, it fails all 12 of the new ITs).
+           Authorization is `ModerationProperties`' e-mail allowlist, FAIL-CLOSED (unset = nobody),
+           compared as `Names.normalize` because that is the form registration stored `users.email`
+           in, and the same e-mail is the audit value. The board excludes a blocked seller by
+           FILTERING (`NOT EXISTS` in `MarketBoardDao.VISIBLE`), never by stamping `hidden_at` on
+           their rows: the filter cannot be outrun by an in-flight publish, and an unblock therefore
+           restores the board exactly while a per-listing hide survives it. `MARKETPLACE_BLOCKED`
+           (409) refuses publish and update; withdraw and mark-sold stay ALLOWED.
 common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler; CurrentUser
            (JWT subject → UUID); CorrelationIdFilter (X-Correlation-Id → MDC); Names — the ONE
            normalizer used by every writer, lookup, and the AI resolution path. clean() is the
@@ -282,7 +300,7 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
            diacritics; only the key is folded, display is untouched.
 ```
 
-## 4. Database invariants (Flyway V1–V11)
+## 4. Database invariants (Flyway V1–V13)
 
 - `users.email` unique on `lower(email)`; `refresh_tokens.token_hash` **varchar(64)** — NEVER
   char(N) anywhere: Hibernate 6.6 validate treats bpchar as a type mismatch and the app won't boot.
@@ -388,9 +406,31 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
   predicate is ONLY `purchase_token IS NOT NULL AND product_id IS NOT NULL` — every narrower version
   was rejected, including `voided_at IS NULL` (a refund of one payment without revocation leaves
   auto-renew ON).
+- `blocked_sellers` (V13): the SELLER-level marketplace sanction, one row per currently-blocked
+  account. **`user_id` is the PRIMARY KEY** (blocking twice is one row, not two that can disagree;
+  no state machine) with **ON DELETE CASCADE** — a sanction must never be able to refuse the
+  Play-mandated `DELETE /users/me`, and the block has nothing left to hide once the account is gone.
+  `blocked_at`, `reason` (varchar(32) + `ck_blocked_sellers_reason` matching `SellerBlockReason`) and
+  `blocked_by` (varchar(320), the moderator's `Names.normalize`d e-mail, NOT an FK — an audit column
+  that CASCADEs away is not an audit column) are ALL NOT NULL, so no pair CHECK is needed: the row
+  EXISTING is the block. `note` is the operator's untranslated words, never on any wire.
+  **NOT a column on `users`, and half of V12's contact_phone argument does not apply** (a block
+  really is one per account) while the other half applies harder: the board consults this on every
+  anonymous request, and on `users` that predicate would put every e-mail and every bcrypt hash into
+  the one query a stranger can run. **NO `unblocked_at` and no ledger** — an unblock DELETEs the row
+  and logs its four facts; an append-only history is a new RETENTION surface, which
+  `listing_reports`' ON DELETE CASCADE already settles as a decision to be made with the public
+  pages. **NO INDEX** beyond the PK (its one access pattern IS the PK) and **no change to
+  `ix_listings_browse` / `ix_listings_browse_city`** — an index predicate cannot reference another
+  table, and both still supply the filter AND the ordering with the anti-join above them. Measured:
+  first page 33 -> 46 cached buffers, city filter still uses its index with an Index Cond, empty
+  block list degenerates to a zero-row scan, **deepest legal page (99 of 50) roughly DOUBLES**
+  (5,016 -> 10,291 buffers) because the probe runs once per row EXAMINED — bounded by `MAX_PAGE`
+  today, and the argument for keyset pagination if the board ever pages deeper.
 - Enum values live in varchar + CHECK constraints (never PG native enums) and must match the Java
   enums; each has a test that computes the effective constraint across migrations (`PlanTest`,
-  `SubscriptionStateTest`, `SubscriptionTierTest`, `PurchaseProvenanceTest`, `AssistantOutcomeTest`).
+  `SubscriptionStateTest`, `SubscriptionTierTest`, `PurchaseProvenanceTest`, `AssistantOutcomeTest`,
+  `ListingEnumsTest` — which covers V12's four AND V13's `ck_blocked_sellers_reason`).
 - **Account deletion order is play_cancellation_queue → play_notifications purge → assistant messages
   → items → locations → spaces → user, with the storage_deletion_queue rows enqueued BEFORE the item
   cascade** (the Play
@@ -465,13 +505,28 @@ costs zero statements. ·
 marketplace (BR-14): POST/GET/PUT/DELETE /items/{id}/listing and /listings/{id},
 POST /listings/{id}/sold, GET /users/me/listings — all JWT. **GET /market/listings?q&city&page&size
 and GET /market/listings/{id} are ANONYMOUS**, as is POST /market/listings/{id}/reports, which
-answers **202 for everything that parses** including an unknown id. A hidden, withdrawn and
-never-existed listing are the SAME 404. Board responses carry `Cache-Control: no-store` (they embed
+answers **202 for everything that parses** including an unknown id. A hidden, withdrawn,
+never-existed and BLOCKED-SELLER listing are all the SAME 404. Board responses carry
+`Cache-Control: no-store` (they embed
 a presigned URL) and no total count (no COUNT(*) on an unauthenticated path, and a total tells a
 scraper how complete their mirror is). Errors: LISTING_NOT_FOUND(404),
 LISTING_ALREADY_ACTIVE/NOT_ACTIVE/HIDDEN/PHOTO_REQUIRED(409), LISTING_DESCRIPTION_TOO_SHORT(400 —
 the one new 400, because it carries a NUMBER the client renders), ITEM_ARCHIVED/ITEM_LISTED(409),
 RATE_LIMITED(429). ·
+seller moderation (V13, BR-15): **POST and DELETE /moderation/sellers/{sellerId}/block**
+`{reason, note?}` -> 204, the FIRST operator endpoint here — an admin auth model V12 said it did not
+have, supplied as a FAIL-CLOSED e-mail allowlist because a hand-written UPDATE records who decided
+nothing and a block changes what a whole ACCOUNT may do. **NOT under /api/v1/market/** (that is the
+board's decoder-less chain). Errors NOT_A_MODERATOR(403 — not an ownership miss, so the
+"misses are 404" rule does not reach it: nothing is owned and nothing is confirmed) and
+USER_NOT_FOUND(404 — the operator pasted the id, so a wrong one is the EXPECTED failure and the FK's
+409 would be unhelpful). A blocked seller gets **409 MARKETPLACE_BLOCKED** from publish and update,
+and KEEPS withdraw, mark-sold, every read, and their whole private inventory. `MyListingResponse`
+gained **`sellerBlocked`** — additive, and INDEPENDENT of `hidden`/`hiddenReason` exactly as `plan`
+is of `subscription`: a blocked seller's row reads ACTIVE + hidden:false + sellerBlocked:true, and
+without the field the seller's own screen would show a healthy listing no visitor can see. There is
+deliberately NO moderation READ endpoint (the queue and the block list are SQL, Step 12e) and no
+appeal endpoint. ·
 account: DELETE /users/me {password} — re-authenticates through PasswordVerifier, 204 on success,
 401 INVALID_CREDENTIALS for a wrong/blank/missing password or a vanished user, NOTHING deleted on 401.
 Outside `/api/v1`: GET /legal/delete-account and GET /legal/privacy (static bilingual HTML, permitAll —
@@ -563,6 +618,30 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
   `..search..`, and nothing under `..marketplace.board..` may depend on `CurrentUser`** — the three
   packages that could carry a location path to an anonymous visitor, and the class that cannot
   work on a chain with no decoder. `MarketplacePublicSurfaceArchTest`, mutation-checked.
+- **The board's public visibility rule is THREE clauses and lives in exactly one place**
+  (`MarketBoardDao.VISIBLE`): `status = 'ACTIVE'`, `hidden_at IS NULL`, and `NOT EXISTS` against
+  `blocked_sellers`. Dropping one fails nothing at build time and throws nothing at runtime — it
+  publishes a withdrawn listing, or one an operator killed, or the whole catalogue of a seller
+  blocked for fraud. `MarketBoardVisibilityTest` pins all three against the SQL both public queries
+  actually send (captured through a mocked template, so a NEW query built without the constant is
+  caught too, not just an edit to it) and pins the tables the statement may name. Mutation-checked:
+  removing the `NOT EXISTS` fails two of its tests. **A dormant SECOND copy of that rule is worse
+  than none** — `ListingRepository.findVisible` was an uncalled JPQL copy and was DELETED in V13
+  rather than extended, because it would have admitted a blocked seller's listing to its first
+  future caller.
+- **A seller-level sanction never mutates the seller's rows.** Blocking FILTERS the board; it does
+  not stamp `hidden_at`. A per-request filter cannot be outrun by a publish already in flight when
+  the block commits, an operator's per-listing hide and an account block stay independent facts
+  (the `voided_at`-vs-`state` lesson again), and an unblock therefore restores the board exactly
+  instead of guessing which hides to lift. `blocked_sellers` also never reads or writes `items`,
+  `spaces`, `locations` or `item_files` — pinned by an IT that compares full row snapshots, not
+  counts.
+- **The moderator allowlist FAILS CLOSED and the endpoint is not under the board's matcher.** An
+  unset allowlist means nobody; resolving it to "everybody" would make the endpoint a self-service
+  way for any account to bar any other. Both halves are mutation-checked: failing open fails
+  `SellerBlockServiceTest`, and moving the path under `/api/v1/market/` fails all twelve new ITs
+  (the board's chain has no decoder, so `CurrentUser` would throw a 500 and an unmatched POST would
+  be denied by `denyAll`).
 - Bulk `@Modifying` updates: think before `clearAutomatically` — it detaches managed entities
   the caller still mutates (this exact bug shipped once and was caught in review).
 - Login is enumeration-safe (dummy BCrypt verify + uniform INVALID_CREDENTIALS).
@@ -582,8 +661,8 @@ table does not contain, that Pub/Sub nacks, and that bypass `ledger.finish`.
 ## 7. Build, test, verify
 
 ```bash
-./gradlew build              # compile + 510 unit tests — must stay green without Docker OR network
-./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 187 tests — needs Docker
+./gradlew build              # compile + 529 unit tests — must stay green without Docker OR network
+./gradlew integrationTest    # Testcontainers (PostgreSQL + MinIO), 199 tests — needs Docker
 ./gradlew liveAiTest         # real Anthropic API — needs AI_CLAUDE_API_KEY, costs ~2 cents
 ```
 
@@ -1334,11 +1413,57 @@ Two mutation checks were RUN rather than assumed: putting `requireRoomForAnother
 
 Suites: **unit 510** (+13), **integration 187 across 23 classes** (+16: `MarketplaceBoardIT`).
 
-Still open: no in-app messaging (a later wave, and the strongest mitigation for the risk below);
-one photo per listing; no purge job for ended listings; and **a seller can publish somebody else's
-phone number with no technical control preventing it** — the mitigations are the
+Still open after BR-14: no in-app messaging (a later wave, and the strongest mitigation for the risk
+below); one photo per listing; no purge job for ended listings; and **a seller can publish somebody
+else's phone number with no technical control preventing it** — the mitigations are the
 `WRONG_OR_MISLEADING` report reason and the kill-switch, and this wants the owner's explicit
-sign-off.
+sign-off. ~~No way to act on a SELLER~~ — closed 2026-09-21 by V13/BR-15, below.
+
+**2026-09-21 — seller-level moderation (V13, BR-15): blocking a USER, not a listing.** V12's
+kill-switch acts on ONE ROW, so ten listings cost ten operations and nothing refuses the eleventh —
+and Google Play's user-generated-content policy requires a way to block a USER, not only to remove
+content. That is the gap that gets an app removed, so it went first. Details in
+`docs/BACKEND_REQUESTS.md` BR-15; the decisions that must not be re-derived:
+
+* **The block is its own table, keyed on `user_id`, and NOT a column on `users`** — §4 carries the
+  full argument and the measured board cost. The deciding reason is that the board's predicate is
+  the one query an unauthenticated stranger can run, and `users` is the password file.
+* **It is the FIRST operator endpoint in this codebase, and V12's "no admin API" is deliberately
+  not extended to it.** Hiding one listing stays SQL (Step 12b); blocking an account does not,
+  because a hand-written UPDATE records who decided nothing. The auth model V12 said it lacked is
+  a FAIL-CLOSED e-mail allowlist — no role column, no migration for a permission model, the
+  operator's own JWT as the credential, and their e-mail as both the check and the audit value.
+* **Mounted at `/api/v1/moderation`, NOT `/api/v1/market/moderation`** — and that is not cosmetic.
+  The board's `@Order(1)` matcher covers `/api/v1/market/**`, has no JWT decoder and ends in
+  `denyAll()`; a moderation route there answers 403 to its own moderator and 500 (plus an ERROR
+  log) to anyone it reaches, because `CurrentUser.id()` throws with no principal. Mutation-checked:
+  moving it fails all twelve new ITs. The parked `marketplace-on-items` draft mounted it exactly
+  there, which is why this is written down.
+* **Existing listings are FILTERED, not mutated** — §6's guardrail, with the race and the
+  reversibility arguments.
+* **The private inventory is untouched** and withdraw/mark-sold stay allowed. The IT compares full
+  `items` and `item_files` row snapshots rather than counts, because "nothing changed" is the half
+  of this feature a reviewer cannot verify by reading the endpoint.
+* **No ledger, and no identity ban.** Both are retention decisions rather than oversights: a
+  history of lifted blocks is a new retained surface, and anything keyed to a deleted account would
+  contradict `/legal/delete-account`. A blocked seller who deletes and re-registers is unsanctioned;
+  block them again.
+
+Two other things this wave found in the merged code and fixed: `ListingRepository.findVisible` was
+an UNCALLED JPQL copy of the public visibility rule (deleted — see §6), and three javadocs pointed
+at a `ListingStatusTest` that does not exist (repointed at the tests that do the work). And one it
+found and did NOT fix: **nothing tests the board's rate limiter**, whose production budgets
+(30 reads/min, 5 reports/hour per address) were an undeclared ceiling on how many board ITs could
+ever exist — the whole suite shares one slot from 127.0.0.1 and was already within a few requests
+of tripping it. The shared registry now raises both, which is what
+`MarketBoardRateLimitProperties`' javadoc always said they were for; exercising the limiter itself
+needs a per-test client address that `TestRestTemplate` cannot vary.
+
+Suites: **unit 529** (+19: `SellerBlockServiceTest` 10, `MarketBoardVisibilityTest` 3,
+`ModerationPropertiesTest` 3, `ListingSchemaTest` +2, `ListingEnumsTest` +1),
+**integration 199 across 23 classes** (+12, all in `MarketplaceBoardIT`, now 28). All thirteen migrations re-applied in order against a real
+PostgreSQL 16 before any Java was written, and the board plans were read out of
+`EXPLAIN (ANALYZE, BUFFERS)` on 20,000 seeded listings rather than reasoned about.
 
 ## 9. Future extension points (design for, do not build)
 

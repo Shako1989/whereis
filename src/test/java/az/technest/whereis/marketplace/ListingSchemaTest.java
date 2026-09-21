@@ -8,7 +8,7 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
- * Three decisions in V12 whose reversal would be SILENT — no build failure, no error, just a
+ * Decisions in V12 and V13 whose reversal would be SILENT — no build failure, no error, just a
  * different product. Each is asserted against the migration text directly.
  */
 class ListingSchemaTest {
@@ -65,6 +65,54 @@ class ListingSchemaTest {
                 .as("references item_files (id, item_id) with NO ON DELETE clause, i.e. NO ACTION")
                 .contains("REFERENCES item_files (id, item_id)")
                 .doesNotContainIgnoringCase("ON DELETE");
+    }
+
+    /**
+     * V13's placement decision. A block is recorded in a table of its OWN, and the obvious
+     * "simplification" — four nullable columns on {@code users} — is what this asserts against,
+     * because it would put the table holding every e-mail and every bcrypt hash inside the one
+     * query in this application an unauthenticated stranger can run.
+     */
+    @Test
+    void aSellerBlockIsItsOwnTableAndAddsNoColumnToUsers() {
+        String sql = Migrations.allStatements();
+
+        assertThat(sql).as("the blocked_sellers table").contains("CREATE TABLE blocked_sellers");
+        // No migration may teach `users` about moderation. Written as "does ANY migration alter
+        // users" rather than "does V13", so a later one cannot reintroduce the column quietly.
+        assertThat(Pattern.compile("ALTER TABLE users\\s+ADD COLUMN\\s+(\\w+)",
+                        Pattern.CASE_INSENSITIVE)
+                .matcher(sql).results().map(match -> match.group(1)).toList())
+                .as("columns ever added to users")
+                .doesNotContain("blocked_at", "blocked_by", "marketplace_blocked_at",
+                        "blocked_reason", "block_reason");
+    }
+
+    /**
+     * The block's two structural obligations: it can never make the Play-mandated account deletion
+     * fail, and it can never be a row that says only that somebody did something.
+     */
+    @Test
+    void theBlockListCascadesWithTheAccountAndRecordsWhoWhenAndWhy() {
+        Matcher table = Pattern.compile("CREATE TABLE blocked_sellers \\((.+?)\\n\\);",
+                        Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+                .matcher(Migrations.allStatements());
+
+        assertThat(table.find()).as("the blocked_sellers table").isTrue();
+        String body = table.group(1);
+
+        // ON DELETE CASCADE, not RESTRICT: a sanction must never be able to refuse DELETE /users/me.
+        assertThat(body)
+                .as("user_id is the primary key and cascades with the account")
+                .containsPattern("user_id\\s+uuid\\s+PRIMARY KEY REFERENCES users \\(id\\) ON DELETE CASCADE");
+        // Who, when and why are all NOT NULL: the row existing IS the block, so a block with no
+        // author or no reason is unrepresentable rather than merely discouraged.
+        assertThat(body).containsPattern("blocked_at\\s+timestamptz\\s+NOT NULL");
+        assertThat(body).containsPattern("reason\\s+varchar\\(32\\)\\s+NOT NULL");
+        assertThat(body).containsPattern("blocked_by\\s+varchar\\(320\\)\\s+NOT NULL");
+        // And no history column: this table holds CURRENT sanctions, an unblock DELETEs the row,
+        // and a ledger of past blocks is a retention decision made with the public pages.
+        assertThat(body).doesNotContain("unblocked_at");
     }
 
     @Test

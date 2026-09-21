@@ -1026,7 +1026,103 @@ have nothing to say to a prober.
 ### Still open
 
 No in-app messaging (a later wave, and the strongest mitigation for the one risk below). One photo
-per listing. No admin API — hiding a listing is operator SQL, like every other operator action here.
+per listing. Hiding ONE listing is still operator SQL (blocking a seller is not — see BR-15).
 **A seller can publish somebody else's phone number and no technical control prevents it** without
 SMS verification; the mitigations are the `WRONG_OR_MISLEADING` report reason and the kill-switch.
+
+---
+
+## BR-15 — seller-level moderation: blocking a user, not just a listing (V13) — **IMPLEMENTED 2026-09-21**
+
+**Raised by:** Google Play policy review of BR-14, not a client gap.
+**Status:** shipped. An operator can bar an ACCOUNT from the public board.
+
+### Why
+
+BR-14 shipped a kill-switch that acts on **one row**: `listings.hidden_at` + `hidden_reason`, six
+reasons, all per-listing. A scammer with ten listings therefore costs ten operations and nothing at
+all refuses the eleventh, because every control in V12 is keyed on a listing id.
+
+**Google Play's user-generated-content policy requires an app hosting public UGC to provide a way to
+BLOCK A USER**, not merely to remove content. That is the gap that gets an app removed from the
+store, so it is the first thing closed after the board itself.
+
+### The contract
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/api/v1/moderation/sellers/{sellerId}/block` | `{reason, note?}` | 204 |
+| DELETE | `/api/v1/moderation/sellers/{sellerId}/block` | — | 204 |
+
+`reason` is one of `SCAM_OR_FRAUD`, `PROHIBITED_ITEMS`, `OFFENSIVE_CONTENT`,
+`SPAM_OR_BULK_LISTINGS`, `REPEATED_VIOLATIONS`, `OTHER` (varchar + CHECK, pinned to
+`SellerBlockReason` byte for byte). Errors: **403 `NOT_A_MODERATOR`**, **404 `USER_NOT_FOUND`**.
+
+These are **operator** endpoints and no mobile client ever calls them. `deploy/README.md` Step 12e
+is the procedure.
+
+### The decisions worth keeping
+
+* **It is an ENDPOINT, and BR-14's "no admin API, operator SQL like everything else" is
+  deliberately NOT extended to it.** A hand-written `UPDATE` records that somebody decided
+  something and nothing about who or why, and "we blocked them" with nothing behind it is not an
+  answer to give Google or a seller. A per-listing hide is one row an operator is already looking
+  at; a block changes what a whole account may do, which is the class of action that must leave a
+  record by construction. Hiding a single listing is still SQL.
+* **The auth model is an e-mail allowlist that FAILS CLOSED**
+  (`whereis.marketplace.moderation.moderator-emails`). Unset means NOBODY, never everybody, and
+  that is asserted from inside and outside. There is no role column and adding one for two
+  endpoints would be a migration made for the wrong reason: the operator is a user of their own
+  app, so the JWT they already hold is the credential, their e-mail is the identity they actually
+  configure, and the same e-mail is the audit value in `blocked_sellers.blocked_by`. Compared as
+  `Names.normalize`, which is the form registration stored `users.email` in.
+* **The block is its own TABLE, not a column on `users`** — and half of V12's reason for keeping
+  `contact_phone` off `users` does not apply (a block really is one per account), while the other
+  half applies harder. The board must consult this fact on every anonymous request; as a column on
+  `users` that predicate would put the table holding every e-mail and every bcrypt hash inside the
+  only query in this application a stranger can run. Every column of `blocked_sellers` is an
+  operator's own note about a sanction, so the worst a careless `SELECT b.*` publishes is the
+  moderator's address. `user_id` is the PRIMARY KEY (blocking twice is one row, not two that can
+  disagree) with `ON DELETE CASCADE` (a sanction must never refuse the Play-mandated deletion).
+* **Existing listings are FILTERED, never mutated.** The board's predicate gains
+  `AND NOT EXISTS (SELECT 1 FROM blocked_sellers b WHERE b.user_id = l.user_id)`; the rows stay
+  `ACTIVE` with `hidden_at` NULL. Three reasons: a publish already in flight when the block commits
+  cannot outrun a per-request filter but would outrun any flag; a block is reversible, so stamping
+  `hidden_at` would make an unblock guess which hides to lift; and it is the shape V12 already chose
+  when it rejected a denormalized copy of `items.archived`. Unblocking therefore restores the board
+  exactly, and a per-listing hide applied earlier survives it.
+* **The private inventory is untouched, and that asymmetry is the feature.** Nothing in `items`,
+  `spaces`, `locations` or `item_files` is read or written. A blocked seller keeps everything, keeps
+  reading it, and may still withdraw or mark sold the listings they already have — taking that away
+  would make a marketplace sanction reach the one control the person still legitimately has. What
+  they lose is publishing: `POST /items/{id}/listing` and `PUT /listings/{id}` answer
+  **409 `MARKETPLACE_BLOCKED`**.
+* **No ledger of past blocks.** No `unblocked_at`; an unblock DELETEs the row and logs its four
+  audit facts on the way out. An append-only history was designed and rejected as a NEW RETENTION
+  SURFACE — `listing_reports`' own `ON DELETE CASCADE` already records this project's position that
+  a moderation ledger outliving what it describes is a retention decision to be made with the public
+  pages, not smuggled in.
+* **A block is not an identity ban.** The key is a `users.id`, so a blocked seller who exercises
+  `DELETE /users/me` and re-registers is a new account with no sanction. Closing that would mean
+  retaining something about a deleted person, which contradicts `/legal/delete-account`. Blocking
+  them again is the answer.
+* **Open reports are closed as `UPHELD`** in the same transaction, or the operator's queue
+  re-surfaces forever exactly the complaints they just acted on.
+
+### Wire contract change for the client
+
+`MyListingResponse` gains **`sellerBlocked` (boolean)** — additive, so the shipped Android build
+keeps working. It is a fact about the ACCOUNT and is independent of `hidden`/`hiddenReason`, which
+remain facts about the row; a blocked seller's listing reads `status: ACTIVE, hidden: false,
+sellerBlocked: true`. Without it the seller's own screen would show a healthy active listing that no
+visitor can see. See ANDROID_APP_PROMPT.md §3.9.
+
+### Still open
+
+No moderation READ endpoint — the queue and the block list are SQL (Step 12e), because a read
+surface showing one account's data to another needs a permission model this does not add. The
+published photo copy is left in MinIO on purpose (a block is reversible), so an already-issued
+presigned URL stays valid for its TTL. And the deepest legal board page now costs roughly twice the
+buffers it did, which is bounded by `MAX_PAGE` today and wants keyset pagination if the board ever
+pages deeper.
 

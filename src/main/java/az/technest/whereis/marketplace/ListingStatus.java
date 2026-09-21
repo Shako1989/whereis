@@ -2,7 +2,7 @@ package az.technest.whereis.marketplace;
 
 /**
  * What a seller has decided about their own listing. Pinned to {@code ck_listings_status} byte for
- * byte by {@link az.technest.whereis.marketplace.ListingStatusTest}.
+ * byte by {@code ListingEnumsTest}.
  *
  * <p><strong>SOLD and WITHDRAWN are TERMINAL.</strong> A listing is never re-activated; re-listing
  * inserts a new row. The reason is {@code listing_reports}: reopening a row would let a report
@@ -22,9 +22,11 @@ public enum ListingStatus {
     WITHDRAWN;
 
     /**
-     * Half of the public visibility rule — the other half is {@code hidden_at IS NULL}. Use
-     * {@link Listing#isPubliclyVisible()} rather than this alone; a test pins that the JPQL the
-     * board runs admits exactly the statuses this returns true for.
+     * One THIRD of the public visibility rule. The others are {@code hidden_at IS NULL} (this row's
+     * operator kill-switch) and "the seller is not blocked" (V13, an account fact no listing column
+     * carries). Use {@link Listing#isPubliclyVisible()} rather than this alone, and read
+     * {@code MarketBoardDao.VISIBLE} for the whole rule — {@code MarketBoardVisibilityTest} pins
+     * that the SQL the board runs states all three clauses.
      */
     public boolean isPubliclyVisible() {
         return this == ACTIVE;
