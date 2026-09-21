@@ -3,6 +3,7 @@ package az.technest.whereis.user;
 import az.technest.whereis.assistant.AssistantMessageService;
 import az.technest.whereis.item.ItemDeletionSummary;
 import az.technest.whereis.item.ItemService;
+import az.technest.whereis.marketplace.ListingService;
 import az.technest.whereis.location.LocationService;
 import az.technest.whereis.plan.SubscriptionCancellationService;
 import az.technest.whereis.plan.rtdn.PlayNotificationPurgeService;
@@ -67,6 +68,7 @@ public class AccountDeletionService {
     private final AssistantMessageService assistantMessageService;
     private final SubscriptionCancellationService subscriptionCancellations;
     private final PlayNotificationPurgeService playNotifications;
+    private final ListingService listingService;
 
     /**
      * @param userId      the JWT subject — never client input
@@ -87,16 +89,25 @@ public class AccountDeletionService {
         // the cancellation, and this purge removes the ledger rows that token can still be traced
         // through. Both read user_subscriptions, which the users cascade takes away at the end.
         int notifications = playNotifications.purgeForUser(userId);
+        // Before the item cascade, or fk_listings_item_same_user has already taken these away and
+        // there is nothing left to count. Explicit rather than left to that cascade for the same
+        // reason assistant_messages is: a cascade REPORTS nothing, and a public artefact being
+        // taken off the internet is the one step an operator most needs to see in the log line.
+        // Position: after the two billing steps (which are pinned there — both read
+        // user_subscriptions, which survives only until the users cascade) and before the private
+        // text, in descending order of external visibility.
+        int listings = listingService.deleteAllForUser(userId);
         int assistantMessages = assistantMessageService.deleteAllForUser(userId);
         ItemDeletionSummary items = itemService.deleteAllForUser(userId);
         int locations = locationService.deleteAllForUser(userId);
         int spaces = spaceService.deleteAllForUser(userId);
         userRepository.delete(user);
 
-        log.info("Account {} deleted: {} spaces (locked {}), {} locations, {} items, {} assistant messages, "
+        log.info("Account {} deleted: {} spaces (locked {}), {} locations, {} items, {} listings, "
+                        + "{} assistant messages, "
                         + "{} photo deletions enqueued, {} subscription cancellations enqueued, "
                         + "{} billing notifications purged",
-                userId, spaces, spaceIds.size(), locations, items.items(), assistantMessages,
+                userId, spaces, spaceIds.size(), locations, items.items(), listings, assistantMessages,
                 items.filesEnqueued(), cancellations, notifications);
     }
 }

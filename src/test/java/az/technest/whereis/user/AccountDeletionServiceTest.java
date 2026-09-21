@@ -50,6 +50,8 @@ class AccountDeletionServiceTest {
     private az.technest.whereis.plan.SubscriptionCancellationService subscriptionCancellations;
     @Mock
     private az.technest.whereis.plan.rtdn.PlayNotificationPurgeService playNotifications;
+    @Mock
+    private az.technest.whereis.marketplace.ListingService listingService;
     private AccountDeletionService service;
 
     private final UUID userId = UUID.randomUUID();
@@ -59,7 +61,7 @@ class AccountDeletionServiceTest {
         // Real verifier, not a mock: the test must prove the service refuses on a genuine BCrypt mismatch.
         service = new AccountDeletionService(userRepository, new PasswordVerifier(encoder),
                 spaceService, locationService, itemService, assistantMessageService,
-                subscriptionCancellations, playNotifications);
+                subscriptionCancellations, playNotifications, listingService);
     }
 
     private User user() {

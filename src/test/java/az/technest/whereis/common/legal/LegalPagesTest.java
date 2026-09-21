@@ -20,7 +20,7 @@ class LegalPagesTest {
 
     @Test
     void bothShippedPagesRenderWithNoPlaceholderLeft() {
-        LegalPages pages = new LegalPages(filled());
+        LegalPages pages = new LegalPages(filled(), minio());
 
         for (String name : new String[] {"privacy", "delete-account"}) {
             assertThat(pages.page(name))
@@ -34,7 +34,7 @@ class LegalPagesTest {
 
     @Test
     void everyValueActuallyReachesThePages() {
-        LegalPages pages = new LegalPages(filled());
+        LegalPages pages = new LegalPages(filled(), minio());
         String both = pages.page("privacy") + pages.page("delete-account");
 
         // Not one assertion per page: which page carries which fact is a content decision that is
@@ -54,7 +54,7 @@ class LegalPagesTest {
         // "a configured value is used". PlayNotificationJanitor reads the same property as its
         // cutoff, so a page that did not carry it would be a retention promise with no number and
         // a sweep with no promise. Both pages, because both state it.
-        LegalPages pages = new LegalPages(filled());
+        LegalPages pages = new LegalPages(filled(), minio());
 
         assertThat(pages.page("privacy")).contains("30");
         assertThat(pages.page("delete-account")).contains("30");
@@ -65,7 +65,7 @@ class LegalPagesTest {
         LegalProperties blankEmail =
                 new LegalProperties("  ", "A Person", "1 Street, City", "2026-09-19", "14", "7", "30");
 
-        assertThatThrownBy(() -> new LegalPages(blankEmail))
+        assertThatThrownBy(() -> new LegalPages(blankEmail, minio()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("SUPPORT_EMAIL")
                 .hasMessageContaining("whereis.legal");
@@ -76,7 +76,7 @@ class LegalPagesTest {
         LegalProperties noAddress =
                 new LegalProperties("help@example.com", "A Person", null, "2026-09-19", "14", "7", "30");
 
-        assertThatThrownBy(() -> new LegalPages(noAddress))
+        assertThatThrownBy(() -> new LegalPages(noAddress, minio()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("LEGAL_ADDRESS");
     }
@@ -85,9 +85,16 @@ class LegalPagesTest {
     void anUnknownPageNameIsNullRatherThanAFileLookup() {
         // The controller turns this into a 404. What matters here is that the name never reaches a
         // filesystem or classpath lookup, so no path can be traversed through it.
-        LegalPages pages = new LegalPages(filled());
+        LegalPages pages = new LegalPages(filled(), minio());
 
         assertThat(pages.page("../application")).isNull();
         assertThat(pages.page("terms")).isNull();
+    }
+
+    /** Only presignTtl is read by LegalPages; the rest are the required non-blank values. */
+    private static az.technest.whereis.storage.MinioProperties minio() {
+        return new az.technest.whereis.storage.MinioProperties(
+                "http://minio:9000", null, "key", "secret", "bucket",
+                java.time.Duration.ofMinutes(10));
     }
 }

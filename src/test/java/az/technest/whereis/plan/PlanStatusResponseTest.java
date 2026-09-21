@@ -30,12 +30,12 @@ class PlanStatusResponseTest {
 
     @Test
     void aFreeAccountSerializesItsLimitsItsUsageAndNoSubscription() throws JsonProcessingException {
-        String body = serialize(new PlanStatusResponse(Plan.FREE, new PlanLimitsResponse(1, 100),
-                new PlanUsageResponse(1L, 19L), EntitlementSource.NONE, null));
+        String body = serialize(new PlanStatusResponse(Plan.FREE, new PlanLimitsResponse(1, 100, 1),
+                new PlanUsageResponse(1L, 19L, 0), EntitlementSource.NONE, null));
 
         assertThat(json.readTree(body)).hasToString(
-                "{\"plan\":\"FREE\",\"limits\":{\"spaces\":1,\"items\":100},"
-                        + "\"usage\":{\"spaces\":1,\"activeItems\":19},"
+                "{\"plan\":\"FREE\",\"limits\":{\"spaces\":1,\"items\":100,\"listings\":1},"
+                        + "\"usage\":{\"spaces\":1,\"activeItems\":19,\"activeListings\":0},"
                         + "\"source\":\"NONE\",\"subscription\":null}");
     }
 
@@ -44,8 +44,8 @@ class PlanStatusResponseTest {
         // THE SHAPE THE WHOLE CHANGE EXISTS FOR. A whole-object null could not say "ten spaces,
         // unlimited items" at all, which is why nullability moved to the two members and why
         // BR-11's "limits is null for UNLIMITED" is superseded.
-        String body = serialize(new PlanStatusResponse(Plan.MAX, new PlanLimitsResponse(10, null),
-                new PlanUsageResponse(4L, 1203L), EntitlementSource.SUBSCRIPTION,
+        String body = serialize(new PlanStatusResponse(Plan.MAX, new PlanLimitsResponse(10, null, 25),
+                new PlanUsageResponse(4L, 1203L, 0), EntitlementSource.SUBSCRIPTION,
                 new PlanSubscriptionResponse("whereis_max_annual", Plan.MAX, SubscriptionState.ACTIVE,
                         Instant.parse("2027-09-19T10:04:00Z"), PurchaseProvenance.PLAY_PURCHASE, true,
                         true, null, null)));
@@ -62,8 +62,8 @@ class PlanStatusResponseTest {
 
     @Test
     void anOperatorGrantSerializesBothCeilingsAsNullAndNoSubscription() throws JsonProcessingException {
-        String body = serialize(new PlanStatusResponse(Plan.UNLIMITED, new PlanLimitsResponse(null, null),
-                new PlanUsageResponse(4L, 19L), EntitlementSource.GRANT, null));
+        String body = serialize(new PlanStatusResponse(Plan.UNLIMITED, new PlanLimitsResponse(null, null, null),
+                new PlanUsageResponse(4L, 19L, 0), EntitlementSource.GRANT, null));
 
         // `limits` itself is now ALWAYS an object; a null is exactly one thing, "no ceiling on that
         // allowance". Two representations of "everything is unlimited" would let the wire
@@ -81,8 +81,8 @@ class PlanStatusResponseTest {
     void anOverLimitAccountReportsUsageAboveItsLimitsWithoutClamping() throws JsonProcessingException {
         // A PRO account that dropped to STANDARD keeps its five spaces. The honest body is the one
         // that says so; clamping would hide the only fact that explains the 409 on the next POST.
-        String body = serialize(new PlanStatusResponse(Plan.STANDARD, new PlanLimitsResponse(3, 300),
-                new PlanUsageResponse(5L, 412L), EntitlementSource.SUBSCRIPTION,
+        String body = serialize(new PlanStatusResponse(Plan.STANDARD, new PlanLimitsResponse(3, 300, 3),
+                new PlanUsageResponse(5L, 412L, 0), EntitlementSource.SUBSCRIPTION,
                 new PlanSubscriptionResponse("whereis_standard_annual", Plan.STANDARD,
                         SubscriptionState.ACTIVE, Instant.parse("2027-01-01T00:00:00Z"),
                         PurchaseProvenance.PLAY_PURCHASE, true, true, null, null)));

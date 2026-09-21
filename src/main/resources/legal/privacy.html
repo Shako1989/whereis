@@ -48,8 +48,11 @@
     <tr><td>Məkanlar, yerləşmələr, əşyalar, əşya hərəkət tarixçəsi</td>
         <td>Sizin daxil etdiyiniz məzmun — xidmətin özü</td></tr>
     <tr><td>Əşya fotoları</td>
-        <td>Özəl (qapalı) obyekt yaddaşında saxlanır; yalnız 10 dəqiqə etibarlı, imzalanmış linklərlə,
-          yalnız sizə açılır</td></tr>
+        <td>Özəl (qapalı) obyekt yaddaşında saxlanır və yalnız {{PHOTO_LINK_MINUTES}} dəqiqə etibarlı,
+          imzalanmış linklərlə verilir. Bazarda dərc etdiyiniz foto isə təyinatı etibarilə hər kəsə görünür</td></tr>
+    <tr><td>Bazar elanı: başlıq, təsvir, qiymət, şəhər/rayon, əlaqə telefonu və seçdiyiniz foto</td>
+        <td>Elanın dərc olunması. <strong>Bu sahələr internetdə hər kəsə — hesabı olmayanlara da —
+          görünür.</strong> Elan yerləşdirmək tamamilə könüllüdür</td></tr>
     <tr><td>Sorğu jurnalı: vaxt, yol, status kodu və <code>X-Correlation-Id</code></td>
         <td>Nasazlıqların araşdırılması. Şifrə, token və köməkçiyə yazdığınız mətn jurnala yazılmır</td></tr>
     <tr><td>Köməkçiyə yazdığınız — və ya səslə dediyiniz — cümlələr və modelin onları necə şərh etdiyi</td>
@@ -104,6 +107,24 @@
     birlikdə verilənlər bazasında hesabınızla saxlanılır — səhvlərin araşdırılması və tətbiqin sizə əvvəl nə
     yazdığınızı göstərə bilməsi üçün — və hesabınızı sildikdə onunla birlikdə silinir. Onları yalnız siz görürsünüz.</p>
 
+  <h3>Daxili bazar</h3>
+  <p>Əşyanı satışa qoymaq könüllüdür və yalnız siz elanı dərc edəndə baş verir. Dərc etdiyiniz
+    başlıq, təsvir, qiymət, şəhər/rayon, əlaqə telefonu və seçdiyiniz foto <strong>internetdə hər
+    kəsə görünür</strong> — hesabı olmayan ziyarətçilərə də.</p>
+  <p><strong>Əşyanı harada saxladığınız heç vaxt dərc olunmur.</strong> Məkanlarınız,
+    yerləşmələriniz və əşyanın saxlanma yolu (məsələn «Ev › Yataq otağı › Şkaf») elanın tərkibinə
+    daxil deyil və heç kimə göndərilmir. Alıcının gördüyü yer yalnız sizin özünüzün yazdığı
+    şəhər/rayondur.</p>
+  <p><strong>Telefon nömrəsi hər elanda sizin özünüzün yazdığınız nömrədir.</strong> whereis
+    hesabınızda telefon nömrəsi saxlamır və onu cihazınızdan götürmür; fərqli elanlarda fərqli
+    nömrə yaza bilərsiniz.</p>
+  <p>Elanı istənilən vaxt geri götürə və ya «satıldı» kimi işarələyə bilərsiniz — bundan sonra o,
+    lövhədən dərhal çıxır. Lakin <strong>dərc olunduqdan sonra onu hər kəs kopyalaya, saxlaya və ya
+    ekran şəkli çəkə bilər; başqalarında olan nüsxələri geri qaytara bilmirik.</strong></p>
+  <p>Elan barədə kimsə şikayət göndərəndə şikayətin səbəbini və yazdığı qeydi saxlayırıq.
+    <strong>Şikayəti göndərən barədə heç nə saxlamırıq</strong> — nə IP ünvanı, nə onun hesablanmış
+    formasını.</p>
+
   <h3>Saxlanma müddəti</h3>
   <p>Bütün məlumatlar hesabınızı silənə qədər saxlanılır. Hesab silindikdə hesab, məkanlar, yerləşmələr,
     əşyalar, tarixçə, köməkçiyə yazdığınız cümlələr, foto metadata və sessiyalar dərhal silinir; fotoların özləri obyekt yaddaşından qısa
@@ -155,8 +176,13 @@
     <tr><td>Spaces, locations, items and item movement history</td>
         <td>The content you enter — the service itself</td></tr>
     <tr><td>Item photos</td>
-        <td>Stored in a private object-storage bucket; served only through signed links valid for
-          10 minutes, only to you</td></tr>
+        <td>Stored in a private object-storage bucket and served only through signed links valid for
+          {{PHOTO_LINK_MINUTES}} minutes. A photo you publish on a marketplace listing is, by design,
+          visible to anyone</td></tr>
+    <tr><td>Marketplace listing: the title, description, price, city/district, contact phone number
+          and photo you choose when you publish an item</td>
+        <td>Publishing the listing. <strong>These fields are visible to anyone on the internet,
+          including people with no account.</strong> Listing an item is entirely optional</td></tr>
     <tr><td>Request log: time, path, status code and <code>X-Correlation-Id</code></td>
         <td>Troubleshooting. Passwords, tokens and the text you type into the assistant are never logged</td></tr>
     <tr><td>The sentences you type — or dictate — to the assistant, with the model's interpretation of them</td>
@@ -207,6 +233,24 @@
   <p>Assistant messages are never written to production logs. They are, however, stored with your account in
     the database together with the model's interpretation — so mistakes can be investigated and so the app can
     show you what you originally said — and they are deleted when you delete your account. Only you can see them.</p>
+
+  <h3>Marketplace</h3>
+  <p>Offering an item for sale is optional and happens only when you publish a listing. The title,
+    description, price, city/district, contact phone number and photo you publish are
+    <strong>visible to anyone on the internet</strong>, including visitors with no account.</p>
+  <p><strong>Where you keep the item is never published.</strong> Your spaces, your locations and
+    the storage path of the item (for example “Home › Bedroom › Wardrobe”) are not part of a listing
+    and are never sent to anyone. The only location a buyer sees is the city or district you type
+    yourself.</p>
+  <p><strong>The phone number is the one you type on each listing.</strong> whereis does not store a
+    phone number on your account and never takes one from your device; you may give a different
+    number on different listings.</p>
+  <p>You can withdraw a listing or mark it sold at any time, and it leaves the board immediately.
+    But <strong>once published, anyone can copy, save or screenshot it. Withdrawing a listing
+    removes it from the board; it cannot recall copies other people already have.</strong></p>
+  <p>When someone reports a listing we store the reason and any note they wrote.
+    <strong>We store nothing about the person who reported it</strong> — not their IP address, and
+    not a hash of it.</p>
 
   <h3>Retention</h3>
   <p>Everything is kept until you delete your account. On deletion the account, spaces, locations, items,

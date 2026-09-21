@@ -33,6 +33,15 @@
     reverse_proxy whereis-api:8080 {
         header_up X-Forwarded-Proto {scheme}
         header_up X-Forwarded-Host {host}
+        # OVERWRITE, never append — and this line is load-bearing, not hygiene.
+        #
+        # reverse_proxy's DEFAULT is to APPEND the peer to whatever X-Forwarded-For the client
+        # sent, and Spring's ForwardedHeaderFilter (server.forward-headers-strategy: framework in
+        # application-prod.yml) takes the FIRST entry. So without this, any caller sets
+        # `X-Forwarded-For: 1.2.3.4` and becomes a different client on every request: the
+        # marketplace board's per-IP rate limiter is bypassed with one line of curl, and the
+        # request log has been recording a spoofable address all along.
+        header_up X-Forwarded-For {remote_host}
     }
 }
 

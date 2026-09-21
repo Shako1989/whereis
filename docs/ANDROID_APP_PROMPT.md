@@ -1067,3 +1067,72 @@ Sections 2, 3, 4, 6, 7 and 9 are platform-independent and are the shared contrac
 client (SwiftUI + async/await, `URLSession`, Keychain token storage, an actor-serialized refresh
 that mirrors §4.1 exactly). Keep this document as the single source of truth for both clients:
 when the backend contract changes, update §3 here first, then both apps.
+
+---
+
+## 3.9 The marketplace (BR-14, V12)
+
+### Publishing (authenticated)
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/api/v1/items/{itemId}/listing` | `ListingRequest` | 201 `MyListingResponse` |
+| GET/PUT | `/api/v1/listings/{listingId}` | — / `ListingRequest` | 200 |
+| DELETE | `/api/v1/listings/{listingId}` | — | 200 (withdraw) |
+| POST | `/api/v1/listings/{listingId}/sold` | — | 200 |
+| GET | `/api/v1/users/me/listings?page&size&activeOnly` | — | 200 `Page` |
+
+```jsonc
+// ListingRequest — the title and description are TYPED, never defaulted from the item.
+{ "title": "Samsung A54",
+  "description": "…",          // at least 40 characters, counted after trimming
+  "price": 250.00,             // AZN, at most 2 decimals
+  "contactPhone": "+994501234567",
+  "city": "Bakı",
+  "coverFileId": "uuid|null" } // one of THIS item's photos; null = primary-else-oldest
+```
+
+**Show the user what is about to become public before they send it.** `title` and `description`
+are required by the server precisely so the composer cannot quietly promote the item's private name
+and private note to a public listing.
+
+Errors to branch on: `LISTING_DESCRIPTION_TOO_SHORT` (400 — the message names the number, render
+it), `LISTING_PHOTO_REQUIRED`, `ITEM_ARCHIVED`, `LISTING_ALREADY_ACTIVE`, `LISTING_HIDDEN`,
+`LISTING_NOT_ACTIVE`, `PLAN_LIMIT_REACHED` (all 409), `ITEM_NOT_FOUND` / `FILE_NOT_FOUND` (404).
+
+`MyListingResponse.hidden` + `hiddenReason` mean a moderator took it off the board. Show it —
+a listing that vanished without explanation reads as a broken app. Editing is refused while hidden;
+the route back is withdraw and publish a corrected listing.
+
+### Browsing (NO token)
+
+```
+GET  /api/v1/market/listings?q=&city=&page=&size=    → { listings, hasMore, page, size }
+GET  /api/v1/market/listings/{id}                     → title, description, price, currency,
+                                                        city, contactPhone, imageUrl, publishedAt
+POST /api/v1/market/listings/{id}/reports             → 202, body { reason, note? }
+```
+
+**Do NOT send an `Authorization` header to `/api/v1/market/**`.** It is harmless today — that path
+is served by a chain with no JWT decoder, which is exactly why an expired token does not break
+browsing — but the endpoints are anonymous by design and nothing there varies by viewer.
+
+`size` is clamped to 50 and `page` to 99. There is deliberately **no total count**: paginate on
+`hasMore`. `q` shorter than two characters is ignored rather than rejected, so a search-as-you-type
+field needs no debounce guard against 400s.
+
+`imageUrl` is a presigned link that **expires** (10 minutes by default). Cache the image against
+the listing `id`, not the URL, and re-fetch the listing when it 404s. Board responses are
+`Cache-Control: no-store` — do not cache the JSON.
+
+`429 RATE_LIMITED` carries `Retry-After`; `503` means the board is shedding load. Both are
+transient — back off, do not sign the user out.
+
+A listing that was never published, was withdrawn, or was hidden by a moderator all answer the
+**same 404**. Treat it as "gone", never as "removed for a reason".
+
+### Plan
+
+`limits` gains `listings` and `usage` gains `activeListings` on `GET /users/me/plan` and
+`GET /plans` — additive, and the shipped build keeps working unchanged.
+

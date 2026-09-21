@@ -51,6 +51,19 @@ public class ItemFile {
     @Column(name = "is_primary", nullable = false)
     private boolean isPrimary;
 
+    /**
+     * The key of the PUBLIC copy of this photo, or null while it has none.
+     *
+     * <p>The private key is {@code u/{userId}/i/{itemId}/{fileId}} and a presigned URL carries the
+     * key in its PATH, so serving the private object to the anonymous marketplace board would
+     * publish the seller's user UUID and the item's UUID to every visitor and every crawler — a
+     * stable correlation key that would let a scraper cluster every listing to one person, which is
+     * exactly what leaving sellerId out of the public DTO is meant to prevent. Publishing copies
+     * the object server-side to an opaque {@code p/{uuid}} key instead, and this records it.
+     */
+    @Column(name = "published_object_key", columnDefinition = "text")
+    private String publishedObjectKey;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 

@@ -48,6 +48,19 @@ public class PlanLimitReachedException extends ConflictException {
                 upgradeAvailable ? message + ", or upgrade your plan for more items." : message + ".");
     }
 
+    public static PlanLimitReachedException activeListings(int limit, Plan tier,
+            boolean upgradeAvailable) {
+        // Ending a listing always frees room, on every tier, so that half is unconditional — the
+        // activeItems() shape exactly. A HIDDEN listing does not free room, and the message does
+        // not mention hiding: an operator action is not something the seller can act on.
+        String message = tier.displayName() + " plan limit reached: "
+                + quantity(limit, "active listing", "active listings")
+                + ". Mark a listing sold or withdraw it to free room";
+        return new PlanLimitReachedException(upgradeAvailable
+                ? message + ", or upgrade your plan for more listings."
+                : message + ".");
+    }
+
     private static String quantity(int limit, String singular, String plural) {
         return limit + " " + (limit == 1 ? singular : plural);
     }

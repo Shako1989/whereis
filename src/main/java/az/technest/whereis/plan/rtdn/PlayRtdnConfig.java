@@ -141,7 +141,8 @@ public class PlayRtdnConfig {
      * {@code Authorization: Bearer} value still reaches the controller; that test fails if anyone
      * ever collapses the chains.
      *
-     * <p>Ordered 0 so it wins the match ahead of {@code authFilterChain} (1) and the main chain (2).
+     * <p>Ordered 0 so it wins the match ahead of the marketplace board (1),
+     * {@code authFilterChain} (2) and the main chain (3).
      */
     @Bean
     @org.springframework.core.annotation.Order(0)

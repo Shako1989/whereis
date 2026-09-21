@@ -42,6 +42,8 @@ class PlanLimitEnforcerTest {
     private ItemRepository itemRepository;
     @Mock
     private UserSubscriptionRepository subscriptionRepository;
+    @Mock
+    private az.technest.whereis.marketplace.ListingRepository listingRepository;
 
     private final UUID userId = UUID.randomUUID();
 
@@ -50,11 +52,11 @@ class PlanLimitEnforcerTest {
 
     private static PlanCatalog shippedCatalog() {
         Map<Plan, TierConfig> tiers = new EnumMap<>(Plan.class);
-        tiers.put(Plan.FREE, new TierConfig(1, 100, null));
-        tiers.put(Plan.STANDARD, new TierConfig(3, 300, "whereis_standard_annual"));
-        tiers.put(Plan.PRO, new TierConfig(5, 600, "whereis_pro_annual"));
-        tiers.put(Plan.MAX, new TierConfig(10, null, "whereis_max_annual"));
-        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null));
+        tiers.put(Plan.FREE, new TierConfig(1, 100, 1, null));
+        tiers.put(Plan.STANDARD, new TierConfig(3, 300, 3, "whereis_standard_annual"));
+        tiers.put(Plan.PRO, new TierConfig(5, 600, 10, "whereis_pro_annual"));
+        tiers.put(Plan.MAX, new TierConfig(10, null, 25, "whereis_max_annual"));
+        tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null, null));
         return new PlanCatalog(tiers);
     }
 
@@ -66,7 +68,7 @@ class PlanLimitEnforcerTest {
         lenient().when(subscriptionRepository.entitlingOf(eq(userId), any())).thenReturn(List.of());
         lenient().when(subscriptionRepository.manageableOf(eq(userId))).thenReturn(List.of());
         enforcer = new PlanLimitEnforcer(userRepository, spaceRepository, itemRepository,
-                subscriptionRepository, CATALOG);
+                listingRepository, subscriptionRepository, CATALOG);
     }
 
     private void granted(Plan plan) {
@@ -280,7 +282,7 @@ class PlanLimitEnforcerTest {
         PlanStatusResponse status = enforcer.statusOf(userId);
 
         assertThat(status.plan()).isEqualTo(Plan.PRO);
-        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(5, 600));
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(5, 600, 10));
         assertThat(status.source()).isEqualTo(EntitlementSource.SUBSCRIPTION);
         assertThat(status.subscription().productId()).isEqualTo("whereis_pro_annual");
         assertThat(status.subscription().tier()).isEqualTo(Plan.PRO);
@@ -296,7 +298,7 @@ class PlanLimitEnforcerTest {
 
         PlanStatusResponse status = enforcer.statusOf(userId);
 
-        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(10, null));
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(10, null, 25));
     }
 
     @Test
@@ -308,7 +310,7 @@ class PlanLimitEnforcerTest {
         PlanStatusResponse status = enforcer.statusOf(userId);
 
         assertThat(status.plan()).isEqualTo(Plan.UNLIMITED);
-        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(null, null));
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(null, null, null));
         assertThat(status.source()).isEqualTo(EntitlementSource.GRANT);
         assertThat(status.subscription()).isNull();
         // Usage is reported on every tier — the screen still shows "19 items".
@@ -354,7 +356,7 @@ class PlanLimitEnforcerTest {
 
         assertThat(status.source()).isEqualTo(EntitlementSource.NONE);
         assertThat(status.subscription()).isNull();
-        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(1, 100));
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(1, 100, 1));
     }
 
     @Test
@@ -387,7 +389,7 @@ class PlanLimitEnforcerTest {
         PlanStatusResponse status = enforcer.statusOf(userId);
 
         assertThat(status.plan()).isEqualTo(Plan.STANDARD);
-        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(3, 300));
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(3, 300, 3));
         assertThat(status.usage().spaces()).isEqualTo(5L);
         assertThat(status.usage().activeItems()).isEqualTo(412L);
         assertThatThrownBy(() -> enforcer.requireRoomForAnotherSpace(userId))
@@ -413,7 +415,7 @@ class PlanLimitEnforcerTest {
         PlanStatusResponse status = enforcer.statusOf(userId);
 
         assertThat(status.plan()).isEqualTo(Plan.FREE);
-        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(1, 100));
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(1, 100, 1));
         assertThat(status.subscription()).isNotNull();
         assertThat(status.subscription().tier()).isEqualTo(Plan.PRO);
         assertThat(status.subscription().state()).isEqualTo(SubscriptionState.ON_HOLD);
@@ -439,7 +441,7 @@ class PlanLimitEnforcerTest {
         PlanStatusResponse status = enforcer.statusOf(userId);
 
         assertThat(status.plan()).isEqualTo(Plan.STANDARD);
-        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(3, 300));
+        assertThat(status.limits()).isEqualTo(new PlanLimitsResponse(3, 300, 3));
         // The entitling row is also the one reported, so the badge and the strip agree.
         assertThat(status.subscription().tier()).isEqualTo(Plan.STANDARD);
         assertThat(status.subscription().entitling()).isTrue();

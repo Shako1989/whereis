@@ -32,4 +32,23 @@ public interface StorageDeletionQueueRepository extends JpaRepository<StorageDel
             WHERE i.user_id = :userId
             """, nativeQuery = true)
     int enqueueAllFilesOfUser(@Param("userId") UUID userId);
+
+    /**
+     * The same statement for the PUBLIC copies of a user's photos. A second query rather than a
+     * {@code UNION ALL} in the first, because the predicate differs ({@code published_object_key
+     * IS NOT NULL}) and the two counts are separately meaningful in the deletion log line.
+     *
+     * <p>Without this, deleting an account would leave the published copies in MinIO with nothing
+     * left in the database to find them by — the orphan the outbox exists to prevent, and on the
+     * one class of object that is reachable from the open internet.
+     */
+    @Modifying
+    @Query(value = """
+            INSERT INTO storage_deletion_queue (id, bucket, object_key, attempts, next_attempt_at, created_at)
+            SELECT gen_random_uuid(), f.bucket, f.published_object_key, 0, now(), now()
+            FROM item_files f
+            JOIN items i ON i.id = f.item_id
+            WHERE i.user_id = :userId AND f.published_object_key IS NOT NULL
+            """, nativeQuery = true)
+    int enqueuePublishedCopiesOfUser(@Param("userId") UUID userId);
 }

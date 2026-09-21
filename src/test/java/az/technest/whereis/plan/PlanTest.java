@@ -2,6 +2,8 @@ package az.technest.whereis.plan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import az.technest.whereis.migration.Migrations;
+
 import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;

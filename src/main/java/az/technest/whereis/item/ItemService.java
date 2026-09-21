@@ -1,6 +1,9 @@
 package az.technest.whereis.item;
 
 import az.technest.whereis.common.util.Names;
+import az.technest.whereis.marketplace.ListingConflictException;
+import az.technest.whereis.marketplace.ListingRepository;
+import az.technest.whereis.marketplace.ListingStatus;
 import az.technest.whereis.item.dto.CreateItemRequest;
 import az.technest.whereis.item.dto.ItemHistoryResponse;
 import az.technest.whereis.item.dto.ItemResponse;
@@ -40,6 +43,7 @@ public class ItemService {
     private final LocationTreeDao treeDao;
     private final FileStorageService fileStorageService;
     private final PlanLimitEnforcer planLimits;
+    private final ListingRepository listingRepository;
     private final ItemMapper mapper;
 
     @Transactional
@@ -134,6 +138,20 @@ public class ItemService {
         item.setDescription(Names.clean(request.description()));
         item.setCategory(Names.clean(request.category()));
         if (request.archived() != null) {
+            // Archiving hides an item from the owner's own list AND from search, so an archived
+            // item with a live listing would be invisible INTERNALLY while visible to the entire
+            // internet — the visibility model inverted. Refused rather than cascaded: withdrawing
+            // somebody's public offer as a side effect of a private tidy-up is not something a
+            // PUT on the item should decide.
+            //
+            // The database-only version of this rule was designed and rejected (see V12's header):
+            // it needs a denormalized copy of `archived` on every listing, maintained by every
+            // status transition, to back a constraint whose violation the service would still have
+            // to pre-empt to answer anything but a 500.
+            if (request.archived() && listingRepository.existsByItemIdAndStatus(
+                    itemId, ListingStatus.ACTIVE)) {
+                throw ListingConflictException.itemListed("archive this item");
+            }
             item.setArchived(request.archived());
         }
         return mapper.toResponse(item, pathOf(item.getCurrentLocationId()), coverOf(item.getId()));
@@ -199,7 +217,12 @@ public class ItemService {
         return new ItemDeletionSummary(items, filesEnqueued);
     }
 
-    Item requireOwned(UUID userId, UUID itemId) {
+    /**
+     * Public so {@code marketplace/} can prove ownership before publishing an item, exactly as
+     * {@code LocationService.requireOwned} is public for {@link #createAt}. An ownership miss is
+     * a 404 here as everywhere — never a 403, so an id cannot be probed for existence.
+     */
+    public Item requireOwned(UUID userId, UUID itemId) {
         return itemRepository.findByIdAndUserId(itemId, userId).orElseThrow(ItemNotFoundException::new);
     }
 

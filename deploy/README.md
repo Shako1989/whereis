@@ -842,3 +842,86 @@ tags — or move to a registry.
 **Before rolling back past the V10 release**, run the `users.plan` repair statement in Step 10's
 one-way-door box. Flyway does not undo a migration, and an older image cannot read a `STANDARD`,
 `PRO` or `MAX` row.
+
+---
+
+## Step 12 — The marketplace (V12, BR-14)
+
+The board at `GET /api/v1/market/listings` is the **first endpoint in this deployment reachable
+without a JWT**. Two things are operational rather than code.
+
+### 12a — the Caddy line the rate limiter depends on
+
+`deploy/Caddyfile.whereis` now sets, inside the API vhost's `reverse_proxy`:
+
+```caddyfile
+header_up X-Forwarded-For {remote_host}
+```
+
+**Append it to the AutoParts Caddyfile and reload**, or the per-IP limiter on the public board is
+bypassed with one curl header: `reverse_proxy` APPENDS to whatever the client sent and Spring reads
+the FIRST entry. Nothing fails loudly without it.
+
+```sh
+docker exec autoparts-caddy caddy reload --config /etc/caddy/Caddyfile
+# verify: a spoofed header must NOT get its own budget
+for i in $(seq 1 40); do
+  curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 1.2.3.4' \
+       "https://$WHEREIS_API_HOST/api/v1/market/listings"
+done | sort | uniq -c        # expect some 429s
+```
+
+### 12b — taking a listing off the board
+
+There is no admin API, for the same reason grants are SQL (Step 10): an admin endpoint needs an
+admin auth model this application does not have. **Review before you write:**
+
+```sql
+SELECT id, title, city, contact_phone, status, created_at FROM listings WHERE id = '<uuid>';
+SELECT reason, note, reported_at FROM listing_reports WHERE listing_id = '<uuid>' ORDER BY reported_at DESC;
+```
+
+```sql
+-- Hide it. The board 404s on the next request; the seller sees `hidden` + `hiddenReason`.
+UPDATE listings
+   SET hidden_at = now(), hidden_reason = 'PROHIBITED_ITEM', hidden_note = 'why, for a colleague'
+ WHERE id = '<uuid>';
+```
+
+`hidden_reason` must be one of `PROHIBITED_ITEM`, `SCAM_OR_FRAUD`, `OFFENSIVE_CONTENT`,
+`WRONG_OR_MISLEADING`, `ABUSE_REPORTS`, `OTHER` — a CHECK enforces it, and `hidden_at` and
+`hidden_reason` must be set together.
+
+**The photo copy outlives the hide by up to the presign TTL** (`MINIO_PRESIGN_TTL`, 10 minutes),
+because a URL already handed out stays valid. To kill it immediately:
+
+```sql
+INSERT INTO storage_deletion_queue (id, bucket, object_key, attempts, next_attempt_at, created_at)
+SELECT gen_random_uuid(), f.bucket, f.published_object_key, 0, now(), now()
+  FROM item_files f JOIN listings l ON l.cover_file_id = f.id
+ WHERE l.id = '<uuid>' AND f.published_object_key IS NOT NULL;
+```
+
+Un-hiding is `SET hidden_at = NULL, hidden_reason = NULL` — it restores nothing, because it
+overwrote nothing.
+
+### 12c — the report queue
+
+```sql
+SELECT l.id, l.title, count(*) AS reports
+  FROM listing_reports r JOIN listings l ON l.id = r.listing_id
+ WHERE r.reviewed_at IS NULL
+ GROUP BY l.id, l.title ORDER BY reports DESC;
+
+UPDATE listing_reports SET reviewed_at = now(), review_outcome = 'UPHELD' WHERE id = '<uuid>';
+```
+
+**Nothing alerts on report volume** — a quiet queue is indistinguishable from a quiet week. Check
+it when you check the backup log.
+
+### 12d — the listing cap
+
+`whereis.plans.<tier>.listings` (FREE 1, STANDARD 3, PRO 10, MAX 25), retunable per environment as
+`WHEREIS_PLANS_PRO_LISTINGS` and so on. The same monotonicity rule as the other two allowances:
+raising a lower tier means raising every tier above it, or startup fails naming both keys.
+

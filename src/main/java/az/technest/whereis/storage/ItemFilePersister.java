@@ -22,4 +22,14 @@ public class ItemFilePersister {
         file.setPrimary(primary);
         return itemFileRepository.save(file);
     }
+
+    /**
+     * Records the public copy's key in its OWN short transaction, so the MinIO copy that precedes
+     * it is never inside one — the same reason {@link #saveNew} exists.
+     */
+    @Transactional
+    public void recordPublishedKey(java.util.UUID fileId, String publishedObjectKey) {
+        itemFileRepository.findById(fileId)
+                .ifPresent(file -> file.setPublishedObjectKey(publishedObjectKey));
+    }
 }

@@ -1,6 +1,8 @@
 package az.technest.whereis.plan;
 
 import az.technest.whereis.item.ItemRepository;
+import az.technest.whereis.marketplace.ListingRepository;
+import az.technest.whereis.marketplace.ListingStatus;
 import az.technest.whereis.plan.dto.PlanLimitsResponse;
 import az.technest.whereis.plan.dto.PlanStatusResponse;
 import az.technest.whereis.plan.dto.PlanSubscriptionResponse;
@@ -55,6 +57,10 @@ public class PlanLimitEnforcer {
     private final UserRepository userRepository;
     private final SpaceRepository spaceRepository;
     private final ItemRepository itemRepository;
+    // marketplace -> plan (the service calls the guard) and plan -> marketplace (the guard counts
+    // rows) is the EXISTING plan <-> item shape verbatim: the guard depends on the REPOSITORY, the
+    // service on the GUARD, so there is no bean cycle.
+    private final ListingRepository listingRepository;
     private final UserSubscriptionRepository subscriptionRepository;
     private final PlanCatalog catalog;
 
@@ -81,6 +87,21 @@ public class PlanLimitEnforcer {
         }
         if (countActiveItems(userId) >= cap) {
             throw PlanLimitReachedException.activeItems(cap, tier, catalog.aHigherTierRaisesItems(tier));
+        }
+    }
+
+    /**
+     * @throws PlanLimitReachedException 409 PLAN_LIMIT_REACHED when the account has no listing left
+     */
+    public void requireRoomForAnotherListing(UUID userId) {
+        Plan tier = effectiveTierOf(userId);
+        Integer cap = catalog.listingLimit(tier);
+        if (cap == null) {
+            return;
+        }
+        if (countActiveListings(userId) >= cap) {
+            throw PlanLimitReachedException.activeListings(
+                    cap, tier, catalog.aHigherTierRaisesListings(tier));
         }
     }
 
@@ -128,8 +149,10 @@ public class PlanLimitEnforcer {
         UserSubscription reported = reportable(best, userId, now);
         return new PlanStatusResponse(
                 effective,
-                new PlanLimitsResponse(catalog.spaceLimit(effective), catalog.itemLimit(effective)),
-                new PlanUsageResponse(countSpaces(userId), countActiveItems(userId)),
+                new PlanLimitsResponse(catalog.spaceLimit(effective), catalog.itemLimit(effective),
+                        catalog.listingLimit(effective)),
+                new PlanUsageResponse(countSpaces(userId), countActiveItems(userId),
+                        countActiveListings(userId)),
                 sourceOf(granted, subscribed),
                 reported == null ? null : PlanSubscriptionResponse.of(reported, catalog, now));
     }
@@ -218,5 +241,14 @@ public class PlanLimitEnforcer {
      */
     private long countActiveItems(UUID userId) {
         return itemRepository.countByUserIdAndArchivedFalse(userId);
+    }
+
+    /**
+     * The LIVE listings this account holds. SOLD and WITHDRAWN free room, exactly as archiving
+     * does for items — and a HIDDEN listing still counts, because freeing the cap on a hide would
+     * let a seller re-publish what an operator just took down.
+     */
+    private long countActiveListings(UUID userId) {
+        return listingRepository.countByUserIdAndStatus(userId, ListingStatus.ACTIVE);
     }
 }
