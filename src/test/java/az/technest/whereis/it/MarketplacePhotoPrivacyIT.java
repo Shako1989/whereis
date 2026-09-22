@@ -238,7 +238,7 @@ class MarketplacePhotoPrivacyIT extends AbstractIntegrationTest {
                 .itemId();
 
         ResponseEntity<JsonNode> refused = post(seller.token(), "/api/v1/items/" + itemId + "/listing",
-                listingRequest("Qirilmis foto", "Baki"), JsonNode.class);
+                listingRequest("Qirilmis foto", "BAKU"), JsonNode.class);
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(refused.getBody().get("code").asText()).isEqualTo("LISTING_PHOTO_UNPUBLISHABLE");
@@ -317,7 +317,7 @@ class MarketplacePhotoPrivacyIT extends AbstractIntegrationTest {
         ItemWithPhoto photo = newItemWithPhoto(seller, title, contentType, filename, bytes);
 
         ResponseEntity<MyListingResponse> created = post(seller.token(),
-                "/api/v1/items/" + photo.itemId() + "/listing", listingRequest(title, "Baki"),
+                "/api/v1/items/" + photo.itemId() + "/listing", listingRequest(title, "BAKU"),
                 MyListingResponse.class);
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         UUID listingId = created.getBody().id();

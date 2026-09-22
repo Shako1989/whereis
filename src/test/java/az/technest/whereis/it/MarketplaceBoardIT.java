@@ -63,7 +63,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
      */
     private static final Set<String> OWNER_ONLY = Set.of(
             "locationPath", "currentLocationId", "itemId", "userId", "sellerId", "email",
-            "archived", "primaryFileId", "normalizedName", "normalizedCity", "objectKey",
+            "archived", "primaryFileId", "normalizedName", "objectKey",
             "coverFileId", "hiddenReason", "hiddenNote", "sellerBlocked", "blockedBy",
             "totalElements", "totalPages");
 
@@ -133,7 +133,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
 
     @Test
     void aPublishedListingIsVisibleToAnyoneAndLeaksNothingOwnerOnly() {
-        Published published = publish("Samsung telefon", "Baki");
+        Published published = publish("Samsung telefon", "BAKU");
 
         ResponseEntity<JsonNode> detail =
                 rest.getForEntity(BOARD + "/" + published.listingId(), JsonNode.class);
@@ -141,7 +141,9 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
         assertThat(detail.getStatusCode()).isEqualTo(HttpStatus.OK);
         JsonNode body = detail.getBody();
         assertThat(body.get("title").asText()).isEqualTo("Samsung telefon");
-        assertThat(body.get("city").asText()).isEqualTo("Baki");
+        // The board serves the CODE. The label is the client's, rendered from its own string
+        // resources — no localised name reaches the database or any response.
+        assertThat(body.get("city").asText()).isEqualTo("BAKU");
         assertThat(body.get("contactPhone").asText()).isEqualTo("+994501234567");
 
         assertNoOwnerOnlyField(body);
@@ -152,7 +154,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
     void theInternalLocationPathNeverAppearsAnywhereInAPublicBody() {
         // The whole point of the feature's hardest rule, asserted on the RAW body rather than on
         // named fields — a field-level assertion only checks the fields somebody thought of.
-        publish("Termos", "Gence");
+        publish("Termos", "GANJA");
 
         String board = rest.getForEntity(BOARD, String.class).getBody();
 
@@ -167,7 +169,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
         // The private object key is u/{userId}/i/{itemId}/{fileId} and a presigned URL carries the
         // key in its PATH, so serving the private object would publish both UUIDs to every crawler
         // and defeat leaving sellerId out of the DTO. The opaque p/ copy is what prevents it.
-        Published published = publish("Kitab", "Sumqayit");
+        Published published = publish("Kitab", "SUMQAYIT");
 
         String imageUrl = rest.getForEntity(BOARD + "/" + published.listingId(), JsonNode.class)
                 .getBody().get("imageUrl").asText();
@@ -180,7 +182,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
 
     @Test
     void theBoardPageCarriesNoTotalCount() {
-        publish("Stol", "Baki");
+        publish("Stol", "BAKU");
 
         JsonNode page = rest.getForEntity(BOARD, JsonNode.class).getBody();
 
@@ -202,7 +204,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
 
     @Test
     void aWithdrawnListingLeavesTheBoardAndItsDetailEndpoint() {
-        Published published = publish("Velosiped", "Baki");
+        Published published = publish("Velosiped", "BAKU");
 
         ResponseEntity<MyListingResponse> withdrawn = rest.exchange(
                 "/api/v1/listings/" + published.listingId(), HttpMethod.DELETE,
@@ -215,7 +217,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
 
     @Test
     void anOperatorHiddenListingIsIndistinguishableFromOneThatNeverExisted() {
-        Published published = publish("Qazan", "Baki");
+        Published published = publish("Qazan", "BAKU");
         jdbc.update("update listings set hidden_at = now(), hidden_reason = 'PROHIBITED_ITEM' where id = ?",
                 published.listingId());
 
@@ -231,7 +233,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
     @Test
     void aSecondUsersListingIsPublicOnTheBoardAndStill404OnTheOwnerApi() {
         // The new rule and business rule 2, in one test: publishing opens exactly one door.
-        Published published = publish("Drel", "Baki");
+        Published published = publish("Drel", "BAKU");
         String stranger = registerAndGetToken();
 
         assertThat(rest.getForEntity(BOARD + "/" + published.listingId(), JsonNode.class)
@@ -246,7 +248,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
 
     @Test
     void anAnonymousReportIsAcceptedAndSaysNothingAboutWhatHappened() {
-        Published published = publish("Palto", "Baki");
+        Published published = publish("Palto", "BAKU");
 
         ResponseEntity<String> real = rest.postForEntity(
                 BOARD + "/" + published.listingId() + "/reports",
@@ -266,7 +268,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
 
     @Test
     void nothingAboutTheReporterIsStored() {
-        Published published = publish("Kreslo", "Baki");
+        Published published = publish("Kreslo", "BAKU");
         rest.postForEntity(BOARD + "/" + published.listingId() + "/reports",
                 new HttpEntity<>(new CreateReportRequest(ListingReportReason.OTHER, "note"),
                         jsonHeaders()), String.class);
@@ -294,9 +296,9 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
     @Test
     void blockingASellerTakesEveryListingOffTheBoardAndLeavesTheirInventoryUntouched() {
         String tag = uniqueTag();
-        Published seller = publish(tag + " telefon", "Baki");
+        Published seller = publish(tag + " telefon", "BAKU");
         grantTier(seller.userId(), Plan.STANDARD);       // FREE allows ONE active listing
-        UUID second = publishAnother(seller, tag + " noutbuk", "Baki");
+        UUID second = publishAnother(seller, tag + " noutbuk", "BAKU");
 
         assertThat(boardIdsMatching(tag)).containsExactlyInAnyOrder(seller.listingId(), second);
         List<Map<String, Object>> itemsBefore = inventoryOf(seller.userId());
@@ -331,7 +333,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
     @Test
     void aBlockedSellersRowsAreUntouchedSoUnblockingRestoresTheBoardExactly() {
         String tag = uniqueTag();
-        Published seller = publish(tag + " velosiped", "Gence");
+        Published seller = publish(tag + " velosiped", "GANJA");
 
         block(seller.userId(), SellerBlockReason.PROHIBITED_ITEMS, null);
 
@@ -359,14 +361,14 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
     /** The eleventh listing, refused. A per-listing switch never could refuse it. */
     @Test
     void aBlockedSellerCannotPublishAnotherListingAndIsToldWhy() {
-        Published seller = publish(uniqueTag() + " qazan", "Baki");
+        Published seller = publish(uniqueTag() + " qazan", "BAKU");
         grantTier(seller.userId(), Plan.STANDARD);
         UUID freshItem = createItemWithPhoto(seller, "Ikinci esya");
 
         block(seller.userId(), SellerBlockReason.SPAM_OR_BULK_LISTINGS, null);
 
         ResponseEntity<JsonNode> refused = post(seller.token(),
-                "/api/v1/items/" + freshItem + "/listing", listingRequest("Ikinci esya", "Baki"),
+                "/api/v1/items/" + freshItem + "/listing", listingRequest("Ikinci esya", "BAKU"),
                 JsonNode.class);
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -387,7 +389,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
      */
     @Test
     void aBlockedSellerSeesOnTheirOwnListingThatTheAccountIsTheReason() {
-        Published seller = publish(uniqueTag() + " palto", "Baki");
+        Published seller = publish(uniqueTag() + " palto", "BAKU");
 
         block(seller.userId(), SellerBlockReason.REPEATED_VIOLATIONS, "internal note, never on a wire");
 
@@ -407,7 +409,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
     /** A marketplace sanction must not reach into the one control the person still legitimately has. */
     @Test
     void aBlockedSellerMayStillWithdrawTheirOwnListing() {
-        Published seller = publish(uniqueTag() + " kreslo", "Baki");
+        Published seller = publish(uniqueTag() + " kreslo", "BAKU");
         block(seller.userId(), SellerBlockReason.OTHER, null);
 
         ResponseEntity<MyListingResponse> withdrawn = rest.exchange(
@@ -422,12 +424,12 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
     /** Editing is refused, like a hide — but with the code that says the ACCOUNT is the problem. */
     @Test
     void aBlockedSellerCannotEditAListingEither() {
-        Published seller = publish(uniqueTag() + " stol", "Baki");
+        Published seller = publish(uniqueTag() + " stol", "BAKU");
         block(seller.userId(), SellerBlockReason.OFFENSIVE_CONTENT, null);
 
         ResponseEntity<JsonNode> edited = rest.exchange("/api/v1/listings/" + seller.listingId(),
                 HttpMethod.PUT,
-                new HttpEntity<>(listingRequest("Yeni ad", "Baki"), bearer(seller.token())),
+                new HttpEntity<>(listingRequest("Yeni ad", "BAKU"), bearer(seller.token())),
                 JsonNode.class);
 
         assertThat(edited.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -436,7 +438,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
 
     @Test
     void theBlockIsOneRowRecordingWhoWhenAndWhy() {
-        Published seller = publish(uniqueTag() + " termos", "Sumqayit");
+        Published seller = publish(uniqueTag() + " termos", "SUMQAYIT");
 
         block(seller.userId(), SellerBlockReason.SCAM_OR_FRAUD, "reported by three buyers");
         // A second decision about the same account REPLACES the first rather than adding a row the
@@ -460,7 +462,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
      */
     @Test
     void blockingClosesEveryOpenReportAgainstThatSellersListings() {
-        Published seller = publish(uniqueTag() + " drel", "Baki");
+        Published seller = publish(uniqueTag() + " drel", "BAKU");
         rest.postForEntity(BOARD + "/" + seller.listingId() + "/reports",
                 new HttpEntity<>(new CreateReportRequest(ListingReportReason.SCAM_OR_FRAUD, "fake"),
                         jsonHeaders()), String.class);
@@ -484,7 +486,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
      */
     @Test
     void anOrdinaryAccountCannotBlockAnybody() {
-        Published seller = publish(uniqueTag() + " kitab", "Baki");
+        Published seller = publish(uniqueTag() + " kitab", "BAKU");
         String stranger = registerAndGetToken();
 
         ResponseEntity<JsonNode> refused = post(stranger,
@@ -535,7 +537,7 @@ class MarketplaceBoardIT extends AbstractIntegrationTest {
      */
     @Test
     void aBlockedSellerCanStillDeleteTheirAccountAndTheBlockGoesWithIt() {
-        Published seller = publish(uniqueTag() + " sumka", "Baki");
+        Published seller = publish(uniqueTag() + " sumka", "BAKU");
         block(seller.userId(), SellerBlockReason.SCAM_OR_FRAUD, null);
 
         ResponseEntity<String> deleted = deleteWithBody(seller.token(), "/api/v1/users/me",

@@ -101,11 +101,25 @@ public class Listing extends AuditedEntity {
     @Column(name = "contact_phone", nullable = false, length = 32)
     private String contactPhone;
 
-    @Column(nullable = false, length = 80)
+    /**
+     * Where a buyer can collect it — a {@code market_cities.code} since V15, and the only location
+     * fact this table holds. It does not follow the item: moving the item to another city leaves
+     * this stale until the seller edits it, which is correct, because deriving it from the tree
+     * would publish the space name.
+     *
+     * <p><strong>A {@code String} and not an enum, and {@code fk_listings_city} is the reason.</strong>
+     * The allowed set lives in {@code market_cities} (see {@link MarketCity} for why a table beat
+     * this codebase's varchar+CHECK convention here), so a Java enum would be a second copy of a
+     * list the foreign key already makes undriftable — and it could not express a RETIRED place,
+     * which existing rows must keep naming.
+     *
+     * <p>V12 stored this twice — {@code city} plus a {@code Names.normalize}d
+     * {@code normalized_city} that the filter and its index used. A code needs no diacritic fold,
+     * so V15 dropped the second column and this one is both what a visitor sees and what the board
+     * filters on.
+     */
+    @Column(nullable = false, length = 32)
     private String city;
-
-    @Column(name = "normalized_city", nullable = false, length = 80)
-    private String normalizedCity;
 
     @Column(name = "cover_file_id", nullable = false)
     private UUID coverFileId;

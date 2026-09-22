@@ -72,7 +72,7 @@ class MarketBoardVisibilityTest {
         when(jdbc.query(anyString(), anyMap(), any(RowMapper.class))).thenReturn(List.of());
         MarketBoardDao dao = new MarketBoardDao(jdbc);
 
-        dao.browse("telefon", "baki", 21, 0);
+        dao.browse("telefon", "BAKU", 21, 0);
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(jdbc).query(sql.capture(), anyMap(), any(RowMapper.class));
@@ -80,7 +80,9 @@ class MarketBoardVisibilityTest {
                 .contains(ACTIVE_ONLY)
                 .contains(NOT_KILLED)
                 .contains(NOT_BLOCKED)
-                .contains("l.normalized_city = :city");
+                // V15: the filter is equality on a CODE, so there is no fold column left to
+                // read and a city-filtered board is the same predicate plus one equality.
+                .contains("l.city = :city");
     }
 
     @Test
@@ -89,7 +91,7 @@ class MarketBoardVisibilityTest {
         when(jdbc.query(anyString(), anyMap(), any(RowMapper.class))).thenReturn(List.of());
         MarketBoardDao dao = new MarketBoardDao(jdbc);
 
-        dao.browse("telefon", "baki", 21, 0);
+        dao.browse("telefon", "BAKU", 21, 0);
         dao.findVisible(UUID.randomUUID());
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);

@@ -68,10 +68,12 @@ public class MarketBoardDao {
      * times, and the planner wants the anti-join either way.
      *
      * <p><strong>COST, measured on PostgreSQL 16 with 20,000 listings across 2,000 sellers.</strong>
-     * {@code ix_listings_browse} and {@code ix_listings_browse_city} still serve the query
-     * unchanged — their partial predicates are untouched, so they still supply both the filter and
-     * the {@code created_at DESC} ordering — and the anti-join sits ABOVE the index scan as an Index
-     * Only Scan on {@code blocked_sellers}' primary key with zero heap fetches. The first page goes
+     * {@code ix_listings_browse} and {@code ix_listings_browse_city} (the latter rebuilt by V15 on
+     * the city CODE, keeping V12's partial predicate and its filter-column-then-{@code created_at}
+     * shape) still serve the query — the partial predicates are untouched, so they still supply
+     * both the filter and the {@code created_at DESC} ordering — and the anti-join sits ABOVE the
+     * index scan as an Index Only Scan on {@code blocked_sellers}' primary key with zero heap
+     * fetches. The first page goes
      * from 33 to 46 cached buffer hits; with the block list empty the planner drops the inner side
      * to a scan over zero rows. <strong>The deepest legal page (99 of 50) roughly DOUBLES</strong>,
      * 5,016 to 10,291 buffers, because the probe runs once per row EXAMINED and a deep {@code OFFSET}
@@ -100,10 +102,15 @@ public class MarketBoardDao {
 
     /**
      * @param normalizedQuery already {@code Names.normalize}d, or null for the unfiltered board
-     * @param normalizedCity  already {@code Names.normalize}d, or null for every city
+     * @param city            a {@code market_cities.code} the caller has already canonicalised, or
+     *                        null for every city. Null is the ONLY thing that widens this query:
+     *                        a non-null value always becomes an equality predicate, so a code no
+     *                        row holds returns an empty page rather than the whole board.
+     *                        {@code MarketBoardService} rejects anything that cannot be a code
+     *                        before it gets here
      * @param limit           the page size PLUS ONE — the caller uses the extra row as `hasMore`
      */
-    public List<BoardRow> browse(String normalizedQuery, String normalizedCity, int limit, int offset) {
+    public List<BoardRow> browse(String normalizedQuery, String city, int limit, int offset) {
         StringBuilder sql = new StringBuilder("SELECT " + COLUMNS + " FROM listings l WHERE " + VISIBLE);
         if (normalizedQuery != null) {
             // Trigram similarity on the title, plus a substring match so a short exact word still
@@ -111,15 +118,15 @@ public class MarketBoardDao {
             // characters and a trigram index on it would be the largest in the schema.
             sql.append(" AND (l.title ILIKE :like OR l.description ILIKE :like)");
         }
-        if (normalizedCity != null) {
-            sql.append(" AND l.normalized_city = :city");
+        if (city != null) {
+            sql.append(" AND l.city = :city");
         }
         sql.append(" ORDER BY l.created_at DESC, l.id DESC LIMIT :limit OFFSET :offset");
 
         return jdbc.query(sql.toString(),
                 Map.of(
                         "like", normalizedQuery == null ? "" : "%" + escapeLike(normalizedQuery) + "%",
-                        "city", normalizedCity == null ? "" : normalizedCity,
+                        "city", city == null ? "" : city,
                         "limit", limit,
                         "offset", offset),
                 (rs, row) -> map(rs));

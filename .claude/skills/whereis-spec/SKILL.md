@@ -452,6 +452,13 @@ common/    ApiError {timestamp,status,code,message,path}; GlobalExceptionHandler
   enums; each has a test that computes the effective constraint across migrations (`PlanTest`,
   `SubscriptionStateTest`, `SubscriptionTierTest`, `PurchaseProvenanceTest`, `AssistantOutcomeTest`,
   `ListingEnumsTest` — which covers V12's four AND V13's `ck_blocked_sellers_reason`).
+  **The one deliberate exception is `listings.city` (V15)**, which is an FK to the `market_cities`
+  reference table rather than a CHECK against a Java enum. The rule above is for values the CODE
+  BRANCHES ON; a city is reference data that nothing branches on, it has 75 rows, and an enum cannot
+  express retirement — removing a constant either breaks existing rows or leaves a dead one forever,
+  where `active = false` retires a place from the picker while live listings keep naming it. An FK
+  also cannot drift from its table, which is the drift `ListingEnumsTest` exists to catch elsewhere.
+  Do not "fix" it back into an enum.
 - **Account deletion order is play_cancellation_queue → play_notifications purge → assistant messages
   → items → locations → spaces → user, with the storage_deletion_queue rows enqueued BEFORE the item
   cascade** (the Play

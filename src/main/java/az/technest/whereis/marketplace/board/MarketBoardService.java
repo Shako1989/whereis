@@ -4,6 +4,7 @@ import az.technest.whereis.common.util.Names;
 import az.technest.whereis.marketplace.ListingNotFoundException;
 import az.technest.whereis.marketplace.ListingReport;
 import az.technest.whereis.marketplace.ListingReportRepository;
+import az.technest.whereis.marketplace.MarketCityCodes;
 import az.technest.whereis.marketplace.board.dto.CreateReportRequest;
 import az.technest.whereis.marketplace.board.dto.PublicListingDetail;
 import az.technest.whereis.marketplace.board.dto.PublicListingPage;
@@ -14,6 +15,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -54,12 +56,38 @@ public class MarketBoardService {
         // A board client sends a request per keystroke, so a query that is too short is IGNORED
         // rather than answered 400 the way PostgresSearchService answers it — a 400 per keystroke
         // is noise, not information.
-        String normalizedQuery = normalizeFilter(query, MIN_QUERY_LENGTH);
-        String normalizedCity = normalizeFilter(city, 1);
+        String normalizedQuery = normalizeQuery(query);
+
+        // THE CITY IS A CODE SINCE V15, AND THE THREE CASES ARE NOT TWO.
+        //
+        //   * absent or blank  -> every city, no clause at all;
+        //   * a code-SHAPED value -> that city, and the clause is applied WHATEVER the value is, so
+        //     a code no row holds returns an empty page from one index probe. THIS IS THE
+        //     INVARIANT: the clause is never dropped because a value was not recognised. Resolving
+        //     an unknown code to null and letting the DAO omit the predicate would answer a typo —
+        //     or a probe — with the ENTIRE BOARD, every status code and every field still perfect.
+        //     It is also why the board asks the catalogue NOTHING: a membership lookup here would
+        //     be a statement per anonymous request whose only possible effect is to turn an empty
+        //     page into a different empty page, and it would wrongly exclude a RETIRED city that
+        //     live listings still legitimately name.
+        //   * anything that cannot be a code (a label, a phrase, a probe, a megabyte of text) ->
+        //     an empty page for ZERO statements.
+        //
+        // An empty page rather than a 400 for the same reason the report endpoint answers 202 to
+        // everything: a 400 would confirm to a prober which codes exist, and a real client picks
+        // from GET /market/cities rather than typing.
+        String cityCode = null;
+        if (city != null && !city.isBlank()) {
+            Optional<String> requested = MarketCityCodes.canonical(city);
+            if (requested.isEmpty()) {
+                return new PublicListingPage(List.of(), false, safePage, safeSize);
+            }
+            cityCode = requested.get();
+        }
 
         // size + 1: the extra row is `hasMore`, which is why there is no COUNT(*) anywhere.
         List<MarketBoardDao.BoardRow> rows =
-                dao.browse(normalizedQuery, normalizedCity, safeSize + 1, safePage * safeSize);
+                dao.browse(normalizedQuery, cityCode, safeSize + 1, safePage * safeSize);
         boolean hasMore = rows.size() > safeSize;
         List<MarketBoardDao.BoardRow> visible = hasMore ? rows.subList(0, safeSize) : rows;
 
@@ -120,12 +148,18 @@ public class MarketBoardService {
         return fileStorageService.publishedImageUrls(fileIds);
     }
 
-    private static String normalizeFilter(String raw, int minimumLength) {
+    /**
+     * The free-text half of the filter, and since V15 the only half — the city branch became
+     * {@link MarketCityCodes#canonical}, which needs no fold at all (a code has no diacritics to
+     * fold, and {@code Names.normalize} would lower-case it into something no row matches). One
+     * parameter fewer as a result.
+     */
+    private static String normalizeQuery(String raw) {
         if (raw == null) {
             return null;
         }
         String trimmed = raw.length() > MAX_QUERY_LENGTH ? raw.substring(0, MAX_QUERY_LENGTH) : raw;
         String normalized = Names.normalize(trimmed);
-        return normalized == null || normalized.length() < minimumLength ? null : normalized;
+        return normalized == null || normalized.length() < MIN_QUERY_LENGTH ? null : normalized;
     }
 }

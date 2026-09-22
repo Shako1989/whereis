@@ -1070,7 +1070,7 @@ when the backend contract changes, update §3 here first, then both apps.
 
 ---
 
-## 3.9 The marketplace (BR-14, V12)
+## 3.9 The marketplace (BR-14, V12; city codes V15)
 
 ### Publishing (authenticated)
 
@@ -1088,9 +1088,42 @@ when the backend contract changes, update §3 here first, then both apps.
   "description": "…",          // at least 40 characters, counted after trimming
   "price": 250.00,             // AZN, at most 2 decimals
   "contactPhone": "+994501234567",
-  "city": "Bakı",
+  "city": "BAKU",              // V15: a CODE from GET /api/v1/market/cities, never free text
   "coverFileId": "uuid|null" } // one of THIS item's photos; null = primary-else-oldest
 ```
+
+#### The collection city is a picked CODE (V15)
+
+```
+GET /api/v1/market/cities   (NO token)  → { "cities": [
+    { "code": "BAKU", "nameAz": "Bakı", "nameEn": "Baku", "nameRu": "Баку", "sortOrder": 100 },
+    …75 rows… ] }
+```
+
+**Send `city` as one of these codes, byte for byte.** It used to be free text, which meant
+"28 May metro" and "şəhər mərkəzi" were cities and the board's city filter missed rows a buyer
+wanted. `MyListingResponse.city` and every board body now carry the **code**, not a label.
+
+Client rules that follow:
+
+* **Render the label from this endpoint, in the user's own language** — every row carries all three
+  names, so switching language is instant and offline and the server never negotiates a locale.
+  A code you cannot find in your cached copy (an old listing naming a retired place) renders as the
+  code itself; do not hide the listing.
+* **Cache it hard and do not sort it.** The response is `Cache-Control: public, max-age=2592000`
+  (30 days) and the array is already in picker order — `sortOrder` ascending, cities of republic
+  significance first, then the rayons. **Do not re-sort by name:** Azerbaijani collates ə, ğ, ı, ö,
+  ş and ü outside the Latin order, so a default sort puts Xankəndi after Yevlax instead of between
+  Gəncə and Lənkəran. If you persist the rows, persist `sortOrder` and `ORDER BY` it.
+* **Never send a typed or normalised city.** No upper-casing, no diacritic folding — and in
+  particular never `toUpperCase()` a code with the device locale: on an Azerbaijani or Turkish
+  device `"imishli".toUpperCase()` is `"İMİŞLİ"`, which no code matches. Send what the picker gave.
+* **`400 MARKET_CITY_UNKNOWN` is the one error this endpoint's caching can produce**: the place was
+  retired after you cached the list. Re-fetch `/market/cities`, re-show the picker, keep everything
+  else the seller typed. It is not a field-format error and not a reason to log anybody out.
+* A buyer-side "all regions" is the **absence** of the `city` parameter, not a value.
+* There is deliberately **no value for "anywhere / I ship nationwide"**. Do not invent one and do
+  not repurpose `BAKU`; it is a known product gap and will arrive as its own field.
 
 **Show the user what is about to become public before they send it.** `title` and `description`
 are required by the server precisely so the composer cannot quietly promote the item's private name
@@ -1099,7 +1132,8 @@ and private note to a public listing.
 Errors to branch on: `LISTING_DESCRIPTION_TOO_SHORT` (400 — the message names the number, render
 it), `LISTING_PHOTO_REQUIRED`, `LISTING_PHOTO_UNPUBLISHABLE`, `ITEM_ARCHIVED`,
 `LISTING_ALREADY_ACTIVE`, `LISTING_HIDDEN`, `LISTING_NOT_ACTIVE`, `MARKETPLACE_BLOCKED`,
-`PLAN_LIMIT_REACHED` (all 409), `ITEM_NOT_FOUND` / `FILE_NOT_FOUND` (404).
+`PLAN_LIMIT_REACHED` (all 409), `ITEM_NOT_FOUND` / `FILE_NOT_FOUND` (404),
+`MARKET_CITY_UNKNOWN` (400 — V15; re-fetch `/market/cities` and re-show the picker).
 
 `LISTING_PHOTO_UNPUBLISHABLE` (V14) means this photo's file could not be rewritten to remove its
 camera metadata, so the server refused to publish it rather than publish it with the GPS intact.
@@ -1146,8 +1180,13 @@ What the UI must do:
 GET  /api/v1/market/listings?q=&city=&page=&size=    → { listings, hasMore, page, size }
 GET  /api/v1/market/listings/{id}                     → title, description, price, currency,
                                                         city, contactPhone, imageUrl, publishedAt
+GET  /api/v1/market/cities                            → { cities } — the picker, see §3.9 above
 POST /api/v1/market/listings/{id}/reports             → 202, body { reason, note? }
 ```
+
+`city` on the browse call is a **code** from `/market/cities`. Omit the parameter for every city;
+an empty value means the same thing. Anything that is not a code the board holds filters to
+**nothing** — it never silently widens to the whole board — so send a picked code or nothing.
 
 **Do NOT send an `Authorization` header to `/api/v1/market/**`.** It is harmless today — that path
 is served by a chain with no JWT decoder, which is exactly why an expired token does not break

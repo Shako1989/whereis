@@ -57,6 +57,12 @@ public enum ErrorCode {
     // render ("at least 40 characters"). server.error.include-binding-errors is `never`, so a
     // generic code would tell the user nothing at all.
     LISTING_DESCRIPTION_TOO_SHORT,
+    // The collection city was not a code this board currently offers (V15). A 400 with its own
+    // code, not VALIDATION_ERROR, because the client can ACT on it: re-read
+    // GET /api/v1/market/cities and ask again. The realistic cause is not a typo — the client
+    // picks from that list — but a picker cached for a month while a place was retired, which is
+    // the one consequence of caching a reference table hard.
+    MARKET_CITY_UNKNOWN,
     ITEM_ARCHIVED,
     // Archiving an item, or deleting its published cover photo, while it is on the board.
     ITEM_LISTED,

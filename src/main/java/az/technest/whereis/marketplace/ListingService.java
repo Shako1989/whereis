@@ -49,6 +49,7 @@ public class ListingService {
     private final ItemFileRepository itemFileRepository;
     private final FileStorageService fileStorageService;
     private final PlanLimitEnforcer planLimits;
+    private final MarketCityCatalog cityCatalog;
     private final ListingWriter writer;
 
     /**
@@ -98,8 +99,7 @@ public class ListingService {
         // `false` by construction: step 2 just proved it, and re-reading the row here would be a
         // second answer to a question already settled inside this call.
         return MyListingResponse.of(writer.insert(userId, itemId, coverFileId, draft.title(),
-                draft.description(), draft.price(), draft.phone(), draft.city(),
-                draft.normalizedCity()), false);
+                draft.description(), draft.price(), draft.phone(), draft.city()), false);
     }
 
     /**
@@ -193,7 +193,7 @@ public class ListingService {
 
     /** The validated, cleaned form of a request — computed once, by both write paths. */
     private record Draft(String title, String description, BigDecimal price, String phone,
-                         String city, String normalizedCity) {
+                         String city) {
     }
 
     private Draft validate(ListingRequest request) {
@@ -219,18 +219,22 @@ public class ListingService {
                     "Links are not allowed in a listing's title or description");
         }
 
-        String city = require(Names.clean(request.city()), "city");
-        if (MarketplaceRules.isLinkLike(city)) {
-            throw new BadRequestException(ErrorCode.VALIDATION_ERROR, "City must not contain a link");
-        }
-
         String phone = MarketplaceRules.normalizePhone(request.contactPhone());
         if (!MarketplaceRules.isPhone(phone)) {
             throw new BadRequestException(ErrorCode.VALIDATION_ERROR,
                     "Enter a contact phone number with 7 to 15 digits");
         }
 
-        return new Draft(title, description, request.price(), phone, city, Names.normalize(city));
+        // THE CITY IS A CODE SINCE V15, so there is nothing to clean, nothing to fold and no link
+        // to strip out of it — but it does have to be a code this board CURRENTLY offers. The
+        // catalogue answers that HERE rather than letting the INSERT answer it: without this call
+        // fk_listings_city raises a 23503 inside ListingWriter, which the handler turns into a
+        // generic 409 CONFLICT the client cannot branch on — and only after publishPhoto has
+        // already written the public copy. Mutation-checked: removing this line turns two cases of
+        // MarketplaceCityPickerIT from 400 MARKET_CITY_UNKNOWN into 409 CONFLICT.
+        String city = cityCatalog.requireSelectable(request.city());
+
+        return new Draft(title, description, request.price(), phone, city);
     }
 
     private static String require(String cleaned, String field) {
@@ -266,7 +270,6 @@ public class ListingService {
         listing.setPriceAmount(draft.price());
         listing.setContactPhone(draft.phone());
         listing.setCity(draft.city());
-        listing.setNormalizedCity(draft.normalizedCity());
     }
 
     private Listing requireOwnedListing(UUID userId, UUID listingId) {

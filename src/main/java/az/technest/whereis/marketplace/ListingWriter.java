@@ -23,7 +23,7 @@ public class ListingWriter {
 
     @Transactional
     public Listing insert(UUID userId, UUID itemId, UUID coverFileId, String title,
-            String description, BigDecimal price, String phone, String city, String normalizedCity) {
+            String description, BigDecimal price, String phone, String city) {
         return listingRepository.save(Listing.builder()
                 .userId(userId)
                 .itemId(itemId)
@@ -34,7 +34,6 @@ public class ListingWriter {
                 .priceCurrency(ListingCurrency.AZN)
                 .contactPhone(phone)
                 .city(city)
-                .normalizedCity(normalizedCity)
                 .coverFileId(coverFileId)
                 .build());
     }

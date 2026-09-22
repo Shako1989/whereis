@@ -27,7 +27,13 @@ import java.util.UUID;
  *                     11.00 and pricing the listing differently from what the seller typed
  * @param contactPhone published to anonymous visitors; normalised before it is stored
  * @param city         where a buyer can collect it — a seller STATEMENT, never derived from the
- *                     item's location, because deriving it would publish the space name
+ *                     item's location, because deriving it would publish the space name. A
+ *                     {@code market_cities.code} since V15, taken from
+ *                     {@code GET /api/v1/market/cities}: anything else is a
+ *                     400 {@code MARKET_CITY_UNKNOWN}, which is the client's signal to re-read that
+ *                     list. Bean validation only bounds the STRING here — membership is the
+ *                     catalogue's answer, because a closed list in an annotation would be a second
+ *                     copy of the table
  * @param coverFileId  one of this item's own photos, or null for the primary-else-oldest cover
  */
 public record ListingRequest(
@@ -36,6 +42,6 @@ public record ListingRequest(
         @NotNull @DecimalMin("0.01") @DecimalMax("10000000.00") @Digits(integer = 8, fraction = 2)
         BigDecimal price,
         @NotBlank @Size(max = 32) String contactPhone,
-        @NotBlank @Size(max = 80) String city,
+        @NotBlank @Size(max = 32) String city,
         UUID coverFileId) {
 }

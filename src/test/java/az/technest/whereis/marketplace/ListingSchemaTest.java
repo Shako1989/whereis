@@ -8,8 +8,8 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
- * Decisions in V12 and V13 whose reversal would be SILENT — no build failure, no error, just a
- * different product. Each is asserted against the migration text directly.
+ * Decisions in V12, V13, V14 and V15 whose reversal would be SILENT — no build failure, no error,
+ * just a different product. Each is asserted against the migration text directly.
  */
 class ListingSchemaTest {
 
@@ -155,6 +155,64 @@ class ListingSchemaTest {
         assertThat(v14)
                 .as("and the rows are unpublished, so a re-publish mints a fresh stripped copy")
                 .containsPattern("UPDATE item_files[\\s\\S]*?SET published_object_key = NULL");
+    }
+
+    /**
+     * <strong>V15 made the city REFERENCE DATA, and the shape of that decision is what this
+     * asserts.</strong> Three separate things could be undone silently: the fold column could come
+     * back (two columns for one fact, and the filter reading the wrong one), the allowed set could
+     * be re-expressed as a CHECK beside the foreign key (two copies of one list, which is exactly
+     * the drift the table was chosen to make impossible), and {@code active} could be dropped (with
+     * it goes the only way to retire a place without rewriting what a seller said).
+     */
+    @Test
+    void theCityIsAForeignKeyIntoAReferenceTableAndNotASecondCopyOfTheList() {
+        String sql = Migrations.allStatements();
+
+        assertThat(sql)
+                .as("the Names.normalize fold column, dropped — a code needs no diacritic fold")
+                .containsPattern("ALTER TABLE listings\\s+DROP COLUMN normalized_city");
+        assertThat(sql)
+                .as("the constraint that cannot drift")
+                .containsPattern("ADD CONSTRAINT fk_listings_city\\s+FOREIGN KEY \\(city\\)"
+                        + " REFERENCES market_cities \\(code\\)");
+        // NOT a CHECK. A varchar+CHECK matching a Java enum is this schema's convention for values
+        // the code branches on; nothing anywhere does `if (city == BAKU)`, and a CHECK beside the
+        // foreign key would be a second allowed set to keep in step — the thing ListingEnumsTest
+        // has to guard for the other five columns and which an FK needs no test for.
+        assertThat(sql).as("no second copy of the allowed set").doesNotContain("ck_listings_city ");
+        assertThat(sql)
+                .as("varchar, never char(N) — Hibernate's validate treats bpchar as a mismatch")
+                .containsPattern("ALTER COLUMN city TYPE varchar\\(32\\)")
+                .doesNotContain("city            char");
+        assertThat(sql)
+                .as("retirement, the capability an enum could not have had")
+                .containsPattern("active     boolean     NOT NULL DEFAULT true");
+    }
+
+    /**
+     * The city-filtered board keeps V12's index SHAPE on the new column. A city-leading index cannot
+     * supply the unfiltered board's ordering at all (V11's {@code ix_user_subscriptions_reconcile}
+     * lesson), so this must stay a SECOND partial index with {@code created_at DESC} after the
+     * filter column — and losing the {@code created_at} half leaves a sort node behind that nothing
+     * fails, it just gets slower as the board grows.
+     */
+    @Test
+    void theCityFilteredBoardKeepsItsOwnPartialIndexOnTheCode() {
+        Matcher index = Pattern.compile(
+                        "CREATE INDEX ix_listings_browse_city\\s+ON listings \\(([^)]+)\\)\\s+WHERE ([^;]+);",
+                        Pattern.CASE_INSENSITIVE)
+                .matcher(Migrations.allStatements());
+
+        // The LAST one wins: V12 created it on normalized_city and V15 dropped and rebuilt it.
+        String columns = null;
+        String predicate = null;
+        while (index.find()) {
+            columns = index.group(1).trim();
+            predicate = index.group(2).trim();
+        }
+        assertThat(columns).as("ix_listings_browse_city").isEqualTo("city, created_at DESC");
+        assertThat(predicate).isEqualTo("status = 'ACTIVE' AND hidden_at IS NULL");
     }
 
     @Test

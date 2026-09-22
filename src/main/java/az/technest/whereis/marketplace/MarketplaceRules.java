@@ -31,9 +31,6 @@ public final class MarketplaceRules {
     public static final int MIN_TITLE_LENGTH = 3;
     public static final int MAX_TITLE_LENGTH = 120;
 
-    public static final int MIN_CITY_LENGTH = 2;
-    public static final int MAX_CITY_LENGTH = 80;
-
     /** E.164: 15 digits is the ceiling, 7 a floor that excludes short codes. */
     private static final Pattern PHONE = Pattern.compile("^\\+?[0-9]{7,15}$");
 
@@ -42,8 +39,10 @@ public final class MarketplaceRules {
 
     /**
      * Tokens that turn a free-text field into a phishing vector. An anonymous board is the perfect
-     * place to plant a link and there is no accountable author, so the city and the description
-     * refuse them outright rather than trying to render them safely.
+     * place to plant a link and there is no accountable author, so the title and the description
+     * refuse them outright rather than trying to render them safely. The city needs no such rule
+     * since V15 — it is a {@code market_cities} code, so the only values it can hold are ones an
+     * operator seeded.
      */
     private static final Pattern LINK_LIKE = Pattern.compile(
             "(?i)(https?://|www\\.|\\b[a-z0-9.-]+\\.(com|net|org|ru|az|info|biz|top|xyz)\\b|(^|\\s)@[a-z0-9_]{3,})");
