@@ -51,6 +51,23 @@ public class SearchDao {
             LIMIT :limit
             """;
 
+    /**
+     * Exact lookup by normalized name, for the names an AI-assisted search picked out of the
+     * caller's own list. No similarity, no {@code ILIKE}, no location walk: a name either is one
+     * of this user's active items or it matches nothing, which is precisely what keeps an invented
+     * name harmless. {@code user_id} and {@code archived = false} mirror {@link #SEARCH_SQL}, so
+     * the assistant can never surface a row ordinary search would hide.
+     */
+    private static final String BY_NAMES_SQL = """
+            SELECT i.id, i.name, i.current_location_id, i.updated_at
+            FROM items i
+            WHERE i.user_id = :userId
+              AND i.archived = false
+              AND i.normalized_name IN (:names)
+            ORDER BY i.updated_at DESC
+            LIMIT :limit
+            """;
+
     private final NamedParameterJdbcTemplate jdbc;
 
     public SearchDao(NamedParameterJdbcTemplate jdbc) {
@@ -64,6 +81,19 @@ public class SearchDao {
                 "like", "%" + escapeLike(normalizedQuery) + "%",
                 "limit", limit);
         return jdbc.query(SEARCH_SQL, params, (rs, rowNum) -> new SearchRow(
+                rs.getObject("id", UUID.class),
+                rs.getString("name"),
+                rs.getObject("current_location_id", UUID.class),
+                rs.getTimestamp("updated_at").toInstant()));
+    }
+
+    /** Ordering is the caller's job — see {@code PostgresSearchService.findByNames}. */
+    public List<SearchRow> findByNormalizedNames(UUID userId, List<String> normalizedNames, int limit) {
+        Map<String, Object> params = Map.of(
+                "userId", userId,
+                "names", normalizedNames,
+                "limit", limit);
+        return jdbc.query(BY_NAMES_SQL, params, (rs, rowNum) -> new SearchRow(
                 rs.getObject("id", UUID.class),
                 rs.getString("name"),
                 rs.getObject("current_location_id", UUID.class),

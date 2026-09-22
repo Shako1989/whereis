@@ -31,7 +31,7 @@ class AiConfigTest {
             new ClaudeProperties(null, null, null, null, null, 0, 0.0, null);
 
     private static AiProperties mockProvider() {
-        return new AiProperties("mock", null, null, null, 0.0, null, 0);
+        return new AiProperties("mock", null, null, null, 0.0, null, 0, 1000);
     }
 
     @Test
@@ -43,14 +43,14 @@ class AiConfigTest {
     @Test
     void openaiIsStillSelectable() {
         AiProperties properties = new AiProperties(
-                "openai", "https://ai.example/v1", "k", "m", 0.0, Duration.ofSeconds(5), 800);
+                "openai", "https://ai.example/v1", "k", "m", 0.0, Duration.ofSeconds(5), 800, 1000);
         assertThat(new AiConfig().aiAssistant(properties, NO_CLAUDE_CONFIG, new ObjectMapper()))
                 .isInstanceOf(OpenAiAssistant.class);
     }
 
     @Test
     void claudeIsSelectedAndOpensNoSocketAtStartup() {
-        AiProperties properties = new AiProperties("claude", null, null, null, 0.0, null, 0);
+        AiProperties properties = new AiProperties("claude", null, null, null, 0.0, null, 0, 1000);
         // Port 1 has nothing listening on it: an eagerly-connecting client would fail here, so a
         // successful build is what proves the socket is not opened until the first interpret call.
         ClaudeProperties claude =
@@ -93,9 +93,9 @@ class AiConfigTest {
             ClaudeProperties claude = new ClaudeProperties(
                     "k", base, workspaceId, null, Duration.ofSeconds(5), 0, 0.0, 0);
             AiAssistant assistant = new AiConfig().aiAssistant(
-                    new AiProperties("claude", null, null, null, 0.0, null, 0), claude,
+                    new AiProperties("claude", null, null, null, 0.0, null, 0, 1000), claude,
                     new ObjectMapper());
-            assertThatThrownBy(() -> assistant.interpretSearch("where is my passport?"))
+            assertThatThrownBy(() -> assistant.interpretSearch("where is my passport?", List.of()))
                     .isInstanceOf(AiAssistantException.class);
             return seen.getFirst().isEmpty() ? null : seen.getFirst();
         } finally {
@@ -128,10 +128,10 @@ class AiConfigTest {
             ClaudeProperties claude =
                     new ClaudeProperties("k", base, null, null, Duration.ofSeconds(5), 0, 0.0, 0);
             AiAssistant assistant = new AiConfig().aiAssistant(
-                    new AiProperties("claude", null, null, null, 0.0, null, 0), claude,
+                    new AiProperties("claude", null, null, null, 0.0, null, 0, 1000), claude,
                     new ObjectMapper());
 
-            assertThatThrownBy(() -> assistant.interpretSearch("where is my passport?"))
+            assertThatThrownBy(() -> assistant.interpretSearch("where is my passport?", List.of()))
                     .isInstanceOf(AiAssistantException.class);
 
             assertThat(hits).containsExactly("/v1/messages");
@@ -142,7 +142,7 @@ class AiConfigTest {
 
     @Test
     void claudeWithoutAKeyFailsFastAndSaysWhichKey() {
-        AiProperties properties = new AiProperties("claude", null, null, null, 0.0, null, 0);
+        AiProperties properties = new AiProperties("claude", null, null, null, 0.0, null, 0, 1000);
 
         assertThatThrownBy(() -> new AiConfig().aiAssistant(properties, NO_CLAUDE_CONFIG, new ObjectMapper()))
                 .isInstanceOf(IllegalStateException.class)
@@ -152,7 +152,7 @@ class AiConfigTest {
 
     @Test
     void anUnknownProviderNamesTheSupportedOnes() {
-        AiProperties properties = new AiProperties("gemini", null, null, null, 0.0, null, 0);
+        AiProperties properties = new AiProperties("gemini", null, null, null, 0.0, null, 0, 1000);
 
         assertThatThrownBy(() -> new AiConfig().aiAssistant(properties, NO_CLAUDE_CONFIG, new ObjectMapper()))
                 .isInstanceOf(IllegalStateException.class)

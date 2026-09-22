@@ -26,7 +26,7 @@ class OpenAiAssistantTest {
     void setUp() {
         AiProperties properties = new AiProperties(
                 "openai", "https://ai.example/v1", "test-key", "test-model", 0.0,
-                Duration.ofSeconds(5), 800);
+                Duration.ofSeconds(5), 800, 1000);
         RestClient.Builder builder = RestClient.builder().baseUrl(properties.baseUrl())
                 .defaultHeader("Authorization", "Bearer " + properties.apiKey());
         server = MockRestServiceServer.bindTo(builder).build();
@@ -64,7 +64,7 @@ class OpenAiAssistantTest {
         server.expect(requestTo("https://ai.example/v1/chat/completions"))
                 .andRespond(withSuccess(chatResponse(fenced), MediaType.APPLICATION_JSON));
 
-        assertThat(assistant.interpretSearch("where is my passport").keywords())
+        assertThat(assistant.interpretSearch("where is my passport", List.of()).keywords())
                 .containsExactly("passport");
     }
 
@@ -82,7 +82,7 @@ class OpenAiAssistantTest {
         server.expect(requestTo("https://ai.example/v1/chat/completions"))
                 .andRespond(withSuccess("{\"choices\":[]}", MediaType.APPLICATION_JSON));
 
-        assertThatThrownBy(() -> assistant.interpretSearch("whatever"))
+        assertThatThrownBy(() -> assistant.interpretSearch("whatever", List.of()))
                 .isInstanceOf(AiAssistantException.class);
     }
 
@@ -113,7 +113,7 @@ class OpenAiAssistantTest {
 
         // The model is an env var and must be reflected per instance, not frozen at class load.
         AiProperties other = new AiProperties("openai", "https://ai.example/v1", "k", "other-model", 0.0,
-                Duration.ofSeconds(5), 800);
+                Duration.ofSeconds(5), 800, 1000);
         OpenAiAssistant reconfigured = new OpenAiAssistant(RestClient.builder().build(), other, new ObjectMapper());
         assertThat(reconfigured.metadata(AssistantMode.REMEMBER).model()).isEqualTo("other-model");
         assertThat(reconfigured.metadata(AssistantMode.REMEMBER).promptVersion()).isEqualTo(remember.promptVersion());
@@ -121,9 +121,9 @@ class OpenAiAssistantTest {
 
     @Test
     void openAiProviderRequiresKeyModelAndBaseUrl() {
-        assertThatThrownBy(() -> new AiProperties("openai", "https://ai.example/v1", "", "m", 0.0, null, 0))
+        assertThatThrownBy(() -> new AiProperties("openai", "https://ai.example/v1", "", "m", 0.0, null, 0, 1000))
                 .isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> new AiProperties("openai", null, "key", "m", 0.0, null, 0))
+        assertThatThrownBy(() -> new AiProperties("openai", null, "key", "m", 0.0, null, 0, 1000))
                 .isInstanceOf(IllegalStateException.class);
     }
 }

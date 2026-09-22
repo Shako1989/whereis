@@ -79,6 +79,12 @@ services:
       AI_BASE_URL: ${WHEREIS_AI_BASE_URL:-https://api.openai.com/v1}
       AI_API_KEY: ${WHEREIS_AI_API_KEY:-}
       AI_MODEL: ${WHEREIS_AI_MODEL:-gpt-4o-mini}
+      # How many of the caller's own item names an assistant SEARCH hands to the model, so that a
+      # description can reach an item named something else. Above this many ACTIVE items the list
+      # is not sent and the older keyword search runs; 0 switches it off entirely, which is the
+      # lever for a deployment that judges the per-search token cost or the disclosure too high.
+      # Provider-independent: it bounds what LEAVES, so it applies to openai and claude alike.
+      AI_MAX_ITEM_NAMES: ${WHEREIS_AI_MAX_ITEM_NAMES:-1000}
       # Read only when WHEREIS_AI_PROVIDER=claude. Left permissive here on purpose: the
       # required-key guard is provider-conditional, which compose interpolation cannot express,
       # so it lives in AiConfig and fails the container at startup with a named exception.
@@ -188,7 +194,7 @@ services:
       # Step 10's escape hatch is actually being used, and remember that raising a LOWER tier means
       # raising every tier above it or the container refuses to start:
       #   WHEREIS_PLANS_FREE_SPACES: ${WHEREIS_PLANS_FREE_SPACES:-1}
-      #   WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-100}
+      #   WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-20}
 
       # Native Android clients do not send Origin, so this only matters if a web
       # client is added later. Keep it tight rather than permissive.

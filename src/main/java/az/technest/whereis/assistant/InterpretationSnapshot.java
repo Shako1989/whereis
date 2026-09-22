@@ -26,6 +26,18 @@ import java.util.List;
  * @param keywords      SEARCH — the keywords the search actually ran with
  * @param usedFallback  SEARCH — the validator produced nothing and the normalized sentence was used
  * @param rawKeywords   SEARCH NOT_UNDERSTOOD — what the model returned before validation dropped it all
+ * @param matches       SEARCH — the item names the model picked out of the caller's own list, after
+ *                      validation. Together with {@code offeredItemCount} this is what makes a bad
+ *                      answer diagnosable: a name here that returned no row means the model invented
+ *                      one, while no names at all against a non-zero count means it was shown the
+ *                      inventory and found nothing in it.
+ * @param offeredItemCount SEARCH — HOW MANY item names the model was shown, never which ones, and
+ *                      that asymmetry with {@code offeredSpaces} is deliberate. Twenty space names
+ *                      on a row is provenance; up to a thousand item names on every search row
+ *                      would copy the user's whole inventory into this table over and over — an
+ *                      unbounded table and a second, permanent copy of exactly the data this
+ *                      feature already sends further than before. Zero means no list was offered:
+ *                      the inventory was over {@code ai.max-item-names}, or the feature is off.
  * @param offeredSpaces REMEMBER — the user's own space names as they were handed to the model. This is
  *                      request context, not model output, and it is the field that makes a wrong space
  *                      diagnosable: without it a row showing {@code spaceName="Work"} cannot be told
@@ -47,6 +59,8 @@ public record InterpretationSnapshot(
         List<String> keywords,
         Boolean usedFallback,
         List<String> rawKeywords,
+        List<String> matches,
+        Integer offeredItemCount,
         List<String> offeredSpaces,
         InterpretationSnapshot raw
 ) {

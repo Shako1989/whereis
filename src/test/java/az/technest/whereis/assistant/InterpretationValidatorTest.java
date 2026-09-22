@@ -115,16 +115,59 @@ class InterpretationValidatorTest {
     @Test
     void keywordsAreCleanedDedupedAndCapped() {
         SearchInterpretation interp = new SearchInterpretation(
-                List.of("Passport", "passport", "x", "%%%", "cable", "charger", "keys", "wallet", "phone"));
+                List.of("Passport", "passport", "x", "%%%", "cable", "charger", "keys", "wallet", "phone"),
+                null);
 
         assertThat(validator.validateKeywords(interp))
                 .containsExactly("passport", "cable", "charger", "keys", "wallet");
     }
 
     @Test
+    void matchesAreNormalizedToTheLookupKeyDedupedAndCapped() {
+        // Normalized, not cleaned: these are about to be compared against items.normalized_name,
+        // so "Matkap" and "matkap" are one row and must collapse to one entry.
+        SearchInterpretation interp = new SearchInterpretation(null, List.of(
+                "Matkap", "matkap", "Çəkic", "a", "b", "c", "d", "e", "f", "g", "h", "eleventh"));
+
+        assertThat(validator.validateMatches(interp))
+                .containsExactly("matkap", "cekic", "a", "b", "c", "d", "e", "f", "g", "h");
+    }
+
+    @Test
+    void aSingleLetterSurvivesWhereAKeywordWouldNot() {
+        // A keyword needs two characters because it feeds a FUZZY search, where one letter would
+        // drag half the inventory back. A match is an exact lookup, and "X" is a name people use.
+        assertThat(validator.validateMatches(new SearchInterpretation(null, List.of("X"))))
+                .containsExactly("x");
+    }
+
+    @Test
+    void aModelThatAnswersWithASentenceOrAnInjectionHasItDropped() {
+        SearchInterpretation interp = new SearchInterpretation(null, List.of(
+                "'; drop table items; --",
+                "<script>alert(1)</script>",
+                "Matkap"));
+
+        // Nothing reaches the database but the one entry shaped like a name — and even that is
+        // only a lookup key, resolved against this caller's own rows.
+        assertThat(validator.validateMatches(interp)).containsExactly("matkap");
+    }
+
+    @Test
+    void anOverlongMatchIsDroppedRatherThanTruncated() {
+        // Truncating would invent a name the user never had and might accidentally resolve.
+        String tooLong = "m".repeat(121);
+        assertThat(validator.validateMatches(new SearchInterpretation(null, List.of(tooLong)))).isEmpty();
+        assertThat(validator.validateMatches(new SearchInterpretation(null, List.of("m".repeat(120)))))
+                .hasSize(1);
+    }
+
+    @Test
     void nullsAreHandled() {
         assertThat(validator.validatePlacement(null)).isEmpty();
         assertThat(validator.validateKeywords(null)).isEmpty();
-        assertThat(validator.validateKeywords(new SearchInterpretation(null))).isEmpty();
+        assertThat(validator.validateKeywords(new SearchInterpretation(null, null))).isEmpty();
+        assertThat(validator.validateMatches(null)).isEmpty();
+        assertThat(validator.validateMatches(new SearchInterpretation(null, null))).isEmpty();
     }
 }

@@ -20,6 +20,8 @@ public final class InterpretationSnapshots {
     static final int MAX_LOCATIONS = 10;
     static final int MAX_KEYWORDS = 5;
     static final int MAX_OFFERED_SPACES = 20;
+    /** Matches the validator's own cap; a row cannot hold more picks than an answer can show. */
+    static final int MAX_MATCHES = 10;
     static final int CONFIDENCE_SCALE = 3;
 
     private InterpretationSnapshots() {
@@ -39,7 +41,7 @@ public final class InterpretationSnapshots {
     public static InterpretationSnapshot fromRaw(PlacementInterpretation raw, List<String> offeredSpaces) {
         if (raw == null) {
             return new InterpretationSnapshot(false, null, null, null, List.of(), null, null, null, null, null,
-                    offered(offeredSpaces), null);
+                    null, null, offered(offeredSpaces), null);
         }
         List<InterpretationSnapshot.Segment> locations = raw.locations() == null ? List.of() : raw.locations().stream()
                 .limit(MAX_LOCATIONS)
@@ -55,7 +57,7 @@ public final class InterpretationSnapshots {
                 locations,
                 confidenceOf(raw.confidence()),
                 rawConfidenceOf(raw.confidence()),
-                null, null, null,
+                null, null, null, null, null,
                 offered(offeredSpaces), null);
     }
 
@@ -79,7 +81,7 @@ public final class InterpretationSnapshots {
         Double confidence = raw == null ? null : raw.confidence();
         return new InterpretationSnapshot(true, placement.itemName(), placement.description(),
                 placement.spaceName(), locations, confidenceOf(confidence), rawConfidenceOf(confidence),
-                null, null, null,
+                null, null, null, null, null,
                 offered(offeredSpaces), raw == null ? null : fromRaw(raw));
     }
 
@@ -87,19 +89,29 @@ public final class InterpretationSnapshots {
     public static InterpretationSnapshot forFailure(List<String> offeredSpaces) {
         List<String> offered = offered(offeredSpaces);
         return offered == null ? null : new InterpretationSnapshot(null, null, null, null, null, null, null,
-                null, null, null, offered, null);
+                null, null, null, null, null, offered, null);
     }
 
-    /** A SEARCH that ran: the keywords used, and whether they came from the normalize fallback. */
-    public static InterpretationSnapshot forSearch(List<String> keywords, boolean usedFallback) {
+    /**
+     * A SEARCH that ran: what it ran with, and what it was given to run with.
+     *
+     * <p>{@code offeredItemCount} is stored as a COUNT and the names are not. See
+     * {@link InterpretationSnapshot} for why this breaks the symmetry with {@code offeredSpaces}
+     * on purpose. Zero becomes null so the key disappears from the jsonb entirely rather than
+     * every pre-feature-style row carrying a meaningless {@code "offeredItemCount": 0}.
+     */
+    public static InterpretationSnapshot forSearch(List<String> keywords, List<String> matches,
+            int offeredItemCount, boolean usedFallback) {
         return new InterpretationSnapshot(true, null, null, null, null, null, null,
-                capList(keywords, MAX_KEYWORDS, MAX_NAME_LENGTH), usedFallback, null, null, null);
+                capList(keywords, MAX_KEYWORDS, MAX_NAME_LENGTH), usedFallback, null,
+                picked(matches),
+                offeredItemCount <= 0 ? null : offeredItemCount, null, null);
     }
 
     /** A SEARCH with nothing usable — keeps what the model returned so the rejection is inspectable. */
     public static InterpretationSnapshot forSearchNotUnderstood(List<String> rawKeywords) {
         return new InterpretationSnapshot(false, null, null, null, null, null, null, List.of(), null,
-                capList(rawKeywords, MAX_KEYWORDS, MAX_NAME_LENGTH), null, null);
+                capList(rawKeywords, MAX_KEYWORDS, MAX_NAME_LENGTH), null, null, null, null);
     }
 
     /**
@@ -120,6 +132,19 @@ public final class InterpretationSnapshots {
     }
 
     /** Null (not an empty list) when there is nothing to record, so NON_NULL keeps the key out. */
+    /**
+     * Null rather than an empty list, so the key disappears from the jsonb entirely.
+     *
+     * <p>Most searches pick nothing — every keyword-only query, every account under a provider
+     * that does not implement the field — and {@code "matches": []} on all of them is noise that
+     * reads like a fact. Absent says what is true: the model made no pick. Same reasoning as
+     * {@link #offered}, and as the zero-means-absent rule on {@code offeredItemCount}.
+     */
+    private static List<String> picked(List<String> matches) {
+        List<String> capped = capList(matches, MAX_MATCHES, MAX_NAME_LENGTH);
+        return capped == null || capped.isEmpty() ? null : capped;
+    }
+
     private static List<String> offered(List<String> offeredSpaces) {
         if (offeredSpaces == null || offeredSpaces.isEmpty()) {
             return null;

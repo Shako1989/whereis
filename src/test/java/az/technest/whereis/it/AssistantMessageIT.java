@@ -63,7 +63,9 @@ class AssistantMessageIT extends AbstractIntegrationTest {
                        interpretation->>'spaceName'      as space_name,
                        interpretation->>'offeredSpaces'  as offered_spaces,
                        interpretation->>'usedFallback'   as used_fallback,
-                       interpretation->>'keywords'       as keywords
+                       interpretation->>'keywords'       as keywords,
+                       interpretation->>'matches'        as matches,
+                       interpretation->>'offeredItemCount' as offered_item_count
                 from assistant_messages
                 where user_id = ?
                 order by created_at desc, id desc
@@ -271,5 +273,41 @@ class AssistantMessageIT extends AbstractIntegrationTest {
         ResponseEntity<JsonNode> foreign = get(bob, "/api/v1/items/" + created.item().id(), JsonNode.class);
         assertThat(foreign.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(foreign.getBody().get("code").asText()).isEqualTo("ITEM_NOT_FOUND");
+    }
+
+    @Test
+    void anItemIsFoundThroughTheNameTheModelPickedAndTheRowRecordsWhatItWasShown() {
+        // The match-and-resolve path end to end, offline. The mock provider matches an offered
+        // name that literally occurs in the sentence — not understanding, but enough to prove the
+        // wiring: names are loaded, handed over, validated, looked up, and recorded.
+        String token = registerAndGetToken();
+        UUID userId = subjectOf(token);
+        // A space has to exist first: with none, remember asks rather than creating, and there
+        // would be no item to find.
+        createSpace(token, "Home", SpaceType.HOME);
+        remember(token, PASSPORT_SENTENCE, null);
+
+        AssistantSearchResponse answer = search(token, "Where is my passport?");
+        assertThat(answer.items()).extracting("name").containsExactly("Passport");
+
+        Map<String, Object> row = rowsOf(userId).getFirst();
+        assertThat(row).containsEntry("mode", "SEARCH").containsEntry("outcome", "ANSWERED");
+        // What the model picked, and HOW MANY names it was shown — never which ones, because a
+        // whole inventory copied onto every search row is a table that grows without bound.
+        assertThat((String) row.get("matches")).contains("passport");
+        assertThat(row).containsEntry("offered_item_count", "1");
+    }
+
+    @Test
+    void anAccountWithNoItemsIsOfferedNothingAndTheRowSaysSo() {
+        // Zero is stored as absent rather than 0, so the key simply is not in the jsonb.
+        String token = registerAndGetToken();
+        UUID userId = subjectOf(token);
+
+        search(token, "Where is my passport?");
+
+        Map<String, Object> row = rowsOf(userId).getFirst();
+        assertThat(row.get("offered_item_count")).isNull();
+        assertThat(row.get("matches")).isNull();
     }
 }

@@ -11,6 +11,7 @@ import az.technest.whereis.common.error.ErrorCode;
 import az.technest.whereis.common.error.NotFoundException;
 import az.technest.whereis.common.util.Names;
 import az.technest.whereis.item.dto.ItemResponse;
+import az.technest.whereis.item.ItemRepository;
 import az.technest.whereis.search.SearchService;
 import az.technest.whereis.search.dto.ItemSearchResult;
 import az.technest.whereis.space.Space;
@@ -78,6 +79,8 @@ public class AssistantService {
     private final SpaceRepository spaceRepository;
     private final PlacementExecutor executor;
     private final SearchService searchService;
+    private final ItemRepository itemRepository;
+    private final AiProperties aiProperties;
     private final AssistantMessageService messages;
 
     public RememberResponse remember(UUID userId, String message, UUID chosenSpaceId, UUID pinnedLocationId) {
@@ -123,17 +126,23 @@ public class AssistantService {
 
     public AssistantSearchResponse search(UUID userId, String query) {
         String sanitized = sanitize(query, MAX_SEARCH_LENGTH);
+        // Read before the provider call and outside any transaction, exactly as `remember` reads
+        // space names: no AI call may sit inside a transaction, and this method holds none.
+        List<String> offeredItems = offeredItemNames(userId);
         AiMetadata ai = aiAssistant.metadata(AssistantMode.SEARCH);
         SearchInterpretation interpretation = null;
         AiAssistantException providerFailure = null;
         List<String> keywords;
+        List<String> matches;
         try {
-            interpretation = aiAssistant.interpretSearch(sanitized);
+            interpretation = aiAssistant.interpretSearch(sanitized, offeredItems);
             keywords = validator.validateKeywords(interpretation);
+            matches = validator.validateMatches(interpretation);
         } catch (AiAssistantException e) {
             // Search must degrade gracefully when the provider is down.
             providerFailure = e;
             keywords = List.of();
+            matches = List.of();
         }
         boolean usedFallback = false;
         if (keywords.isEmpty()) {
@@ -141,9 +150,43 @@ public class AssistantService {
             keywords = fallback != null && fallback.length() >= 2 ? List.of(fallback) : List.of();
             usedFallback = !keywords.isEmpty();
         }
-        List<ItemSearchResult> items = searchAll(userId, keywords);
-        recordSearch(userId, sanitized, ai, interpretation, keywords, usedFallback, providerFailure);
+        // The names the model picked win outright when they resolve, because they answer a
+        // question the keywords cannot: "the thing I drill holes with" shares no letters with
+        // "Matkap", so the trigram search behind `searchAll` would return nothing for it.
+        // Everything else falls through to the path this method has always taken — an inventory
+        // over the cap, a provider that is down, a model that picked nothing, and a model that
+        // picked a name the user does not actually own. That last case is why this is `isEmpty()`
+        // on the RESOLVED rows rather than on `matches`: an invented name must not swallow the
+        // search, it must simply fail to resolve.
+        List<ItemSearchResult> items = matches.isEmpty()
+                ? List.of() : searchService.findByNames(userId, matches, MAX_ANSWER_ITEMS);
+        if (items.isEmpty()) {
+            items = searchAll(userId, keywords);
+        }
+        recordSearch(userId, sanitized, ai, interpretation, keywords, matches, offeredItems.size(),
+                usedFallback, providerFailure);
         return new AssistantSearchResponse(composeAnswer(items), items);
+    }
+
+    /**
+     * The candidate list handed to the model, or empty when it must not be.
+     *
+     * <p>Empty for two different reasons that deliberately look the same from here: the feature is
+     * switched off ({@code ai.max-item-names=0}), or this account has more active items than the
+     * cap. The second is decision 2 of the design — <strong>above the cap the list is not sent at
+     * all rather than truncated</strong>, because an item that is unfindable for having fallen off
+     * the end of a list is a worse failure than a search that plainly works the older, lexical way.
+     *
+     * <p>The count is the same scoped query the plan limits use, so the gate costs one cheap
+     * {@code COUNT} and the names are never loaded for an account that would not send them.
+     */
+    private List<String> offeredItemNames(UUID userId) {
+        int cap = aiProperties.maxItemNames();
+        if (cap <= 0) {
+            return List.of();
+        }
+        return itemRepository.countByUserIdAndArchivedFalse(userId) > cap
+                ? List.of() : itemRepository.findActiveNamesByUserId(userId);
     }
 
     public ImageAnalyzeResponse analyzeImage(UUID userId, MultipartFile file) {
@@ -264,17 +307,19 @@ public class AssistantService {
      * hits — this table is provenance, not analytics); NOT_UNDERSTOOD means no search ran at all.
      */
     private void recordSearch(UUID userId, String sanitized, AiMetadata ai, SearchInterpretation interpretation,
-                              List<String> keywords, boolean usedFallback, RuntimeException providerFailure) {
+                              List<String> keywords, List<String> matches, int offeredItemCount,
+                              boolean usedFallback, RuntimeException providerFailure) {
         if (providerFailure != null) {
             recordQuietly(new AssistantMessageDraft(userId, AssistantMode.SEARCH, sanitized, ai, null, null),
                     AssistantMessageResult.failed(errorCodeOf(providerFailure)));
-        } else if (keywords.isEmpty()) {
+        } else if (keywords.isEmpty() && matches.isEmpty()) {
             List<String> raw = interpretation == null ? List.of() : interpretation.keywords();
             recordQuietly(new AssistantMessageDraft(userId, AssistantMode.SEARCH, sanitized, ai,
                     InterpretationSnapshots.forSearchNotUnderstood(raw), null), AssistantMessageResult.notUnderstood());
         } else {
             recordQuietly(new AssistantMessageDraft(userId, AssistantMode.SEARCH, sanitized, ai,
-                    InterpretationSnapshots.forSearch(keywords, usedFallback), null), AssistantMessageResult.answered());
+                    InterpretationSnapshots.forSearch(keywords, matches, offeredItemCount, usedFallback), null),
+                    AssistantMessageResult.answered());
         }
     }
 

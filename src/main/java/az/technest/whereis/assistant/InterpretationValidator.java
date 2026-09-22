@@ -20,6 +20,8 @@ public class InterpretationValidator {
     static final int MAX_CHAIN_DEPTH = 6;
     static final double MIN_CONFIDENCE = 0.6;
     static final int MAX_ITEM_NAME_LENGTH = 120;
+    /** Equal to {@code AssistantService.MAX_ANSWER_ITEMS} — an answer cannot show more. */
+    static final int MAX_MATCHES = 10;
     private static final Pattern SAFE_NAME = Pattern.compile("^[\\p{L}\\p{N}][\\p{L}\\p{N} .,'&()\\-]*$");
 
     public record ValidatedPlacement(
@@ -79,6 +81,43 @@ public class InterpretationValidator {
             }
         }
         return keywords;
+    }
+
+    /**
+     * The item names the model picked out of the list it was shown.
+     *
+     * <p>Normalized rather than cleaned, unlike {@link #validatePlacement}: these are not going to
+     * be displayed, they are going to be LOOKED UP, and the lookup key is {@code normalized_name}.
+     * Normalizing here is what makes "Matkap", "matkap" and a stray non-breaking space all find
+     * the same row.
+     *
+     * <p>Nothing here proves the name is the caller's — that is the resolving query's job, and it
+     * is scoped by {@code user_id}. What this does prove is that each entry is short enough and
+     * plain enough to be a name at all, so a model that returns a sentence, a SQL fragment or a
+     * thousand characters gets those entries dropped rather than passed to the database.
+     *
+     * <p>Capped at {@code MAX_MATCHES}, which equals the number of items an answer can hold:
+     * validating more than can ever be shown would be work with no reader.
+     */
+    public List<String> validateMatches(SearchInterpretation interpretation) {
+        if (interpretation == null || interpretation.matches() == null) {
+            return List.of();
+        }
+        List<String> matches = new ArrayList<>();
+        for (String raw : interpretation.matches()) {
+            String match = Names.normalize(raw);
+            // Length 1 is allowed where a keyword needs 2: a one-character item name is a real
+            // name a user can register, and this value is an exact lookup rather than a fuzzy
+            // one, so a single letter cannot drag half the inventory back.
+            if (match != null && !match.isEmpty() && match.length() <= MAX_ITEM_NAME_LENGTH
+                    && SAFE_NAME.matcher(match).matches() && !matches.contains(match)) {
+                matches.add(match);
+            }
+            if (matches.size() == MAX_MATCHES) {
+                break;
+            }
+        }
+        return matches;
     }
 
     /** AI-supplied image suggestions pass the same trust boundary as everything else. */

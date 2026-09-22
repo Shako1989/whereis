@@ -7,6 +7,7 @@ import az.technest.whereis.assistant.ImageAnalysis;
 import az.technest.whereis.assistant.LocationSegment;
 import az.technest.whereis.assistant.PlacementInterpretation;
 import az.technest.whereis.assistant.SearchInterpretation;
+import az.technest.whereis.common.util.Names;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -115,8 +116,22 @@ public class MockAiAssistant implements AiAssistant {
         return new PlacementInterpretation(item, null, spaceName, segments, 0.9);
     }
 
+    /**
+     * Keywords by rule, plus the one kind of "match" a rule table can honestly make.
+     *
+     * <p><strong>This provider cannot do the job the item list exists for.</strong> Choosing
+     * "Matkap" when the person wrote "divarda deşik açan alət" is understanding, and understanding
+     * is exactly what the offline fallback does not have — the same reason
+     * {@link #interpretPlacement} ignores the space names it is handed.
+     *
+     * <p>What it does instead is EXACT CONTAINMENT: an offered name whose normalized form appears
+     * inside the normalized message. That is a rule, not a guess, and it is deterministic enough
+     * to run in {@code ./gradlew build} with no network. It earns its place because it makes the
+     * whole match-and-resolve path — port, validator, lookup, snapshot — reachable from an
+     * integration test; without it that path would ship untested wherever {@code ai.provider=mock}.
+     */
     @Override
-    public SearchInterpretation interpretSearch(String message) {
+    public SearchInterpretation interpretSearch(String message, List<String> knownItemNames) {
         String normalized = message == null ? "" : message.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N} ]", " ");
         List<String> keywords = new ArrayList<>();
         for (String token : normalized.split("\\s+")) {
@@ -127,7 +142,24 @@ public class MockAiAssistant implements AiAssistant {
                 break;
             }
         }
-        return new SearchInterpretation(keywords);
+        return new SearchInterpretation(keywords, containedNames(message, knownItemNames));
+    }
+
+    /** Offered names that literally occur in the message, compared on the shared lookup key. */
+    private static List<String> containedNames(String message, List<String> knownItemNames) {
+        String haystack = Names.normalize(message);
+        if (haystack == null || haystack.isBlank() || knownItemNames == null) {
+            return List.of();
+        }
+        List<String> matches = new ArrayList<>();
+        for (String name : knownItemNames) {
+            String needle = Names.normalize(name);
+            if (needle != null && !needle.isBlank() && haystack.contains(needle)
+                    && !matches.contains(name)) {
+                matches.add(name);
+            }
+        }
+        return matches;
     }
 
     @Override

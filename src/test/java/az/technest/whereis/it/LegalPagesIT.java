@@ -214,6 +214,29 @@ class LegalPagesIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void thePrivacyPageSaysItemNamesReachTheProviderBecauseTheyNowDo() {
+        // AssistantService hands the caller's own item names to the model on EVERY search, so a
+        // page still saying "none of your items" would be false the moment the feature is on.
+        // This project has blocked a release over exactly that kind of sentence before.
+        String body = anonymousGet("/legal/privacy").getBody();
+
+        assertThat(body)
+                .contains("the names of your own items are sent as well")
+                .contains("öz əşyalarınızın adları da");
+        // The retraction has to be explicit, not merely absent: the old sentence promised that no
+        // item ever left, and a reader who saw it once needs the contradiction spelled out.
+        assertThat(body).doesNotContain("none\n    of your items");
+        // What still does NOT leave is the thing the whole app is about — where you keep it.
+        assertThat(body)
+                .contains("never where an item is kept")
+                .contains("əşyanın harada saxlandığı");
+        // And the reason an invented name is harmless, which is what makes "names only" safe.
+        assertThat(body)
+                .contains("a name it invents finds nothing")
+                .contains("uydurduğu ad heç nə tapmır");
+    }
+
+    @Test
     void theHtmlFormOfTheUrlIsServedToo() {
         // The clean URL forwards to the .html resource; the target must be permitted as well.
         assertHtmlPage(anonymousGet("/legal/delete-account.html"));

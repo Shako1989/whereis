@@ -45,6 +45,26 @@ public interface ItemRepository extends JpaRepository<Item, UUID> {
     long countByUserIdAndArchivedFalse(UUID userId);
 
     /**
+     * The caller's own ACTIVE item names, newest first — the candidate list an assistant search
+     * offers the model so a DESCRIPTION can reach an item named something else.
+     *
+     * <p>Names, never ids: the same rule {@code SpaceRepository.findAllByUserIdOrderByNameAsc}
+     * follows for the remember flow. Whatever the model picks is resolved back through a
+     * userId-scoped query, so nothing here can widen what the caller may see.
+     *
+     * <p>{@code archived = false} matches {@code SearchDao}, which already excludes archived rows.
+     * An item the user cannot find through search must not become findable through the assistant.
+     *
+     * <p>Deliberately unbounded. The caller gates on {@link #countByUserIdAndArchivedFalse} first
+     * and does not call this at all above {@code ai.max-item-names}, so a {@code Pageable} here
+     * would express the same limit a second time — and a silently truncated list is the one
+     * outcome that design rejected.
+     */
+    @Query("select i.name from Item i where i.userId = :userId and i.archived = false "
+            + "order by i.updatedAt desc")
+    List<String> findActiveNamesByUserId(@Param("userId") UUID userId);
+
+    /**
      * Row-locks every item of the user in ONE statement — the batch analogue of {@link #findForUpdate}.
      * Native so that {@code FOR UPDATE} is guaranteed on the wire and no entities are hydrated for a
      * large account; ids only. A concurrent photo upload inserting {@code item_files} needs

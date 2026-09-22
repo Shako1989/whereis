@@ -90,6 +90,13 @@ ai:
   temperature: ${AI_TEMPERATURE:0.0}
   timeout: ${AI_TIMEOUT:30s}
   max-output-tokens: ${AI_MAX_OUTPUT_TOKENS:800}
+  # How many of the caller's own item names an assistant SEARCH may hand to the model, so a
+  # description ("divarda deşik açan alət") can reach an item named something else ("Matkap") —
+  # a match trigram search cannot make, because the two share no letters. Above this many ACTIVE
+  # items the list is not sent at all and the keyword search runs unchanged; it is never
+  # truncated, because an item invisible for having fallen off the end of a list is worse than a
+  # search that plainly works the old way. 0 switches the whole thing off.
+  max-item-names: ${AI_MAX_ITEM_NAMES:1000}
   claude:
     # Required when ai.provider=claude; the app refuses to start without it.
     api-key: ${AI_CLAUDE_API_KEY:}
@@ -147,7 +154,7 @@ whereis:
   plans:
     free:
       spaces: 1
-      items: 100
+      items: 20
       listings: 1
     standard:
       spaces: 3

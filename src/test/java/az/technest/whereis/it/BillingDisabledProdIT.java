@@ -204,7 +204,7 @@ class BillingDisabledProdIT {
         assertThat(plan.plan()).isEqualTo(Plan.FREE);
         assertThat(plan.limits()).isNotNull();
         assertThat(plan.limits().spaces()).isEqualTo(1);
-        assertThat(plan.limits().items()).isEqualTo(100);
+        assertThat(plan.limits().items()).isEqualTo(20);
         assertThat(plan.usage().spaces()).isZero();
         assertThat(plan.usage().activeItems()).isZero();
         assertThat(plan.subscription()).isNull();
@@ -239,12 +239,12 @@ class BillingDisabledProdIT {
     }
 
     @Test
-    void theItemWallStillRefusesThe101stItemWith409PlanLimitReached() {
+    void theItemWallStillRefusesThe21stItemWith409PlanLimitReached() {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
         SpaceResponse home = createSpace(token, "Home");
         LocationResponse shelf = createLocation(token, home.id(), "Shelf");
-        seedActiveItems(userId, shelf.id(), 100);
+        seedActiveItems(userId, shelf.id(), 20);
 
         ResponseEntity<ApiError> refused = rest.exchange("/api/v1/items", HttpMethod.POST,
                 new HttpEntity<>(new CreateItemRequest("One too many", null, null, shelf.id()),
@@ -254,7 +254,7 @@ class BillingDisabledProdIT {
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(refused.getBody()).isNotNull();
         assertThat(refused.getBody().code()).isEqualTo(ErrorCode.PLAN_LIMIT_REACHED.name());
-        assertThat(getPlan(token).usage().activeItems()).isEqualTo(100);
+        assertThat(getPlan(token).usage().activeItems()).isEqualTo(20);
     }
 
     /**

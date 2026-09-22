@@ -20,7 +20,24 @@ public interface AiAssistant {
      */
     PlacementInterpretation interpretPlacement(String message, List<String> knownSpaceNames);
 
-    SearchInterpretation interpretSearch(String message);
+    /**
+     * @param message        the user's own sentence, already sanitized
+     * @param knownItemNames the names of the ACTIVE items this user actually owns, so a provider
+     *                       can map a description onto something they have registered — "divarda
+     *                       deşik açan alət" onto "Matkap" — which trigram search cannot do,
+     *                       because the two share no letters. Exactly the same kind of hint as
+     *                       {@code knownSpaceNames}: whatever comes back is resolved against the
+     *                       database by normalized name, so a name the model invents simply fails
+     *                       to resolve and returns nothing. Never contains ids.
+     *                       <p>THE CALLER HAS ALREADY BOUNDED THIS LIST (see
+     *                       {@code ai.max-item-names}); an adapter sanitizes the entries it is
+     *                       given but must not impose a count limit of its own, or the number
+     *                       would have two owners that could disagree.
+     *                       Empty means the caller chose not to offer a list — an inventory over
+     *                       the cap, or the feature switched off — and the provider should then
+     *                       return keywords only.
+     */
+    SearchInterpretation interpretSearch(String message, List<String> knownItemNames);
 
     ImageAnalysis analyzeImage(byte[] content, String contentType);
 

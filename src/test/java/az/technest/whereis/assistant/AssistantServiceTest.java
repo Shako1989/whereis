@@ -23,6 +23,7 @@ import az.technest.whereis.common.error.NotFoundException;
 import az.technest.whereis.item.dto.ItemResponse;
 import az.technest.whereis.plan.Plan;
 import az.technest.whereis.plan.PlanLimitReachedException;
+import az.technest.whereis.item.ItemRepository;
 import az.technest.whereis.search.SearchService;
 import az.technest.whereis.search.dto.ItemSearchResult;
 import az.technest.whereis.space.Space;
@@ -58,6 +59,16 @@ class AssistantServiceTest {
     @Mock
     private AssistantMessageService messages;
 
+    @Mock
+    private ItemRepository itemRepository;
+
+    /**
+     * A cap well above anything these tests register, so the item list is offered by default and
+     * the gate is exercised explicitly by the one test that lowers it.
+     */
+    private static final AiProperties AI_PROPERTIES =
+            new AiProperties("mock", null, null, null, 0.0, null, 0, 1000);
+
     private AssistantService service;
 
     private final UUID userId = UUID.randomUUID();
@@ -65,7 +76,7 @@ class AssistantServiceTest {
     @BeforeEach
     void setUp() {
         service = new AssistantService(aiAssistant, new InterpretationValidator(),
-                spaceRepository, executor, searchService, messages);
+                spaceRepository, executor, searchService, itemRepository, AI_PROPERTIES, messages);
         // Every flow asks for the provider's metadata before it calls it; most tests do not care.
         lenient().when(aiAssistant.metadata(any())).thenReturn(META);
     }
@@ -181,9 +192,116 @@ class AssistantServiceTest {
                 .isEqualTo(RememberResponse.Status.CREATED);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Finding an item by describing it: the caller's own item names go to the model, and what it
+    // picks is resolved against the caller's own rows.
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    void theUsersOwnItemNamesAreHandedToTheProvider() {
+        // Names only, never ids — the same contract the space names travel under.
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(2L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("Matkap", "Pasport"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("alet"), List.of()));
+        when(searchService.search(eq(userId), anyString(), anyInt())).thenReturn(List.of());
+
+        service.search(userId, "divarda desik acan alet");
+
+        verify(aiAssistant).interpretSearch("divarda desik acan alet", List.of("Matkap", "Pasport"));
+    }
+
+    @Test
+    void aPickedNameIsResolvedAgainstTheUsersOwnRowsAndTheKeywordSearchIsNotRun() {
+        // This is the whole feature: "divarda deşik açan alət" shares no letters with "Matkap",
+        // so the trigram search behind searchAll can never find it. The model selects; the
+        // database retrieves.
+        ItemSearchResult matkap = new ItemSearchResult(UUID.randomUUID(), "Matkap",
+                List.of("Ev", "Anbar"), null, Instant.now());
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("Matkap"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("alet"), List.of("Matkap")));
+        when(searchService.findByNames(eq(userId), eq(List.of("matkap")), anyInt()))
+                .thenReturn(List.of(matkap));
+
+        AssistantSearchResponse response = service.search(userId, "divarda desik acan alet");
+
+        assertThat(response.items()).containsExactly(matkap);
+        assertThat(response.answer()).contains("Matkap").contains("Ev > Anbar");
+        verify(searchService, never()).search(any(), anyString(), anyInt());
+    }
+
+    @Test
+    void aNameTheModelInventedFallsBackToTheKeywordSearchInsteadOfAnsweringNothing() {
+        // An invented name must not swallow the search. This is why the fallback tests the
+        // RESOLVED rows rather than the picks: the picks were non-empty, the rows were not.
+        ItemSearchResult found = new ItemSearchResult(UUID.randomUUID(), "Alet qutusu",
+                List.of("Ev"), null, Instant.now());
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("Alet qutusu"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("alet"), List.of("Perforator")));
+        when(searchService.findByNames(eq(userId), eq(List.of("perforator")), anyInt()))
+                .thenReturn(List.of());
+        when(searchService.search(eq(userId), eq("alet"), anyInt())).thenReturn(List.of(found));
+
+        assertThat(service.search(userId, "alet harada").items()).containsExactly(found);
+    }
+
+    @Test
+    void anInventoryOverTheCapOffersNoListAtAllRatherThanATruncatedOne() {
+        // Decision 2 of the design. A truncated list makes an item unfindable for a reason the
+        // user can neither see nor act on; the older keyword search at least works predictably.
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1001L);
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("pasport"), null));
+        when(searchService.search(eq(userId), eq("pasport"), anyInt())).thenReturn(List.of());
+
+        service.search(userId, "pasport harada");
+
+        verify(aiAssistant).interpretSearch("pasport harada", List.of());
+        verify(itemRepository, never()).findActiveNamesByUserId(any());
+    }
+
+    @Test
+    void theCountIsWhatGatesTheRead() {
+        // The names are never loaded for an account that would not send them — one cheap COUNT
+        // decides, and it is the same scoped query the plan limits already use.
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(5L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("Pasport"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("pasport"), null));
+        when(searchService.search(eq(userId), eq("pasport"), anyInt())).thenReturn(List.of());
+
+        service.search(userId, "pasport harada");
+
+        verify(itemRepository).countByUserIdAndArchivedFalse(userId);
+        verify(itemRepository).findActiveNamesByUserId(userId);
+    }
+
+    @Test
+    void theSearchRowRecordsHowManyNamesWereOfferedAndWhichWerePicked() {
+        ItemSearchResult matkap = new ItemSearchResult(UUID.randomUUID(), "Matkap",
+                List.of("Ev"), null, Instant.now());
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(2L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("Matkap", "Pasport"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("alet"), List.of("Matkap")));
+        when(searchService.findByNames(eq(userId), anyList(), anyInt())).thenReturn(List.of(matkap));
+
+        service.search(userId, "divarda desik acan alet");
+
+        InterpretationSnapshot snapshot = recordedRow(AssistantOutcome.ANSWERED).draft().interpretation();
+        // The COUNT, never the names: a thousand item names on every search row would copy the
+        // whole inventory into this table over and over.
+        assertThat(snapshot.offeredItemCount()).isEqualTo(2);
+        assertThat(snapshot.matches()).containsExactly("matkap");
+    }
+
     @Test
     void searchFallsBackToRawQueryWhenAiIsDown() {
-        when(aiAssistant.interpretSearch(anyString())).thenThrow(new AiAssistantException("down"));
+        when(aiAssistant.interpretSearch(anyString(), anyList())).thenThrow(new AiAssistantException("down"));
         when(searchService.search(eq(userId), eq("passport"), anyInt())).thenReturn(List.of());
 
         AssistantSearchResponse response = service.search(userId, "Passport");
@@ -194,8 +312,8 @@ class AssistantServiceTest {
 
     @Test
     void searchAnswerIsComposedFromRetrievedRecordsOnly() {
-        when(aiAssistant.interpretSearch(anyString()))
-                .thenReturn(new SearchInterpretation(List.of("passport")));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("passport"), null));
         ItemSearchResult result = new ItemSearchResult(UUID.randomUUID(), "Passport",
                 List.of("Home", "Bedroom", "Wardrobe", "Top Drawer"), null, Instant.now());
         when(searchService.search(eq(userId), eq("passport"), anyInt())).thenReturn(List.of(result));
@@ -428,8 +546,8 @@ class AssistantServiceTest {
 
     @Test
     void searchThatRanRecordsAnsweredWithTheKeywordsUsed() {
-        when(aiAssistant.interpretSearch(anyString()))
-                .thenReturn(new SearchInterpretation(List.of("passport", "Passport", "travel document")));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("passport", "Passport", "travel document"), null));
         when(searchService.search(eq(userId), anyString(), anyInt())).thenReturn(List.of());
 
         service.search(userId, "Where is my passport?");
@@ -447,7 +565,7 @@ class AssistantServiceTest {
 
     @Test
     void searchThatFellBackToTheNormalizedSentenceSaysSo() {
-        when(aiAssistant.interpretSearch(anyString())).thenReturn(new SearchInterpretation(List.of()));
+        when(aiAssistant.interpretSearch(anyString(), anyList())).thenReturn(new SearchInterpretation(List.of(), null));
         when(searchService.search(eq(userId), eq("passport"), anyInt())).thenReturn(List.of());
 
         service.search(userId, "Passport");
@@ -460,7 +578,7 @@ class AssistantServiceTest {
     @Test
     void searchWithNothingUsableAndNoFallbackRecordsNotUnderstoodAndRunsNoSearch() {
         // "!" is dropped by the validator and "a" is too short for the normalize fallback.
-        when(aiAssistant.interpretSearch(anyString())).thenReturn(new SearchInterpretation(List.of("!")));
+        when(aiAssistant.interpretSearch(anyString(), anyList())).thenReturn(new SearchInterpretation(List.of("!"), null));
 
         AssistantSearchResponse response = service.search(userId, "a");
 
@@ -474,7 +592,7 @@ class AssistantServiceTest {
 
     @Test
     void searchProviderFailureRecordsFailedWithANullInterpretationAndStillAnswers() {
-        when(aiAssistant.interpretSearch(anyString())).thenThrow(new AiAssistantException("down"));
+        when(aiAssistant.interpretSearch(anyString(), anyList())).thenThrow(new AiAssistantException("down"));
         when(searchService.search(eq(userId), eq("passport"), anyInt())).thenReturn(List.of());
 
         AssistantSearchResponse response = service.search(userId, "Passport");

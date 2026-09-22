@@ -65,10 +65,39 @@ class MockAiAssistantTest {
 
     @Test
     void searchExtractsItemKeywords() {
-        assertThat(assistant.interpretSearch("Where did I put my passport?").keywords())
+        assertThat(assistant.interpretSearch("Where did I put my passport?", List.of()).keywords())
                 .containsExactly("passport");
-        assertThat(assistant.interpretSearch("Where are my travel things?").keywords())
+        assertThat(assistant.interpretSearch("Where are my travel things?", List.of()).keywords())
                 .containsExactly("travel");
+    }
+
+    @Test
+    void anOfferedNameThatOccursInTheSentenceComesBackAsAMatch() {
+        // Exact containment on the shared lookup key — not understanding. It is what makes the
+        // whole match-and-resolve path reachable from an offline integration test.
+        assertThat(assistant.interpretSearch("Matkap haradadir?", List.of("Matkap", "Pasport")).matches())
+                .containsExactly("Matkap");
+    }
+
+    @Test
+    void containmentIsComparedOnTheFoldedKeySoDiacriticsAndCaseDoNotMatter() {
+        // "Çəkic" and "cekic" are one row for Names.normalize, so they must be one match here too.
+        assertThat(assistant.interpretSearch("cekic hardadir", List.of("Çəkic")).matches())
+                .containsExactly("Çəkic");
+    }
+
+    @Test
+    void describingAnItemFindsNothingHereAndThatIsTheHonestAnswer() {
+        // The job the item list exists for is understanding, which is exactly what a rule table
+        // does not have. Pinned so nobody later reads the mock's silence as the feature failing.
+        assertThat(assistant.interpretSearch("divarda desik acan alet", List.of("Matkap")).matches())
+                .isEmpty();
+    }
+
+    @Test
+    void noListMeansNoMatches() {
+        assertThat(assistant.interpretSearch("Matkap haradadir?", List.of()).matches()).isEmpty();
+        assertThat(assistant.interpretSearch("Matkap haradadir?", null).matches()).isEmpty();
     }
 
     @Test

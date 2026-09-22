@@ -45,7 +45,7 @@ class PlanCatalogTest {
         PlanCatalog catalog = bindApplicationYml();
 
         assertThat(catalog.spaceLimit(Plan.FREE)).isEqualTo(1);
-        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(100);
+        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(20);
         assertThat(catalog.spaceLimit(Plan.STANDARD)).isEqualTo(3);
         assertThat(catalog.itemLimit(Plan.STANDARD)).isEqualTo(300);
         assertThat(catalog.spaceLimit(Plan.PRO)).isEqualTo(5);

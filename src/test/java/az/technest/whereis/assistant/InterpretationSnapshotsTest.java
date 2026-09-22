@@ -93,7 +93,8 @@ class InterpretationSnapshotsTest {
     @Test
     void searchSnapshotCarriesOnlyKeywordsAndTheFallbackFlag() {
         InterpretationSnapshot answered = InterpretationSnapshots.forSearch(
-                List.of("passport", "keys", "jacket", "phone", "wallet", "sixth", "seventh"), true);
+                List.of("passport", "keys", "jacket", "phone", "wallet", "sixth", "seventh"),
+                List.of(), 0, true);
 
         assertThat(answered.validated()).isTrue();
         assertThat(answered.keywords()).hasSize(InterpretationSnapshots.MAX_KEYWORDS)

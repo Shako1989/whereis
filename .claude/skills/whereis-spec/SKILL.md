@@ -97,7 +97,25 @@ storage/   MinioAdapter is the only class touching the SDK (both clients have re
            u/{userId}/i/{itemId}/{fileId}; dual endpoints (internal SDK ops / external presign)
 search/    SearchService port (pgvector can slot in later without API changes);
            PostgresSearchService: pg_trgm ranked query scoped by user_id, matches item fields
-           plus items inside any matching location's subtree; batch path + primary-image lookups
+           plus items inside any matching location's subtree; batch path + primary-image lookups.
+           SECOND METHOD findByNames(userId, normalizedNames, limit): exact lookup on
+           items.normalized_name, no fuzziness at all, returned in the CALLER'S order because that
+           order is the model's ranking. It is how an AI-assisted search turns the names the model
+           picked back into rows, and why a name the model invented is harmless — it matches
+           nothing rather than somebody else's item. Shares assemble() with search(), so the
+           batch path/cover resolution is identical.
+assistant/ SEARCH also offers the model THE CALLER'S OWN ACTIVE ITEM NAMES, which is the only way
+           a DESCRIPTION can reach an item named something else ("divarda deşik açan alət" → an item
+           stored as "Matkap"; trigram cannot, the two share no letters). `SearchInterpretation` has
+           two halves: `keywords` (lexical, unchanged, never translated) and `matches` (names picked
+           OUT OF the offered list, resolved via findByNames). Matches win when they resolve;
+           everything else — over the cap, provider down, nothing picked, a name the model invented
+           — falls through to the keyword path unchanged. `ai.max-item-names` (default 1000) is the
+           ONE owner of the bound: above it the list is NOT SENT AT ALL rather than truncated, and 0
+           switches the feature off. Provenance stores `offeredItemCount` (a COUNT) and `matches`,
+           deliberately NOT the offered names — a thousand per row would copy the inventory into
+           assistant_messages on every search. privacy.html states that item names reach the
+           provider; LegalPagesIT pins it.
 assistant/ fixed pipeline: read the user's spaces → AiAssistant.interpret(message, ownSpaceNames)
            → InterpretationValidator (confidence
            ∈ [0.6,1.0] NaN-proof, depth ≤ 6, charset whitelist, lengths) → entity resolution

@@ -86,8 +86,17 @@
     <strong>hər dəfə</strong> — cümlədə hər hansı məkanın adı çəkilib-çəkilmədiyindən asılı
     olmayaraq — sizin öz məkanlarınızın adlarından ən çoxu 20-si də göndərilir: bu, modelin başqa
     dildə yazılmış bir ifadəni («evdə») artıq mövcud olan məkanla («Home») uyğunlaşdırmasına imkan
-    verir. Yalnız adlar göndərilir — identifikatorlar, əşyalarınız, fotolarınız və ya başqa
-    istifadəçilərin məlumatları yox.</p>
+    verir.</p>
+  <p>Köməkçi ilə <strong>axtarış</strong> edəndə isə <strong>öz əşyalarınızın adları da
+    göndərilir</strong> — hər axtarışda və cümlədə hər hansı əşyanın adı çəkilib-çəkilmədiyindən
+    asılı olmayaraq. Bu, əşyanı təsvir edərək tapmağa imkan verir: saxladığınız ad «Matkap» ola
+    bilər, yazdığınız isə «divarda deşik açan alət» — bu ikisində ortaq hərf yoxdur, ona görə
+    onları yalnız hər ikisini görən model bağlaya bilər. Siyahı sizin aktiv əşyalarınızın
+    adlarıdır və müəyyən həddə qədərdir; həmin həddən yuxarı siyahı ümumiyyətlə göndərilmir və
+    axtarış adi söz uyğunluğu ilə işləyir. Yalnız adlar göndərilir — identifikatorlar, təsvirlər,
+    qeydlər, <strong>əşyanın harada saxlandığı</strong>, fotolarınız və ya başqa istifadəçilərin
+    məlumatları yox. Model yalnız həmin siyahıdan seçə bilər: qaytardığı ad sizin öz əşyalarınız
+    arasında axtarılır, ona görə uydurduğu ad heç nə tapmır.</p>
   <p>Konfiqurasiyadan asılı olaraq provayder <strong>Anthropic</strong> (Claude modelləri)
     və ya OpenAI ilə uyğun API təqdim edən başqa provayder ola bilər. Anthropic bu məlumatları
     <strong>bizim adımızdan, emalçı qismində və bizim göstərişimizlə</strong> emal edir: mətn
@@ -229,8 +238,16 @@
     the bedroom wardrobe top drawer") is sent to the model provider so the sentence can be understood.
     Sent with it, <strong>on every such request</strong> and whether or not the sentence mentions one,
     are up to 20 of the names of your own spaces — that is what lets the model match a phrase in
-    another language ("evdə") to a space you already have ("Home"). Names only: no identifiers, none
-    of your items, none of your photos, and nothing belonging to any other user.</p>
+    another language ("evdə") to a space you already have ("Home").</p>
+  <p>When you SEARCH with the assistant, <strong>the names of your own items are sent as well</strong>,
+    on every search and whether or not the sentence names one. That is what lets you find something by
+    describing it: the name you stored may be "Matkap" while what you typed was "the thing I drill
+    holes with", and the two share no letters, so only a model that can see both can connect them. The
+    list is your active items, up to a configured ceiling; above that ceiling it is not sent at all and
+    the search falls back to plain word matching. Names only: no identifiers, no descriptions, no notes,
+    <strong>never where an item is kept</strong>, none of your photos, and nothing belonging to any
+    other user. The model can only choose from that list — whatever it returns is looked up against
+    your own items, so a name it invents finds nothing.</p>
   <p>Depending on configuration the provider is <strong>Anthropic</strong> (Claude models) or another
     provider exposing an OpenAI-compatible API. Anthropic processes this data
     <strong>on our behalf, as a processor, and under our instructions</strong>: the text is used only

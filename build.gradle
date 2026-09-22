@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'az.technest'
-version = '0.1.0-SNAPSHOT'
+version = '0.2.0'
 description = 'whereis — remember where you put your things'
 
 java {
