@@ -126,6 +126,41 @@ public class AssistantService {
 
     public AssistantSearchResponse search(UUID userId, String query) {
         String sanitized = sanitize(query, MAX_SEARCH_LENGTH);
+        // A term the database has already been asked for, and had nothing for. Null until asked.
+        String alreadyMissed = null;
+
+        // ONE WORD, AND THE DATABASE ALREADY KNOWS IT: answer without calling the model at all.
+        //
+        // A single word is almost always the thing's name rather than a description of it — a
+        // description needs several ("divarda deşik açan alət") — and a single word IS a usable
+        // search term, which a whole sentence is not: "qutu haradadır" drags the question words
+        // into the trigram comparison and matches worse than "qutu" alone. That is why the guard
+        // is one word and not "try the database first" generally.
+        //
+        // Measured against a week of real searches before this existed: of five one-word queries,
+        // three were answered correctly here — and two of those three the model had answered with
+        // nothing at all. The fourth was "qutu" against an item named "RC controller Box", where
+        // the two share no letters and only a model can bridge them, which is exactly why this
+        // returns early ONLY on a hit. An empty result falls through rather than answering
+        // "nothing found", so the one case that needs understanding still gets it.
+        String single = singleWord(sanitized);
+        if (single != null) {
+            List<ItemSearchResult> hits = searchService.search(userId, single, MAX_ANSWER_ITEMS);
+            if (hits.isEmpty()) {
+                // Remembered, not thrown away: the keyword path below would otherwise ask the
+                // database the very same question again, and it is the expensive path already.
+                alreadyMissed = single;
+            } else {
+                // AiMetadata.NONE, the shape the pinned-location path (BR-7) already uses: the row
+                // must not name a provider that was never asked. Nothing leaves for these
+                // queries — not the sentence, and not one item name.
+                recordQuietly(new AssistantMessageDraft(userId, AssistantMode.SEARCH, sanitized,
+                                AiMetadata.NONE, InterpretationSnapshots.forSearchWithoutAi(single), null),
+                        AssistantMessageResult.answered());
+                return new AssistantSearchResponse(composeAnswer(hits), hits);
+            }
+        }
+
         // Read before the provider call and outside any transaction, exactly as `remember` reads
         // space names: no AI call may sit inside a transaction, and this method holds none.
         List<String> offeredItems = offeredItemNames(userId);
@@ -161,11 +196,28 @@ public class AssistantService {
         List<ItemSearchResult> items = matches.isEmpty()
                 ? List.of() : searchService.findByNames(userId, matches, MAX_ANSWER_ITEMS);
         if (items.isEmpty()) {
-            items = searchAll(userId, keywords);
+            items = searchAll(userId, keywords, alreadyMissed);
         }
         recordSearch(userId, sanitized, ai, interpretation, keywords, matches, offeredItems.size(),
                 usedFallback, providerFailure);
         return new AssistantSearchResponse(composeAnswer(items), items);
+    }
+
+    /**
+     * The query as a single search term, or null when it is not one.
+     *
+     * <p>Normalized here rather than in the caller because that is what decides the question: the
+     * word count is counted on the LOOKUP form, so trailing punctuation and doubled spaces cannot
+     * make a one-word query look like two. The length floor matches
+     * {@code PostgresSearchService}, which refuses anything shorter — asking it would be a 400
+     * where this method means "not eligible".
+     */
+    private static String singleWord(String sanitized) {
+        String normalized = Names.normalize(sanitized);
+        if (normalized == null || normalized.length() < 2 || normalized.indexOf(' ') >= 0) {
+            return null;
+        }
+        return normalized;
     }
 
     /**
@@ -288,9 +340,20 @@ public class AssistantService {
         }
     }
 
-    private List<ItemSearchResult> searchAll(UUID userId, List<String> keywords) {
+    /**
+     * @param alreadyMissed a term the single-word short-circuit has already searched for and found
+     *                      nothing under. Skipped rather than repeated: the answer cannot have
+     *                      changed within one request, and this is the path that already pays for
+     *                      a model call. It is still reported in the provenance row, because what
+     *                      the search RAN WITH is what makes a bad answer diagnosable — the row
+     *                      would lie if a keyword vanished from it for being redundant.
+     */
+    private List<ItemSearchResult> searchAll(UUID userId, List<String> keywords, String alreadyMissed) {
         Map<UUID, ItemSearchResult> merged = new LinkedHashMap<>();
         for (String keyword : keywords.subList(0, Math.min(keywords.size(), MAX_SEARCH_KEYWORDS))) {
+            if (keyword.equals(alreadyMissed)) {
+                continue;
+            }
             for (ItemSearchResult result : searchService.search(userId, keyword, MAX_ANSWER_ITEMS)) {
                 merged.putIfAbsent(result.id(), result);
                 if (merged.size() >= MAX_ANSWER_ITEMS) {

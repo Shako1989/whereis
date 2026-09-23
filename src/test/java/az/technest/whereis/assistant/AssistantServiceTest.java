@@ -11,6 +11,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -190,6 +191,112 @@ class AssistantServiceTest {
 
         assertThat(service.remember(userId, "I put my passport in the bedroom drawer at home", null, null).status())
                 .isEqualTo(RememberResponse.Status.CREATED);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // One word the database already knows: no model call at all.
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    void aOneWordQueryTheDatabaseAnswersNeverReachesTheModel() {
+        // Measured on real traffic: three of five one-word searches were answered here, two of
+        // them better than the model managed. The saved call is the point, but the stronger
+        // argument is that "kabel" finding "Qalin kabeller" needs no understanding at all.
+        ItemSearchResult found = new ItemSearchResult(UUID.randomUUID(), "Qalin kabeller",
+                List.of("Ev", "Anbar"), null, Instant.now());
+        when(searchService.search(userId, "kabel", 10)).thenReturn(List.of(found));
+
+        AssistantSearchResponse response = service.search(userId, "Kabel");
+
+        assertThat(response.items()).containsExactly(found);
+        verifyNoInteractions(aiAssistant);
+        // And nothing was loaded to offer it, either: no item name left the server.
+        verifyNoInteractions(itemRepository);
+    }
+
+    @Test
+    void aOneWordQueryTheDatabaseCannotAnswerStillGoesToTheModel() {
+        // "qutu" against an item named "RC controller Box" — no shared letters, so only a model
+        // bridges them. Returning early on an EMPTY result would have broken exactly this.
+        ItemSearchResult box = new ItemSearchResult(UUID.randomUUID(), "RC controller Box",
+                List.of("Ev"), null, Instant.now());
+        when(searchService.search(userId, "qutu", 10)).thenReturn(List.of());
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("RC controller Box"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("qutu"), List.of("RC controller Box")));
+        when(searchService.findByNames(eq(userId), eq(List.of("rc controller box")), anyInt()))
+                .thenReturn(List.of(box));
+
+        assertThat(service.search(userId, "qutu").items()).containsExactly(box);
+        verify(aiAssistant).interpretSearch("qutu", List.of("RC controller Box"));
+    }
+
+    @Test
+    void aSentenceIsNeverShortCircuitedEvenIfOneOfItsWordsWouldMatch() {
+        // The whole sentence is a bad trigram term — the question words pollute the comparison —
+        // so the guard is one word, not "try the database first".
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("Kabel"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("kabel"), List.of()));
+        when(searchService.search(eq(userId), eq("kabel"), anyInt())).thenReturn(List.of());
+
+        service.search(userId, "kabel haradadir");
+
+        verify(aiAssistant).interpretSearch("kabel haradadir", List.of("Kabel"));
+    }
+
+    @Test
+    void aMissedOneWordQueryIsNotAskedOfTheDatabaseTwice() {
+        // The short-circuit and the keyword fallback would otherwise run the identical query, on
+        // the one path that is already paying for a model call.
+        when(searchService.search(userId, "pasport", 10)).thenReturn(List.of());
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("Cekic"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("pasport"), List.of()));
+
+        assertThat(service.search(userId, "pasport").items()).isEmpty();
+
+        verify(searchService, times(1)).search(userId, "pasport", 10);
+    }
+
+    @Test
+    void aRedundantKeywordIsStillRecordedEvenThoughItWasNotSearchedAgain() {
+        // The row says what the search RAN WITH. Dropping a keyword from it for being redundant
+        // would make a later "why did this answer nothing?" unanswerable.
+        when(searchService.search(userId, "pasport", 10)).thenReturn(List.of());
+        when(itemRepository.countByUserIdAndArchivedFalse(userId)).thenReturn(1L);
+        when(itemRepository.findActiveNamesByUserId(userId)).thenReturn(List.of("Cekic"));
+        when(aiAssistant.interpretSearch(anyString(), anyList()))
+                .thenReturn(new SearchInterpretation(List.of("pasport"), List.of()));
+
+        service.search(userId, "pasport");
+
+        InterpretationSnapshot snapshot = recordedRow(AssistantOutcome.ANSWERED).draft().interpretation();
+        assertThat(snapshot.keywords()).containsExactly("pasport");
+        // The model WAS asked here, so this is not the saved-call row.
+        assertThat(snapshot.withoutAi()).isNull();
+    }
+
+    @Test
+    void theSavedCallIsRecordedAsHavingAskedNobody() {
+        ItemSearchResult found = new ItemSearchResult(UUID.randomUUID(), "Salfetka",
+                List.of("Ev"), null, Instant.now());
+        when(searchService.search(userId, "salfetla", 10)).thenReturn(List.of(found));
+
+        service.search(userId, "salfetla");
+
+        RecordedRow row = recordedRow(AssistantOutcome.ANSWERED);
+        // The row must not name a provider that was never asked.
+        assertThat(row.draft().ai()).isEqualTo(AiMetadata.NONE);
+        InterpretationSnapshot snapshot = row.draft().interpretation();
+        assertThat(snapshot.withoutAi()).isTrue();
+        // Not a fallback: nothing fell back, because nothing was asked.
+        assertThat(snapshot.usedFallback()).isFalse();
+        assertThat(snapshot.offeredItemCount()).isNull();
+        assertThat(snapshot.keywords()).containsExactly("salfetla");
     }
 
     // ---------------------------------------------------------------------------------------

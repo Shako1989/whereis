@@ -25,6 +25,12 @@ import java.util.List;
  *                      bare {@code NaN} token that PostgreSQL rejects on insert
  * @param keywords      SEARCH — the keywords the search actually ran with
  * @param usedFallback  SEARCH — the validator produced nothing and the normalized sentence was used
+ * @param withoutAi     SEARCH — no model was called at all: the query was ONE WORD and the database
+ *                      already answered it. Distinct from {@code usedFallback}, which means the model
+ *                      WAS asked and gave nothing usable. Kept because the two are diagnosed
+ *                      differently — one is a saved call, the other a provider that disappointed —
+ *                      and because it is how the hit rate of that short-circuit can be measured
+ *                      later from the table rather than guessed.
  * @param rawKeywords   SEARCH NOT_UNDERSTOOD — what the model returned before validation dropped it all
  * @param matches       SEARCH — the item names the model picked out of the caller's own list, after
  *                      validation. Together with {@code offeredItemCount} this is what makes a bad
@@ -58,6 +64,7 @@ public record InterpretationSnapshot(
         String rawConfidence,
         List<String> keywords,
         Boolean usedFallback,
+        Boolean withoutAi,
         List<String> rawKeywords,
         List<String> matches,
         Integer offeredItemCount,

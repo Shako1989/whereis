@@ -41,7 +41,7 @@ public final class InterpretationSnapshots {
     public static InterpretationSnapshot fromRaw(PlacementInterpretation raw, List<String> offeredSpaces) {
         if (raw == null) {
             return new InterpretationSnapshot(false, null, null, null, List.of(), null, null, null, null, null,
-                    null, null, offered(offeredSpaces), null);
+                    null, null, null, offered(offeredSpaces), null);
         }
         List<InterpretationSnapshot.Segment> locations = raw.locations() == null ? List.of() : raw.locations().stream()
                 .limit(MAX_LOCATIONS)
@@ -57,7 +57,7 @@ public final class InterpretationSnapshots {
                 locations,
                 confidenceOf(raw.confidence()),
                 rawConfidenceOf(raw.confidence()),
-                null, null, null, null, null,
+                null, null, null, null, null, null,
                 offered(offeredSpaces), null);
     }
 
@@ -81,7 +81,7 @@ public final class InterpretationSnapshots {
         Double confidence = raw == null ? null : raw.confidence();
         return new InterpretationSnapshot(true, placement.itemName(), placement.description(),
                 placement.spaceName(), locations, confidenceOf(confidence), rawConfidenceOf(confidence),
-                null, null, null, null, null,
+                null, null, null, null, null, null,
                 offered(offeredSpaces), raw == null ? null : fromRaw(raw));
     }
 
@@ -89,7 +89,7 @@ public final class InterpretationSnapshots {
     public static InterpretationSnapshot forFailure(List<String> offeredSpaces) {
         List<String> offered = offered(offeredSpaces);
         return offered == null ? null : new InterpretationSnapshot(null, null, null, null, null, null, null,
-                null, null, null, null, null, offered, null);
+                null, null, null, null, null, null, offered, null);
     }
 
     /**
@@ -103,14 +103,27 @@ public final class InterpretationSnapshots {
     public static InterpretationSnapshot forSearch(List<String> keywords, List<String> matches,
             int offeredItemCount, boolean usedFallback) {
         return new InterpretationSnapshot(true, null, null, null, null, null, null,
-                capList(keywords, MAX_KEYWORDS, MAX_NAME_LENGTH), usedFallback, null,
+                capList(keywords, MAX_KEYWORDS, MAX_NAME_LENGTH), usedFallback, null, null,
                 picked(matches),
                 offeredItemCount <= 0 ? null : offeredItemCount, null, null);
     }
 
+    /**
+     * A SEARCH the database answered on its own, with no model call.
+     *
+     * <p>{@code usedFallback} is deliberately FALSE rather than true: nothing fell back, because
+     * nothing was asked. {@code offeredItemCount} is absent for the same reason — no list was
+     * built, so no item name left the server for this request.
+     */
+    public static InterpretationSnapshot forSearchWithoutAi(String keyword) {
+        return new InterpretationSnapshot(true, null, null, null, null, null, null,
+                capList(List.of(keyword), MAX_KEYWORDS, MAX_NAME_LENGTH), false, true,
+                null, null, null, null, null);
+    }
+
     /** A SEARCH with nothing usable — keeps what the model returned so the rejection is inspectable. */
     public static InterpretationSnapshot forSearchNotUnderstood(List<String> rawKeywords) {
-        return new InterpretationSnapshot(false, null, null, null, null, null, null, List.of(), null,
+        return new InterpretationSnapshot(false, null, null, null, null, null, null, List.of(), null, null,
                 capList(rawKeywords, MAX_KEYWORDS, MAX_NAME_LENGTH), null, null, null, null);
     }
 

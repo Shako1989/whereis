@@ -104,6 +104,16 @@ search/    SearchService port (pgvector can slot in later without API changes);
            picked back into rows, and why a name the model invented is harmless — it matches
            nothing rather than somebody else's item. Shares assemble() with search(), so the
            batch path/cover resolution is identical.
+assistant/ SEARCH SKIPS THE MODEL ENTIRELY when the query is ONE WORD and the trigram search
+           already answers it — a single word is usually the thing's NAME (a description needs
+           several) and is itself a usable search term, which a whole sentence is not. Measured on a
+           week of real traffic: 3 of 5 one-word searches answered this way, 2 of them better than
+           the model managed. It returns early ONLY on a HIT; an empty result falls through, because
+           "qutu" against an item named "RC controller Box" shares no letters and only a model
+           bridges that. The missed term is remembered so the keyword path does not re-ask it. The
+           row is written with `AiMetadata.NONE` (the shape BR-7's pinned path uses) and
+           `withoutAi=true`, distinct from `usedFallback` (the model WAS asked and gave nothing);
+           nothing leaves the server for these queries, not even an item name.
 assistant/ SEARCH also offers the model THE CALLER'S OWN ACTIVE ITEM NAMES, which is the only way
            a DESCRIPTION can reach an item named something else ("divarda deşik açan alət" → an item
            stored as "Matkap"; trigram cannot, the two share no letters). `SearchInterpretation` has

@@ -65,7 +65,8 @@ class AssistantMessageIT extends AbstractIntegrationTest {
                        interpretation->>'usedFallback'   as used_fallback,
                        interpretation->>'keywords'       as keywords,
                        interpretation->>'matches'        as matches,
-                       interpretation->>'offeredItemCount' as offered_item_count
+                       interpretation->>'offeredItemCount' as offered_item_count,
+                       interpretation->>'withoutAi'      as without_ai
                 from assistant_messages
                 where user_id = ?
                 order by created_at desc, id desc
@@ -309,5 +310,45 @@ class AssistantMessageIT extends AbstractIntegrationTest {
         Map<String, Object> row = rowsOf(userId).getFirst();
         assertThat(row.get("offered_item_count")).isNull();
         assertThat(row.get("matches")).isNull();
+    }
+
+    @Test
+    void aOneWordSearchTheDatabaseAnswersRecordsThatNoProviderWasAsked() {
+        // The cost optimisation, asserted where it is observable: the row must not name a provider
+        // that was never called, and no item name can have been offered because no list was built.
+        String token = registerAndGetToken();
+        UUID userId = subjectOf(token);
+        createSpace(token, "Home", SpaceType.HOME);
+        remember(token, PASSPORT_SENTENCE, null);
+
+        AssistantSearchResponse answer = search(token, "passport");
+        assertThat(answer.items()).extracting("name").containsExactly("Passport");
+
+        Map<String, Object> row = rowsOf(userId).getFirst();
+        assertThat(row)
+                .containsEntry("mode", "SEARCH")
+                .containsEntry("outcome", "ANSWERED")
+                .containsEntry("without_ai", "true")
+                // AiMetadata.NONE, not the mock's triple.
+                .containsEntry("provider", "none")
+                .containsEntry("prompt_version", "none");
+        assertThat(row.get("offered_item_count")).isNull();
+        assertThat(row.get("matches")).isNull();
+    }
+
+    @Test
+    void aOneWordSearchTheDatabaseCannotAnswerStillNamesTheProvider() {
+        // The fall-through half. "zzzz" matches nothing, so the model is asked after all and the
+        // row records who answered — otherwise a saved call and a failed one would look alike.
+        String token = registerAndGetToken();
+        UUID userId = subjectOf(token);
+        createSpace(token, "Home", SpaceType.HOME);
+        remember(token, PASSPORT_SENTENCE, null);
+
+        search(token, "zzzz");
+
+        Map<String, Object> row = rowsOf(userId).getFirst();
+        assertThat(row).containsEntry("mode", "SEARCH").containsEntry("provider", "mock");
+        assertThat(row.get("without_ai")).isNull();
     }
 }
