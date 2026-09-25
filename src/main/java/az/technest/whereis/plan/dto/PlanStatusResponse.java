@@ -11,7 +11,7 @@ import az.technest.whereis.plan.Plan;
  *
  * <pre>
  * { "plan": "PRO",
- *   "limits": {"spaces": 5, "items": 600},
+ *   "limits": {"spaces": 5, "items": 500},
  *   "usage":  {"spaces": 2, "activeItems": 143},
  *   "source": "SUBSCRIPTION",
  *   "subscription": {"productId": "whereis_pro_annual", "tier": "PRO", "state": "ACTIVE",

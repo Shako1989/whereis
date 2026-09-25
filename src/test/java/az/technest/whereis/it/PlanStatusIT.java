@@ -77,7 +77,7 @@ class PlanStatusIT extends AbstractIntegrationTest {
         assertThat(status.plan()).isEqualTo(Plan.FREE);
         // The numbers come from whereis.plans.free.* — the client must never hardcode them.
         assertThat(status.limits().spaces()).isEqualTo(1);
-        assertThat(status.limits().items()).isEqualTo(20);
+        assertThat(status.limits().items()).isEqualTo(35);
         assertThat(status.usage().spaces()).isEqualTo(1L);
         assertThat(status.usage().activeItems()).isEqualTo(3L);
     }
@@ -146,13 +146,13 @@ class PlanStatusIT extends AbstractIntegrationTest {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
         UUID drawer = drawerOf(token);
-        seedActiveItems(userId, drawer, 19);
-        assertThat(createItem(token, drawer, "Item 20").getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        seedActiveItems(userId, drawer, 34);
+        assertThat(createItem(token, drawer, "Item 35").getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
-        assertPlanLimitRefusal(createItem(token, drawer, "Item 21"));
+        assertPlanLimitRefusal(createItem(token, drawer, "Item 36"));
 
         PlanStatusResponse status = planOf(token);
-        assertThat(status.usage().activeItems()).isEqualTo(20L);
+        assertThat(status.usage().activeItems()).isEqualTo(35L);
         assertThat(status.usage().activeItems()).isEqualTo(status.limits().items().longValue());
     }
 
@@ -198,7 +198,7 @@ class PlanStatusIT extends AbstractIntegrationTest {
 
         assertThat(raw.getBody().get("plan").asText()).isEqualTo("STANDARD");
         assertThat(raw.getBody().get("limits").get("spaces").asInt()).isEqualTo(3);
-        assertThat(raw.getBody().get("limits").get("items").asInt()).isEqualTo(300);
+        assertThat(raw.getBody().get("limits").get("items").asInt()).isEqualTo(100);
         assertThat(raw.getBody().get("source").asText()).isEqualTo("SUBSCRIPTION");
         assertThat(raw.getBody().get("subscription").get("productId").asText())
                 .isEqualTo("whereis_standard_annual");

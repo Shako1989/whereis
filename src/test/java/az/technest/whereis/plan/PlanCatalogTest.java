@@ -13,6 +13,8 @@ import org.springframework.boot.context.properties.source.ConfigurationPropertyS
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.env.PropertySource;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.env.SystemEnvironmentPropertySource;
 import org.springframework.core.io.ClassPathResource;
 
 /** The ladder as configured, and every way a half-configured environment must fail at startup. */
@@ -24,9 +26,9 @@ class PlanCatalogTest {
 
     private static Map<Plan, TierConfig> shipped() {
         Map<Plan, TierConfig> tiers = new EnumMap<>(Plan.class);
-        tiers.put(Plan.FREE, new TierConfig(1, 100, 1, null));
-        tiers.put(Plan.STANDARD, new TierConfig(3, 300, 3, "whereis_standard_annual"));
-        tiers.put(Plan.PRO, new TierConfig(5, 600, 10, "whereis_pro_annual"));
+        tiers.put(Plan.FREE, new TierConfig(1, 35, 1, null));
+        tiers.put(Plan.STANDARD, new TierConfig(3, 100, 3, "whereis_standard_annual"));
+        tiers.put(Plan.PRO, new TierConfig(5, 500, 10, "whereis_pro_annual"));
         tiers.put(Plan.MAX, new TierConfig(10, null, 25, "whereis_max_annual"));
         tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null, null));
         return tiers;
@@ -45,11 +47,11 @@ class PlanCatalogTest {
         PlanCatalog catalog = bindApplicationYml();
 
         assertThat(catalog.spaceLimit(Plan.FREE)).isEqualTo(1);
-        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(20);
+        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(35);
         assertThat(catalog.spaceLimit(Plan.STANDARD)).isEqualTo(3);
-        assertThat(catalog.itemLimit(Plan.STANDARD)).isEqualTo(300);
+        assertThat(catalog.itemLimit(Plan.STANDARD)).isEqualTo(100);
         assertThat(catalog.spaceLimit(Plan.PRO)).isEqualTo(5);
-        assertThat(catalog.itemLimit(Plan.PRO)).isEqualTo(600);
+        assertThat(catalog.itemLimit(Plan.PRO)).isEqualTo(500);
         assertThat(catalog.spaceLimit(Plan.MAX)).isEqualTo(10);
         assertThat(catalog.itemLimit(Plan.MAX)).isNull();
         assertThat(catalog.spaceLimit(Plan.UNLIMITED)).isNull();
@@ -63,7 +65,16 @@ class PlanCatalogTest {
     }
 
     private static PlanCatalog bindApplicationYml() throws java.io.IOException {
+        return bindApplicationYml(Map.of());
+    }
+
+    /** The shipped file, with {@code env} overlaid ahead of it exactly as a container would. */
+    private static PlanCatalog bindApplicationYml(Map<String, Object> env) throws java.io.IOException {
         MutablePropertySources sources = new MutablePropertySources();
+        if (!env.isEmpty()) {
+            sources.addFirst(new SystemEnvironmentPropertySource(
+                    StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME, env));
+        }
         for (PropertySource<?> source : new YamlPropertySourceLoader()
                 .load("application", new ClassPathResource("application.yml"))) {
             sources.addLast(source);
@@ -71,6 +82,31 @@ class PlanCatalogTest {
         return new Binder(ConfigurationPropertySources.from(sources))
                 .bind("whereis", PlanCatalog.class)
                 .orElseThrow(() -> new AssertionError("whereis.plans did not bind"));
+    }
+
+    /**
+     * THE RUNBOOK'S PROMISE, PINNED: deploy/README.md "Tuning the numbers" tells an operator that
+     * retuning a ceiling needs no code change and no release — only {@code WHEREIS_PLANS_<TIER>_ITEMS}
+     * in the environment and a restart. That is also the whole reason the ladder is configuration
+     * rather than a {@code plans} table, so if the override ever silently stopped binding, the
+     * argument for the design would be false and nothing else in the suite would notice.
+     *
+     * <p>Bound through the real {@link SystemEnvironmentPropertySource}, not a handwritten
+     * {@code whereis.plans.free.items} key: the relaxed UPPER_SNAKE mapping is the part that can
+     * break, and a dotted key would test a path no deployment ever takes.
+     */
+    @Test
+    void anEnvironmentVariableOverridesAShippedCeilingWithoutARelease() throws java.io.IOException {
+        PlanCatalog catalog = bindApplicationYml(Map.of(
+                "WHEREIS_PLANS_FREE_ITEMS", "50",
+                "WHEREIS_PLANS_STANDARD_ITEMS", "200"));
+
+        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(50);
+        assertThat(catalog.itemLimit(Plan.STANDARD)).isEqualTo(200);
+        // Untouched by the override, and still read from the file.
+        assertThat(catalog.itemLimit(Plan.PRO)).isEqualTo(500);
+        assertThat(catalog.spaceLimit(Plan.FREE)).isEqualTo(1);
+        assertThat(catalog.of(Plan.STANDARD).productId()).isEqualTo("whereis_standard_annual");
     }
 
     // ------------------------------------------------------------------------------ the accessors
@@ -148,7 +184,7 @@ class PlanCatalogTest {
         assertThatThrownBy(() -> catalog(inverted))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("whereis.plans.free.items (999999)")
-                .hasMessageContaining("whereis.plans.standard.items (300)")
+                .hasMessageContaining("whereis.plans.standard.items (100)")
                 .hasMessageContaining("a higher tier may never allow less")
                 .hasMessageContaining("raise every tier above it too");
 

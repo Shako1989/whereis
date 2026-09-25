@@ -22,13 +22,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 /**
- * The free tier against a real database: 1 space and 20 ACTIVE items, refused with 409
+ * The free tier against a real database: 1 space and 35 ACTIVE items, refused with 409
  * PLAN_LIMIT_REACHED on all three creation paths, bypassed by an UNLIMITED grant.
  *
  * <p>These run with the REAL production limits from {@code application.yml} — no inflated test
  * values and no {@code @TestPropertySource}, which would fork the shared Spring context. The price
- * is that the 20-item boundary needs 19 items to exist first, and they are seeded with one INSERT
- * rather than 19 HTTP calls: the guard counts rows, so how the rows got there is irrelevant to what
+ * is that the 35-item boundary needs 34 items to exist first, and they are seeded with one INSERT
+ * rather than 34 HTTP calls: the guard counts rows, so how the rows got there is irrelevant to what
  * is being measured (the seeded rows have no history record, which nothing here reads).
  */
 class PlanLimitIT extends AbstractIntegrationTest {
@@ -131,20 +131,20 @@ class PlanLimitIT extends AbstractIntegrationTest {
         assertThat(duplicate.getBody().get("code").asText()).isEqualTo("DUPLICATE_NAME");
     }
 
-    // ----------------------------------------------------------------------- active items (20)
+    // ----------------------------------------------------------------------- active items (35)
 
     @Test
-    void theTwentiethItemIsCreatedAndTheTwentyFirstIsRefused() {
+    void theThirtyFifthItemIsCreatedAndTheThirtySixthIsRefused() {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
         UUID drawer = drawerOf(token);
-        seedActiveItems(userId, drawer, 19);
+        seedActiveItems(userId, drawer, 34);
 
-        assertThat(createItem(token, drawer, "Item 20").getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(activeItems(userId)).isEqualTo(20);
+        assertThat(createItem(token, drawer, "Item 35").getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(activeItems(userId)).isEqualTo(35);
 
-        assertPlanLimitRefusal(createItem(token, drawer, "Item 21"), "20 active items");
-        assertThat(activeItems(userId)).isEqualTo(20);
+        assertPlanLimitRefusal(createItem(token, drawer, "Item 36"), "35 active items");
+        assertThat(activeItems(userId)).isEqualTo(35);
     }
 
     @Test
@@ -155,7 +155,7 @@ class PlanLimitIT extends AbstractIntegrationTest {
         UUID archivable = jdbc.queryForObject(
                 "select id from items where user_id = ? order by created_at desc limit 1", UUID.class, userId);
 
-        assertPlanLimitRefusal(createItem(token, drawer, "One too many"), "20 active items");
+        assertPlanLimitRefusal(createItem(token, drawer, "One too many"), "35 active items");
 
         ResponseEntity<ItemResponse> archived = rest.exchange(ITEMS + "/" + archivable, HttpMethod.PUT,
                 new HttpEntity<>(new UpdateItemRequest("Archived item", null, null, true), bearer(token)),
@@ -165,8 +165,8 @@ class PlanLimitIT extends AbstractIntegrationTest {
 
         // Archiving is the door in the wall: the row still exists, it just stops counting.
         assertThat(createItem(token, drawer, "Room again").getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(activeItems(userId)).isEqualTo(20);
-        assertThat(count("select count(*) from items where user_id = ?", userId)).isEqualTo(21);
+        assertThat(activeItems(userId)).isEqualTo(35);
+        assertThat(count("select count(*) from items where user_id = ?", userId)).isEqualTo(36);
     }
 
     @Test
@@ -175,10 +175,10 @@ class PlanLimitIT extends AbstractIntegrationTest {
         UUID userId = subjectOf(token);
         grantUnlimited(userId);
 
-        assertThat(createItem(token, onlyLocationOf(userId), "Item 21").getStatusCode())
+        assertThat(createItem(token, onlyLocationOf(userId), "Item 36").getStatusCode())
                 .isEqualTo(HttpStatus.CREATED);
         assertThat(createSpaceRaw(token, "Office").getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(activeItems(userId)).isEqualTo(21);
+        assertThat(activeItems(userId)).isEqualTo(36);
     }
 
     // ------------------------------------------------------------- both assistant remember paths
@@ -198,9 +198,9 @@ class PlanLimitIT extends AbstractIntegrationTest {
         int locationsBefore = locationCount(userId);
         int historyBefore = historyCount(userId);
 
-        assertPlanLimitRefusal(remember(token, PASSPORT_SENTENCE, null), "20 active items");
+        assertPlanLimitRefusal(remember(token, PASSPORT_SENTENCE, null), "35 active items");
 
-        assertThat(activeItems(userId)).isEqualTo(20);
+        assertThat(activeItems(userId)).isEqualTo(35);
         assertThat(count("select count(*) from items where user_id = ? and name = 'Passport'", userId)).isZero();
         // Bedroom > Wardrobe > Top Drawer were created and rolled back with the item, and so was
         // the open history record the item would have opened.
@@ -223,9 +223,9 @@ class PlanLimitIT extends AbstractIntegrationTest {
         UUID userId = subjectOf(token);
         int locationsBefore = locationCount(userId);
 
-        assertPlanLimitRefusal(remember(token, "kabel 20A", onlyLocationOf(userId)), "20 active items");
+        assertPlanLimitRefusal(remember(token, "kabel 20A", onlyLocationOf(userId)), "35 active items");
 
-        assertThat(activeItems(userId)).isEqualTo(20);
+        assertThat(activeItems(userId)).isEqualTo(35);
         assertThat(count("select count(*) from items where user_id = ? and name = 'kabel 20A'", userId)).isZero();
         assertThat(locationCount(userId)).isEqualTo(locationsBefore);
         Map<String, Object> row = lastAssistantRow(userId);
@@ -241,14 +241,14 @@ class PlanLimitIT extends AbstractIntegrationTest {
 
     // ------------------------------------------------------------------------------- fixtures
 
-    /** A FREE account with one space, one drawer, and exactly 20 active items in it. */
+    /** A FREE account with one space, one drawer, and exactly 35 active items in it. */
     private String releasedAccountAtTheItemLimit() {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
         UUID drawer = drawerOf(token);
-        seedActiveItems(userId, drawer, 19);
-        assertThat(createItem(token, drawer, "Item 20").getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(activeItems(userId)).isEqualTo(20);
+        seedActiveItems(userId, drawer, 34);
+        assertThat(createItem(token, drawer, "Item 35").getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(activeItems(userId)).isEqualTo(35);
         return token;
     }
 

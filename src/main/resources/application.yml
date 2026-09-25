@@ -155,29 +155,23 @@ whereis:
     free:
       spaces: 1
       items: 20
-      listings: 1
+      listings: 2
     standard:
-      spaces: 3
-      items: 300
-      listings: 3
+      spaces: 2
+      items: 60
+      listings: 8
       product-id: whereis_standard_annual
     pro:
-      spaces: 5
-      items: 600
-      listings: 10
+      spaces: 3
+      items: 140
+      listings: 15
       product-id: whereis_pro_annual
     max:
-      spaces: 10
+      spaces: 5
       # Blank, not a big number: null is "no ceiling on THIS allowance". Max is ten spaces and
       # unlimited items, which a single all-or-nothing flag could not express.
-      items:
-      # ...and `listings` is deliberately NOT blank here. An unbounded PUBLIC surface per account
-      # is a spam vector in a way an unbounded private inventory is not, so MAX has unlimited items
-      # and a finite number of simultaneous listings. The asymmetry between these two lines is the
-      # clearest demonstration of why a ceiling is nullable per ALLOWANCE rather than per tier, and
-      # it also makes aHigherTierRaisesListings(MAX) false — so the 409 at MAX correctly offers no
-      # upgrade instead of advertising a product that would not help.
-      listings: 25
+      items: 220
+      listings: 30
       product-id: whereis_max_annual
     # `unlimited` is deliberately ABSENT: the operator grant has no ceiling on ANY allowance
     # and no product-id, so there is nothing to configure. PlanCatalog supplies it and refuses to

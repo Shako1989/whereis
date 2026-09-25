@@ -511,13 +511,13 @@ user from an existing dump.
 `V9` gave every account `users.plan = 'FREE'`; `V10` widened that column to the four-tier ladder
 plus the operator grant:
 
-| tier        | spaces | active items | Play product              |
-|-------------|--------|--------------|---------------------------|
-| `FREE`      | 1      | 100          | —                         |
-| `STANDARD`  | 3      | 300          | `whereis_standard_annual` |
-| `PRO`       | 5      | 600          | `whereis_pro_annual`      |
-| `MAX`       | 10     | **no limit** | `whereis_max_annual`      |
-| `UNLIMITED` | no limit | no limit   | **never purchasable**     |
+| tier        | spaces   | active items | live listings | Play product              |
+|-------------|----------|--------------|---------------|---------------------------|
+| `FREE`      | 1        | 35           | 1             | —                         |
+| `STANDARD`  | 3        | 100          | 3             | `whereis_standard_annual` |
+| `PRO`       | 5        | 500          | 10            | `whereis_pro_annual`      |
+| `MAX`       | 10       | **no limit** | 25            | `whereis_max_annual`      |
+| `UNLIMITED` | no limit | no limit     | no limit      | **never purchasable**     |
 
 Neither migration contains an `UPDATE` — nothing is grandfathered, including the account that
 already exists on this box. Nothing is deleted or hidden, but until it is granted that account
@@ -603,7 +603,7 @@ the compose file invites drift:
 
 ```yaml
       WHEREIS_PLANS_FREE_SPACES: ${WHEREIS_PLANS_FREE_SPACES:-1}
-      WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-100}
+      WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-35}
 ```
 
 > **The ladder must never go down.** A higher tier may never allow less than a lower one (a blank
@@ -613,7 +613,7 @@ the compose file invites drift:
 > offending keys:
 >
 > ```
-> whereis.plans.free.items (999999) exceeds whereis.plans.standard.items (300);
+> whereis.plans.free.items (999999) exceeds whereis.plans.standard.items (100);
 > a higher tier may never allow less — raise every tier above it too
 > ```
 

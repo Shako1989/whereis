@@ -128,19 +128,19 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
                 Instant.now().plus(Duration.ofDays(365)));
         SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
         UUID drawer = createLocation(token, home.id(), "Drawer", LocationType.DRAWER, null).id();
-        seedActiveItems(userId, drawer, 400);
+        seedActiveItems(userId, drawer, 150);
         UUID keeper = UUID.fromString(createItemRaw(token, drawer, "Passport").getBody().get("id").asText());
-        assertThat(planOf(token).usage().activeItems()).isEqualTo(401L);
+        assertThat(planOf(token).usage().activeItems()).isEqualTo(151L);
 
-        // PRO (600) expires; a STANDARD subscription (300) remains. The account is 101 over.
+        // PRO (500) expires; a STANDARD subscription (100) remains. The account is 51 over.
         expire(pro);
         seedSubscription(userId, Plan.STANDARD, SubscriptionState.ACTIVE,
                 Instant.now().plus(Duration.ofDays(365)));
 
         PlanStatusResponse status = planOf(token);
         assertThat(status.plan()).isEqualTo(Plan.STANDARD);
-        assertThat(status.limits().items()).isEqualTo(300);
-        assertThat(status.usage().activeItems()).isEqualTo(401L);   // reported, never clamped
+        assertThat(status.limits().items()).isEqualTo(100);
+        assertThat(status.usage().activeItems()).isEqualTo(151L);   // reported, never clamped
 
         // Archive, unarchive, edit, move, delete: all still allowed.
         assertThat(rest.exchange(ITEMS + "/" + keeper, HttpMethod.PUT,
@@ -153,7 +153,7 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
         assertThat(rest.exchange(ITEMS + "/" + keeper, HttpMethod.PUT,
                 new HttpEntity<>(new UpdateItemRequest("Passport", null, null, false), bearer(token)),
                 ItemResponse.class).getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(planOf(token).usage().activeItems()).isEqualTo(401L);
+        assertThat(planOf(token).usage().activeItems()).isEqualTo(151L);
         assertThat(rest.exchange(ITEMS + "/" + keeper, HttpMethod.DELETE,
                 new HttpEntity<>(bearer(token)), Void.class).getStatusCode())
                 .isEqualTo(HttpStatus.NO_CONTENT);
@@ -170,7 +170,7 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
                 Instant.now().plus(Duration.ofDays(365)));
         SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
         UUID drawer = createLocation(token, home.id(), "Drawer", LocationType.DRAWER, null).id();
-        seedActiveItems(userId, drawer, 300);
+        seedActiveItems(userId, drawer, 100);
         int locationsBefore = jdbc.queryForObject(
                 "select count(*) from locations l join spaces s on s.id = l.space_id where s.user_id = ?",
                 Integer.class, userId);

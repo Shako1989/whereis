@@ -14,7 +14,7 @@ package az.technest.whereis.plan.dto;
  * ALWAYS present.
  *
  * <pre>
- * {"spaces": 5,    "items": 600}    // PRO
+ * {"spaces": 5,    "items": 500}    // PRO
  * {"spaces": 10,   "items": null}   // MAX   — finite spaces, unlimited items
  * {"spaces": null, "items": null}   // UNLIMITED (the operator grant)
  * </pre>
