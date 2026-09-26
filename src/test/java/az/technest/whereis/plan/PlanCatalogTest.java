@@ -26,10 +26,10 @@ class PlanCatalogTest {
 
     private static Map<Plan, TierConfig> shipped() {
         Map<Plan, TierConfig> tiers = new EnumMap<>(Plan.class);
-        tiers.put(Plan.FREE, new TierConfig(1, 35, 1, null));
-        tiers.put(Plan.STANDARD, new TierConfig(3, 100, 3, "whereis_standard_annual"));
-        tiers.put(Plan.PRO, new TierConfig(5, 500, 10, "whereis_pro_annual"));
-        tiers.put(Plan.MAX, new TierConfig(10, null, 25, "whereis_max_annual"));
+        tiers.put(Plan.FREE, new TierConfig(1, 20, null, null));
+        tiers.put(Plan.STANDARD, new TierConfig(2, 60, null, "whereis_standard_annual"));
+        tiers.put(Plan.PRO, new TierConfig(3, 140, null, "whereis_pro_annual"));
+        tiers.put(Plan.MAX, new TierConfig(5, 220, null, "whereis_max_annual"));
         tiers.put(Plan.UNLIMITED, new TierConfig(null, null, null, null));
         return tiers;
     }
@@ -38,22 +38,33 @@ class PlanCatalogTest {
 
     /**
      * Binds the REAL {@code application.yml}, because the one thing a hand-built fixture cannot
-     * prove is that the file on the classpath says what this test thinks it says — specifically
-     * that a blank {@code items:} binds to {@code null} rather than to 0 or a failure, which is the
-     * entire mechanism behind "Max has unlimited items and ten spaces".
+     * prove is that the file on the classpath says what this test thinks it says.
+     *
+     * <p>Note what this no longer covers: every shipped tier now carries a FINITE items ceiling,
+     * MAX included, so the file no longer exercises "a blank {@code items:} binds to {@code null}
+     * rather than to 0 or a failure". That mechanism is still load-bearing — it is how UNLIMITED,
+     * the operator grant, has no ceiling on any allowance — but UNLIMITED is SUPPLIED by the
+     * constructor rather than bound from this file, so nothing in {@code application.yml} proves
+     * the blank-binding path any more. The fixture tests below are what pin it.
      */
     @Test
     void theShippedApplicationYmlBindsToTheFourTierLadder() throws java.io.IOException {
         PlanCatalog catalog = bindApplicationYml();
 
         assertThat(catalog.spaceLimit(Plan.FREE)).isEqualTo(1);
-        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(35);
-        assertThat(catalog.spaceLimit(Plan.STANDARD)).isEqualTo(3);
-        assertThat(catalog.itemLimit(Plan.STANDARD)).isEqualTo(100);
-        assertThat(catalog.spaceLimit(Plan.PRO)).isEqualTo(5);
-        assertThat(catalog.itemLimit(Plan.PRO)).isEqualTo(500);
-        assertThat(catalog.spaceLimit(Plan.MAX)).isEqualTo(10);
-        assertThat(catalog.itemLimit(Plan.MAX)).isNull();
+        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(20);
+        // Listings are uncapped on every tier for now — see the note in application.yml.
+        assertThat(catalog.listingLimit(Plan.FREE)).isNull();
+        assertThat(catalog.spaceLimit(Plan.STANDARD)).isEqualTo(2);
+        assertThat(catalog.itemLimit(Plan.STANDARD)).isEqualTo(60);
+        assertThat(catalog.spaceLimit(Plan.PRO)).isEqualTo(3);
+        assertThat(catalog.itemLimit(Plan.PRO)).isEqualTo(140);
+        assertThat(catalog.spaceLimit(Plan.MAX)).isEqualTo(5);
+        // MAX is no longer unbounded: it is the top of the ladder, not an absence of one.
+        assertThat(catalog.itemLimit(Plan.MAX)).isEqualTo(220);
+        assertThat(catalog.listingLimit(Plan.MAX)).isNull();
+        // ...so no 409 on the listing path can offer an upgrade, because none would help.
+        assertThat(catalog.aHigherTierRaisesListings(Plan.FREE)).isFalse();
         assertThat(catalog.spaceLimit(Plan.UNLIMITED)).isNull();
         assertThat(catalog.itemLimit(Plan.UNLIMITED)).isNull();
 
@@ -98,13 +109,13 @@ class PlanCatalogTest {
     @Test
     void anEnvironmentVariableOverridesAShippedCeilingWithoutARelease() throws java.io.IOException {
         PlanCatalog catalog = bindApplicationYml(Map.of(
-                "WHEREIS_PLANS_FREE_ITEMS", "50",
-                "WHEREIS_PLANS_STANDARD_ITEMS", "200"));
+                "WHEREIS_PLANS_FREE_ITEMS", "30",
+                "WHEREIS_PLANS_STANDARD_ITEMS", "80"));
 
-        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(50);
-        assertThat(catalog.itemLimit(Plan.STANDARD)).isEqualTo(200);
+        assertThat(catalog.itemLimit(Plan.FREE)).isEqualTo(30);
+        assertThat(catalog.itemLimit(Plan.STANDARD)).isEqualTo(80);
         // Untouched by the override, and still read from the file.
-        assertThat(catalog.itemLimit(Plan.PRO)).isEqualTo(500);
+        assertThat(catalog.itemLimit(Plan.PRO)).isEqualTo(140);
         assertThat(catalog.spaceLimit(Plan.FREE)).isEqualTo(1);
         assertThat(catalog.of(Plan.STANDARD).productId()).isEqualTo("whereis_standard_annual");
     }
@@ -184,7 +195,7 @@ class PlanCatalogTest {
         assertThatThrownBy(() -> catalog(inverted))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("whereis.plans.free.items (999999)")
-                .hasMessageContaining("whereis.plans.standard.items (100)")
+                .hasMessageContaining("whereis.plans.standard.items (60)")
                 .hasMessageContaining("a higher tier may never allow less")
                 .hasMessageContaining("raise every tier above it too");
 
@@ -193,6 +204,9 @@ class PlanCatalogTest {
         raised.put(Plan.FREE, new TierConfig(1, 999999, 1, null));
         raised.put(Plan.STANDARD, new TierConfig(3, 999999, 3, "whereis_standard_annual"));
         raised.put(Plan.PRO, new TierConfig(5, 999999, 10, "whereis_pro_annual"));
+        // MAX too, now that it carries a finite ceiling of its own — it used to be exempt here
+        // only because a blank ceiling counts as the largest.
+        raised.put(Plan.MAX, new TierConfig(10, 999999, 30, "whereis_max_annual"));
         assertThat(catalog(raised).itemLimit(Plan.FREE)).isEqualTo(999999);
     }
 
@@ -231,7 +245,7 @@ class PlanCatalogTest {
     @Test
     void twoTiersMayNotShareAProductId() {
         Map<Plan, TierConfig> tiers = shipped();
-        tiers.put(Plan.MAX, new TierConfig(10, null, 25, "whereis_pro_annual"));
+        tiers.put(Plan.MAX, new TierConfig(5, 220, null, "whereis_pro_annual"));
 
         assertThatThrownBy(() -> catalog(tiers))
                 .isInstanceOf(IllegalStateException.class)

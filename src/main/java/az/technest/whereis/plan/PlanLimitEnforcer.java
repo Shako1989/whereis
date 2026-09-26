@@ -69,8 +69,9 @@ public class PlanLimitEnforcer {
         Plan tier = effectiveTierOf(userId);
         Integer cap = catalog.spaceLimit(tier);
         if (cap == null) {
-            // No ceiling on SPACES for this tier — not necessarily an unlimited account. MAX has
-            // unlimited items and exactly ten spaces, which is why the check is per allowance.
+            // No ceiling on SPACES for this tier — not necessarily an unlimited account. The
+            // check stays per allowance because a tier may be uncapped on one and finite on
+            // another; only UNLIMITED, the operator grant, is uncapped on all three today.
             return;
         }
         if (countSpaces(userId) >= cap) {

@@ -77,7 +77,7 @@ class PlanStatusIT extends AbstractIntegrationTest {
         assertThat(status.plan()).isEqualTo(Plan.FREE);
         // The numbers come from whereis.plans.free.* — the client must never hardcode them.
         assertThat(status.limits().spaces()).isEqualTo(1);
-        assertThat(status.limits().items()).isEqualTo(35);
+        assertThat(status.limits().items()).isEqualTo(20);
         assertThat(status.usage().spaces()).isEqualTo(1L);
         assertThat(status.usage().activeItems()).isEqualTo(3L);
     }
@@ -146,13 +146,13 @@ class PlanStatusIT extends AbstractIntegrationTest {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
         UUID drawer = drawerOf(token);
-        seedActiveItems(userId, drawer, 34);
-        assertThat(createItem(token, drawer, "Item 35").getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        seedActiveItems(userId, drawer, 19);
+        assertThat(createItem(token, drawer, "Item 20").getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
-        assertPlanLimitRefusal(createItem(token, drawer, "Item 36"));
+        assertPlanLimitRefusal(createItem(token, drawer, "Item 21"));
 
         PlanStatusResponse status = planOf(token);
-        assertThat(status.usage().activeItems()).isEqualTo(35L);
+        assertThat(status.usage().activeItems()).isEqualTo(20L);
         assertThat(status.usage().activeItems()).isEqualTo(status.limits().items().longValue());
     }
 
@@ -197,8 +197,8 @@ class PlanStatusIT extends AbstractIntegrationTest {
         ResponseEntity<JsonNode> raw = get(token, PLAN, JsonNode.class);
 
         assertThat(raw.getBody().get("plan").asText()).isEqualTo("STANDARD");
-        assertThat(raw.getBody().get("limits").get("spaces").asInt()).isEqualTo(3);
-        assertThat(raw.getBody().get("limits").get("items").asInt()).isEqualTo(100);
+        assertThat(raw.getBody().get("limits").get("spaces").asInt()).isEqualTo(2);
+        assertThat(raw.getBody().get("limits").get("items").asInt()).isEqualTo(60);
         assertThat(raw.getBody().get("source").asText()).isEqualTo("SUBSCRIPTION");
         assertThat(raw.getBody().get("subscription").get("productId").asText())
                 .isEqualTo("whereis_standard_annual");
@@ -207,7 +207,7 @@ class PlanStatusIT extends AbstractIntegrationTest {
     }
 
     @Test
-    void maxReportsAFiniteSpaceCeilingBesideANullItemCeiling() {
+    void maxReportsTheTopOfTheLadderAndNoLongerAnAbsentCeiling() {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
         seedSubscription(userId, Plan.MAX, SubscriptionState.ACTIVE,
@@ -216,8 +216,11 @@ class PlanStatusIT extends AbstractIntegrationTest {
         ResponseEntity<JsonNode> raw = get(token, PLAN, JsonNode.class);
 
         assertThat(raw.getBody().get("plan").asText()).isEqualTo("MAX");
-        assertThat(raw.getBody().get("limits").get("spaces").asInt()).isEqualTo(10);
-        assertThat(raw.getBody().get("limits").get("items").isNull()).isTrue();
+        assertThat(raw.getBody().get("limits").get("spaces").asInt()).isEqualTo(5);
+        // Every purchasable tier now has a finite items ceiling. A null one over the wire is
+        // reachable only through the UNLIMITED operator grant, which the test above pins.
+        assertThat(raw.getBody().get("limits").get("items").asInt()).isEqualTo(220);
+        assertThat(raw.getBody().get("limits").get("listings").isNull()).isTrue();
     }
 
     @Test
@@ -244,8 +247,6 @@ class PlanStatusIT extends AbstractIntegrationTest {
         createSpace(token, "Home", SpaceType.HOME);
         createSpace(token, "Office", SpaceType.OFFICE);
         createSpace(token, "Car", SpaceType.CAR);
-        createSpace(token, "Garage", SpaceType.GARAGE);
-        createSpace(token, "Warehouse", SpaceType.WAREHOUSE);
         grantTier(userId, Plan.FREE);
         seedSubscription(userId, Plan.STANDARD, SubscriptionState.ACTIVE,
                 Instant.now().plus(Duration.ofDays(365)));
@@ -253,10 +254,10 @@ class PlanStatusIT extends AbstractIntegrationTest {
         PlanStatusResponse status = planOf(token);
 
         assertThat(status.plan()).isEqualTo(Plan.STANDARD);
-        assertThat(status.limits().spaces()).isEqualTo(3);
+        assertThat(status.limits().spaces()).isEqualTo(2);
         // No clamping and no error: the honest body is the one that explains the 409 on the next
         // POST, and the shipped client's progress bar already coerces the fraction to 0..1.
-        assertThat(status.usage().spaces()).isEqualTo(5L);
+        assertThat(status.usage().spaces()).isEqualTo(3L);
         assertPlanLimitRefusal(createSpaceRaw(token, "Attic"));
     }
 
@@ -277,8 +278,8 @@ class PlanStatusIT extends AbstractIntegrationTest {
         assertThat(ladder.getBody().get(1).get("productId").asText()).isEqualTo("whereis_standard_annual");
         assertThat(ladder.getBody().get(2).get("tier").asText()).isEqualTo("PRO");
         assertThat(ladder.getBody().get(3).get("tier").asText()).isEqualTo("MAX");
-        assertThat(ladder.getBody().get(3).get("limits").get("spaces").asInt()).isEqualTo(10);
-        assertThat(ladder.getBody().get(3).get("limits").get("items").isNull()).isTrue();
+        assertThat(ladder.getBody().get(3).get("limits").get("spaces").asInt()).isEqualTo(5);
+        assertThat(ladder.getBody().get(3).get("limits").get("items").asInt()).isEqualTo(220);
         // UNLIMITED is never listed: it is not purchasable, and a client that saw it would render
         // it as something to buy.
         assertThat(ladder.getBody().toString()).doesNotContain("UNLIMITED");

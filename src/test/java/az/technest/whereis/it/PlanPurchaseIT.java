@@ -94,7 +94,7 @@ class PlanPurchaseIT extends AbstractIntegrationTest {
         // The 200 body IS the plan status, so the purchase result and the plan screen cannot
         // disagree — no second GET is needed to learn what was bought.
         assertThat(bought.getBody().get("plan").asText()).isEqualTo("STANDARD");
-        assertThat(bought.getBody().get("limits").get("spaces").asInt()).isEqualTo(3);
+        assertThat(bought.getBody().get("limits").get("spaces").asInt()).isEqualTo(2);
         assertThat(bought.getBody().get("source").asText()).isEqualTo("SUBSCRIPTION");
         assertThat(bought.getBody().get("subscription").get("acknowledged").asBoolean()).isTrue();
 
@@ -145,9 +145,9 @@ class PlanPurchaseIT extends AbstractIntegrationTest {
         assertThat(bought.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(bought.getBody().get("plan").asText()).isEqualTo("MAX");
         assertThat(bought.getBody().get("subscription").get("state").asText()).isEqualTo("CANCELED");
-        // MAX: a finite ten spaces beside no item ceiling at all.
-        assertThat(bought.getBody().get("limits").get("spaces").asInt()).isEqualTo(10);
-        assertThat(bought.getBody().get("limits").get("items").isNull()).isTrue();
+        // MAX: the top of the ladder, every allowance finite.
+        assertThat(bought.getBody().get("limits").get("spaces").asInt()).isEqualTo(5);
+        assertThat(bought.getBody().get("limits").get("items").asInt()).isEqualTo(220);
     }
 
     @Test

@@ -152,26 +152,40 @@ whereis:
   # `unlimited` is the OPERATOR GRANT (users.plan = 'UNLIMITED', deploy/README.md Step 10). It has
   # no product-id and never will: it is not purchasable, and GET /api/v1/plans omits it.
   plans:
+    # LISTINGS ARE TEMPORARILY UNCAPPED ON EVERY TIER (decision, 2026-09-26). Blank, not a big
+    # number: null is "no ceiling on THIS allowance", so re-imposing a cap later is one value per
+    # tier and no code change. The cap was never the anti-spam control it looks like — a per-account
+    # ceiling costs a spammer one extra registration — so what it actually did was push sellers
+    # toward a paid tier. With one listing on the whole board, the binding constraint is supply, not
+    # abuse, and we want to see real seller behaviour before pricing it.
+    #
+    # WHAT IS NOW UNBRAKED, stated plainly so it is re-read before this stays permanent: publishing
+    # is not rate-limited (whereis.market.rate-limit covers READS and REPORTS only), and published
+    # photos are served from the PUBLIC bucket. The remaining controls are seller-level blocking
+    # (V13, BR-15) and listing reports — both of which need
+    # WHEREIS_MARKETPLACE_MODERATOR_EMAILS to be set, which it is not by default.
     free:
       spaces: 1
       items: 20
-      listings: 2
+      listings:
     standard:
       spaces: 2
       items: 60
-      listings: 8
+      listings:
       product-id: whereis_standard_annual
     pro:
       spaces: 3
       items: 140
-      listings: 15
+      listings:
       product-id: whereis_pro_annual
     max:
       spaces: 5
-      # Blank, not a big number: null is "no ceiling on THIS allowance". Max is ten spaces and
-      # unlimited items, which a single all-or-nothing flag could not express.
+      # Finite, unlike earlier releases where this was blank. A blank value still means "no
+      # ceiling on THIS allowance" and the mechanism is still load-bearing — it is how UNLIMITED,
+      # the operator grant, has no ceiling anywhere — but no PURCHASABLE tier uses it any more:
+      # Max is the top of the ladder, not the absence of one.
       items: 220
-      listings: 30
+      listings:
       product-id: whereis_max_annual
     # `unlimited` is deliberately ABSENT: the operator grant has no ceiling on ANY allowance
     # and no product-id, so there is nothing to configure. PlanCatalog supplies it and refuses to

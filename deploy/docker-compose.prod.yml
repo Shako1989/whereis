@@ -194,7 +194,7 @@ services:
       # Step 10's escape hatch is actually being used, and remember that raising a LOWER tier means
       # raising every tier above it or the container refuses to start:
       #   WHEREIS_PLANS_FREE_SPACES: ${WHEREIS_PLANS_FREE_SPACES:-1}
-      #   WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-35}
+      #   WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-20}
 
       # Native Android clients do not send Origin, so this only matters if a web
       # client is added later. Keep it tight rather than permissive.

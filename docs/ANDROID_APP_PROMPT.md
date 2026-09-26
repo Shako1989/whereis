@@ -376,7 +376,7 @@ Ask the server; never hardcode a limit and never keep a running counter of your 
 ```jsonc
 // PlanStatus — GET /api/v1/users/me/plan, 200. Same body as POST /users/me/plan/purchases.
 { "plan": "PRO",                                  // the EFFECTIVE tier; unknown values are NOT FREE
-  "limits": { "spaces": 5, "items": 500 },        // always an OBJECT; a null MEMBER = no ceiling there
+  "limits": { "spaces": 3, "items": 140 },        // always an OBJECT; a null MEMBER = no ceiling there
   "usage":  { "spaces": 2, "activeItems": 143 },
   "source": "SUBSCRIPTION",                       // NONE | GRANT | SUBSCRIPTION — for copy only
   "subscription": {                               // null when there is no LIVE Play purchase

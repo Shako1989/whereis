@@ -513,11 +513,18 @@ plus the operator grant:
 
 | tier        | spaces   | active items | live listings | Play product              |
 |-------------|----------|--------------|---------------|---------------------------|
-| `FREE`      | 1        | 35           | 1             | —                         |
-| `STANDARD`  | 3        | 100          | 3             | `whereis_standard_annual` |
-| `PRO`       | 5        | 500          | 10            | `whereis_pro_annual`      |
-| `MAX`       | 10       | **no limit** | 25            | `whereis_max_annual`      |
+| `FREE`      | 1        | 20           | **no limit**  | —                         |
+| `STANDARD`  | 2        | 60           | **no limit**  | `whereis_standard_annual` |
+| `PRO`       | 3        | 140          | **no limit**  | `whereis_pro_annual`      |
+| `MAX`       | 5        | 220          | **no limit**  | `whereis_max_annual`      |
 | `UNLIMITED` | no limit | no limit     | no limit      | **never purchasable**     |
+
+> **Listings are uncapped on every tier as of 2026-09-26**, deliberately and temporarily —
+> the product needs to see real seller behaviour before it prices it. The ceiling is blank,
+> not removed, so re-imposing one is a value per tier and no code change. Note what is NOT
+> braking publishing meanwhile: `whereis.market.rate-limit` covers reads and reports only,
+> and `WHEREIS_MARKETPLACE_MODERATOR_EMAILS` is empty by default, so seller blocking has
+> nobody to perform it until that is set.
 
 Neither migration contains an `UPDATE` — nothing is grandfathered, including the account that
 already exists on this box. Nothing is deleted or hidden, but until it is granted that account
@@ -603,7 +610,7 @@ the compose file invites drift:
 
 ```yaml
       WHEREIS_PLANS_FREE_SPACES: ${WHEREIS_PLANS_FREE_SPACES:-1}
-      WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-35}
+      WHEREIS_PLANS_FREE_ITEMS: ${WHEREIS_PLANS_FREE_ITEMS:-20}
 ```
 
 > **The ladder must never go down.** A higher tier may never allow less than a lower one (a blank

@@ -11,7 +11,7 @@ import az.technest.whereis.plan.Plan;
  *
  * <pre>
  * { "plan": "PRO",
- *   "limits": {"spaces": 5, "items": 500},
+ *   "limits": {"spaces": 3, "items": 140},
  *   "usage":  {"spaces": 2, "activeItems": 143},
  *   "source": "SUBSCRIPTION",
  *   "subscription": {"productId": "whereis_pro_annual", "tier": "PRO", "state": "ACTIVE",
@@ -25,8 +25,9 @@ import az.technest.whereis.plan.Plan;
  *
  * <p><strong>THE ONE DELIBERATE CONTRACT CHANGE (supersedes BR-11).</strong> {@code limits} is now
  * ALWAYS a non-null object and the nullability moved to its two MEMBERS. BR-11 documented
- * "{@code limits} is null for UNLIMITED"; that is superseded here because MAX ("10 spaces,
- * unlimited items") cannot be expressed by a whole-object null at all. One rule survives, and it is
+ * "{@code limits} is null for UNLIMITED"; that is superseded here because a tier that is
+ * uncapped on one allowance and finite on another cannot be expressed by a whole-object null at
+ * all. One rule survives, and it is
  * simpler than the one it replaces: <em>a null is exactly one thing — no ceiling on that
  * allowance.</em>
  *

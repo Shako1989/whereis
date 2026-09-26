@@ -71,16 +71,14 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
     // ----------------------------------------------------------------- spaces, after an expiry
 
     @Test
-    void anExpiredProSubscriptionKeepsAllFiveSpacesUsableAndRefusesOnlyTheSixth() {
+    void anExpiredProSubscriptionKeepsAllThreeSpacesUsableAndRefusesOnlyTheNext() {
         String token = registerAndGetToken();
         UUID userId = subjectOf(token);
         UUID subscription = seedSubscription(userId, Plan.PRO, SubscriptionState.ACTIVE,
                 Instant.now().plus(Duration.ofDays(365)));
         SpaceResponse first = createSpace(token, "Home", SpaceType.HOME);
         createSpace(token, "Office", SpaceType.OFFICE);
-        createSpace(token, "Car", SpaceType.CAR);
-        createSpace(token, "Garage", SpaceType.GARAGE);
-        SpaceResponse fifth = createSpace(token, "Warehouse", SpaceType.WAREHOUSE);
+        SpaceResponse third = createSpace(token, "Car", SpaceType.CAR);
         assertThat(planOf(token).plan()).isEqualTo(Plan.PRO);
 
         // No write anywhere, by anyone: the entitled_until predicate simply stops matching. This is
@@ -88,13 +86,13 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
         expire(subscription);
 
         assertThat(planOf(token).plan()).isEqualTo(Plan.FREE);
-        // EVERYTHING that is not a creation still works on all five spaces.
-        assertThat(get(token, SPACES + "/" + fifth.id(), JsonNode.class).getStatusCode())
+        // EVERYTHING that is not a creation still works on all three spaces.
+        assertThat(get(token, SPACES + "/" + third.id(), JsonNode.class).getStatusCode())
                 .isEqualTo(HttpStatus.OK);
-        assertThat(rest.exchange(SPACES + "/" + fifth.id(), HttpMethod.PUT,
+        assertThat(rest.exchange(SPACES + "/" + third.id(), HttpMethod.PUT,
                 new HttpEntity<>(new UpdateSpaceRequest("Warehouse renamed", null, SpaceType.WAREHOUSE),
                         bearer(token)), JsonNode.class).getStatusCode()).isEqualTo(HttpStatus.OK);
-        LocationResponse shelf = createLocation(token, fifth.id(), "Shelf", LocationType.SHELF, null);
+        LocationResponse shelf = createLocation(token, third.id(), "Shelf", LocationType.SHELF, null);
         // Locations are never limited, and items are under their own (separate) cap.
         ResponseEntity<JsonNode> item = createItemRaw(token, shelf.id(), "Drill");
         assertThat(item.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -110,11 +108,11 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
         assertThat(rest.exchange("/api/v1/locations/" + shelf.id(), HttpMethod.DELETE,
                 new HttpEntity<>(bearer(token)), Void.class).getStatusCode())
                 .isEqualTo(HttpStatus.NO_CONTENT);
-        assertThat(rest.exchange(SPACES + "/" + fifth.id(), HttpMethod.DELETE,
+        assertThat(rest.exchange(SPACES + "/" + third.id(), HttpMethod.DELETE,
                 new HttpEntity<>(bearer(token)), Void.class).getStatusCode())
                 .isEqualTo(HttpStatus.NO_CONTENT);
 
-        // And the ONE thing that is refused — still four spaces against a ceiling of one.
+        // And the ONE thing that is refused — still two spaces against a ceiling of one.
         assertPlanLimitRefusal(createSpaceRaw(token, "Attic", SpaceType.OTHER));
     }
 
@@ -128,19 +126,19 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
                 Instant.now().plus(Duration.ofDays(365)));
         SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
         UUID drawer = createLocation(token, home.id(), "Drawer", LocationType.DRAWER, null).id();
-        seedActiveItems(userId, drawer, 150);
+        seedActiveItems(userId, drawer, 100);
         UUID keeper = UUID.fromString(createItemRaw(token, drawer, "Passport").getBody().get("id").asText());
-        assertThat(planOf(token).usage().activeItems()).isEqualTo(151L);
+        assertThat(planOf(token).usage().activeItems()).isEqualTo(101L);
 
-        // PRO (500) expires; a STANDARD subscription (100) remains. The account is 51 over.
+        // PRO (140) expires; a STANDARD subscription (60) remains. The account is 41 over.
         expire(pro);
         seedSubscription(userId, Plan.STANDARD, SubscriptionState.ACTIVE,
                 Instant.now().plus(Duration.ofDays(365)));
 
         PlanStatusResponse status = planOf(token);
         assertThat(status.plan()).isEqualTo(Plan.STANDARD);
-        assertThat(status.limits().items()).isEqualTo(100);
-        assertThat(status.usage().activeItems()).isEqualTo(151L);   // reported, never clamped
+        assertThat(status.limits().items()).isEqualTo(60);
+        assertThat(status.usage().activeItems()).isEqualTo(101L);   // reported, never clamped
 
         // Archive, unarchive, edit, move, delete: all still allowed.
         assertThat(rest.exchange(ITEMS + "/" + keeper, HttpMethod.PUT,
@@ -153,7 +151,7 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
         assertThat(rest.exchange(ITEMS + "/" + keeper, HttpMethod.PUT,
                 new HttpEntity<>(new UpdateItemRequest("Passport", null, null, false), bearer(token)),
                 ItemResponse.class).getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(planOf(token).usage().activeItems()).isEqualTo(151L);
+        assertThat(planOf(token).usage().activeItems()).isEqualTo(101L);
         assertThat(rest.exchange(ITEMS + "/" + keeper, HttpMethod.DELETE,
                 new HttpEntity<>(bearer(token)), Void.class).getStatusCode())
                 .isEqualTo(HttpStatus.NO_CONTENT);
@@ -170,7 +168,7 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
                 Instant.now().plus(Duration.ofDays(365)));
         SpaceResponse home = createSpace(token, "Home", SpaceType.HOME);
         UUID drawer = createLocation(token, home.id(), "Drawer", LocationType.DRAWER, null).id();
-        seedActiveItems(userId, drawer, 100);
+        seedActiveItems(userId, drawer, 60);
         int locationsBefore = jdbc.queryForObject(
                 "select count(*) from locations l join spaces s on s.id = l.space_id where s.user_id = ?",
                 Integer.class, userId);
@@ -272,7 +270,7 @@ class PlanTierTransitionIT extends AbstractIntegrationTest {
 
         PlanStatusResponse status = planOf(token);
         assertThat(status.plan()).isEqualTo(Plan.PRO);
-        assertThat(status.limits().spaces()).isEqualTo(5);
+        assertThat(status.limits().spaces()).isEqualTo(3);
         // WAVE 2 WIDENED THIS, deliberately. It used to assert subscription == null, because the
         // report named the best ENTITLING row and this one has run out. It now names the best LIVE
         // row (UserSubscriptionRepository#manageableOf), and a row whose state Google still reports

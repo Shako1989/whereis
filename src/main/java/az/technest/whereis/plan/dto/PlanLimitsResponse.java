@@ -6,17 +6,18 @@ package az.technest.whereis.plan.dto;
  * config.
  *
  * <p><strong>Both members are nullable, and a {@code null} is exactly one thing: no ceiling on THAT
- * allowance.</strong> This supersedes BR-11's "{@code limits} is null for UNLIMITED": the moment
- * MAX exists ("10 spaces, unlimited ITEMS") a whole-object null cannot express the state at all, so
- * per-allowance nulls are mandatory. Keeping both representations would give "everything is
+ * allowance.</strong> This supersedes BR-11's "{@code limits} is null for UNLIMITED": a
+ * whole-object null cannot express a tier that is uncapped on one allowance and finite on another,
+ * so per-allowance nulls are mandatory. Every purchasable tier happens to be finite on all three
+ * today, and UNLIMITED — the operator grant — is the one that is null everywhere. Keeping both representations would give "everything is
  * unlimited" two encodings, which is precisely the "states one fact twice, so the wire can
  * contradict itself" defect the original DTO javadoc rejected. The object itself is therefore now
  * ALWAYS present.
  *
  * <pre>
- * {"spaces": 5,    "items": 500}    // PRO
- * {"spaces": 10,   "items": null}   // MAX   — finite spaces, unlimited items
- * {"spaces": null, "items": null}   // UNLIMITED (the operator grant)
+ * {"spaces": 3,    "items": 140}    // PRO
+ * {"spaces": 5,    "items": 220}    // MAX   — the top of the ladder, still finite
+ * {"spaces": null, "items": null}   // UNLIMITED (the operator grant) — no ceiling anywhere
  * </pre>
  *
  * <p>The field names mirror the configuration keys ({@code spaces}, {@code items}) rather than

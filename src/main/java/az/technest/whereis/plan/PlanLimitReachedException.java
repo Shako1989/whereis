@@ -10,9 +10,9 @@ import az.technest.whereis.common.error.ErrorCode;
  *
  * <p>The message names the TIER that was hit, the limit, and a call to action that must be true.
  * "Free plan limit reached" on a paying Standard account is a lie; "subscribe for unlimited spaces"
- * at MAX advertises a product that does not exist at any purchasable tier (MAX is ten spaces;
- * UNLIMITED is an operator grant and cannot be bought), which is a Play policy exposure as well as
- * a lie. So the upgrade half of the sentence is emitted only when a higher PURCHASABLE tier
+ * at MAX advertises a product that does not exist at any purchasable tier (MAX is the top of the
+ * ladder and finite on every allowance; UNLIMITED is an operator grant and cannot be bought), which
+ * is a Play policy exposure as well as a lie. So the upgrade half of the sentence is emitted only when a higher PURCHASABLE tier
  * actually raises THAT allowance — {@code PlanCatalog#aHigherTierRaisesSpaces} /
  * {@code #aHigherTierRaisesItems} answer that from configuration, so re-pointing the ladder
  * re-words the message with it.

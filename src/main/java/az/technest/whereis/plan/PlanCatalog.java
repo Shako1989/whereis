@@ -33,8 +33,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * from {@link #purchasable()} / {@link #ladder()}; deleting the constant while rows reference it is
  * a data migration, not a config change.
  *
- * <p><strong>{@code null} means NO CEILING ON THAT ALLOWANCE, per allowance.</strong> That is the
- * only way {@code MAX} ("10 spaces, unlimited items") is expressible.
+ * <p><strong>{@code null} means NO CEILING ON THAT ALLOWANCE, per allowance.</strong> Every
+ * PURCHASABLE tier now carries a finite ceiling on all three allowances — MAX is the top of the
+ * ladder, not the absence of one — so the nullable ceiling is currently exercised only by
+ * {@code UNLIMITED}, the operator grant, which is unbounded on every allowance and is served that
+ * way over the wire. It stays per-allowance rather than per-tier because that is the shape a tier
+ * needs the moment one allowance is uncapped and another is not, which earlier releases of MAX
+ * were ("ten spaces, unlimited items") and a future tier may be again.
  * {@code Integer.MAX_VALUE} was rejected — it is a number, so it reaches the wire ("143 of
  * 2147483647"), it compares silently, and nothing stops arithmetic on it. A {@code boolean
  * unlimitedItems} beside an {@code int} was rejected for the reason already recorded on
@@ -59,10 +64,10 @@ public record PlanCatalog(Map<Plan, TierConfig> plans) {
      * @param spaces    maximum spaces, or {@code null} for no ceiling on spaces
      * @param items     maximum ACTIVE items, or {@code null} for no ceiling on items
      * @param listings  maximum simultaneously ACTIVE marketplace listings, or {@code null} for no
-     *                  ceiling. MAX has an unbounded {@code items} and a FINITE {@code listings},
-     *                  and that asymmetry is the clearest demonstration of why a ceiling is
-     *                  nullable PER ALLOWANCE rather than per tier: an unbounded PUBLIC surface
-     *                  per account is a spam vector in a way that a private inventory is not.
+     *                  ceiling. Every shipped tier caps this well below its {@code items} count,
+     *                  and deliberately so: an unbounded — or merely generous — PUBLIC surface per
+     *                  account is a spam vector in a way a private inventory is not. MAX sells 220
+     *                  items and 30 simultaneous listings, not 220 of each.
      * @param productId the Play product that buys this tier; {@code null} for FREE and UNLIMITED
      */
     public record TierConfig(Integer spaces, Integer items, Integer listings, String productId) {
@@ -169,9 +174,9 @@ public record PlanCatalog(Map<Plan, TierConfig> plans) {
 
     /**
      * Whether some purchasable tier above {@code tier} actually raises the SPACES allowance. This
-     * is what decides whether a 409 may invite an upgrade: at MAX (10 spaces, the top of the paid
-     * ladder) it is false, and advertising a purchase that does not exist is a Play policy exposure
-     * as well as a lie.
+     * is what decides whether a 409 may invite an upgrade: at MAX (the top of the paid ladder) it
+     * is false on every allowance, and advertising a purchase that does not exist is a Play policy
+     * exposure as well as a lie.
      */
     public boolean aHigherTierRaisesSpaces(Plan tier) {
         return raises(tier, TierConfig::spaces);
