@@ -2,6 +2,10 @@ package az.technest.whereis.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import az.technest.whereis.marketplace.ListingHiddenReason;
+import az.technest.whereis.marketplace.MarketplaceRules;
+import az.technest.whereis.marketplace.SellerBlockReason;
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -237,6 +241,75 @@ class LegalPagesIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void theMarketplaceRulesPageIsAnonymousAndBilingual() {
+        ResponseEntity<String> page = anonymousGet("/legal/prohibited-items");
+
+        assertHtmlPage(page);
+        assertThat(page.getBody())
+                .contains("id=\"az\"")
+                .contains("id=\"en\"")
+                .contains("Qadağan olunmuş əşyalar")
+                .contains("prohibited items");
+    }
+
+    /**
+     * THE TRIPWIRE: every reason an operator can act for is a reason a SELLER is shown, and a
+     * sanction whose reason is not written down anywhere public is one the seller cannot argue
+     * with. Driven off the enums rather than a hand-written list, so adding a
+     * {@link ListingHiddenReason} or
+     * {@link SellerBlockReason} without documenting it fails here.
+     *
+     * <p>Asserts on the whole table cell rather than the phrase: "other" occurs inside "another"
+     * and would pass a bare substring check while documenting nothing.
+     */
+    @Test
+    void thePolicyDocumentsEveryModerationReasonTheCodeCanShowASeller() {
+        String body = anonymousGet("/legal/prohibited-items").getBody().toLowerCase(Locale.ROOT);
+
+        for (ListingHiddenReason reason : ListingHiddenReason.values()) {
+            assertThat(body)
+                    .as("a listing hidden as %s is not explained on the public page", reason)
+                    .contains("<td>" + MarketplaceRules.describe(reason) + "</td>");
+        }
+        for (SellerBlockReason reason : SellerBlockReason.values()) {
+            assertThat(body)
+                    .as("a seller blocked for %s is not explained on the public page", reason)
+                    .contains("<td>" + MarketplaceRules.describe(reason) + "</td>");
+        }
+    }
+
+    /**
+     * The page must not promise more than the service does. whereis takes no payment, holds no
+     * money and guarantees nothing — stating otherwise on a public page is a commitment nobody
+     * built, and it is the exact claim a buyer would quote back after a bad sale.
+     */
+    @Test
+    void theMarketplaceRulesDisclaimBeingAPartyToTheSaleInBothLanguages() {
+        String body = anonymousGet("/legal/prohibited-items").getBody();
+
+        assertThat(body).contains("whereis satışın tərəfi deyil");
+        assertThat(body).contains("whereis is not a party to the sale");
+        // And the private half of the product is still promised, because it is still true.
+        assertThat(body).contains("harada saxladığınız heç vaxt dərc olunmur");
+        assertThat(body).contains("Where you keep the item is never published");
+    }
+
+    /**
+     * The write-time rules stated to the public are the ones the code actually enforces. A page
+     * that says "at least 40 characters" while {@code MarketplaceRules} says 50 teaches sellers a
+     * number the form then refuses.
+     */
+    @Test
+    void theStatedListingRulesAreTheOnesTheCodeEnforces() {
+        String body = anonymousGet("/legal/prohibited-items").getBody();
+
+        assertThat(body).contains(">" + MarketplaceRules.MIN_DESCRIPTION_LENGTH + "<");
+        assertThat(body).contains(String.valueOf(MarketplaceRules.MAX_DESCRIPTION_LENGTH));
+        assertThat(body).contains(MarketplaceRules.MIN_TITLE_LENGTH
+                + "\u2013" + MarketplaceRules.MAX_TITLE_LENGTH);
+    }
+
+    @Test
     void theHtmlFormOfTheUrlIsServedToo() {
         // The clean URL forwards to the .html resource; the target must be permitted as well.
         assertHtmlPage(anonymousGet("/legal/delete-account.html"));
@@ -250,7 +323,8 @@ class LegalPagesIT extends AbstractIntegrationTest {
         // resource handler — which is why the source files no longer live under static/.
         for (String path : new String[] {
                 "/legal/privacy", "/legal/privacy.html",
-                "/legal/delete-account", "/legal/delete-account.html"}) {
+                "/legal/delete-account", "/legal/delete-account.html",
+                "/legal/prohibited-items", "/legal/prohibited-items.html"}) {
             ResponseEntity<String> page = anonymousGet(path);
             assertThat(page.getStatusCode()).as("%s", path).isEqualTo(HttpStatus.OK);
             assertThat(page.getBody()).as("%s must not be a template", path).doesNotContain("{{");

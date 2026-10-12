@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The two pages Google Play links to, served rendered rather than as static files.
+ * The public pages Google Play links to, served rendered rather than as static files.
  *
  * <p>Both URL forms are answered — {@code /legal/privacy} and {@code /legal/privacy.html} — because
  * the extension-less form is what goes on the store listing while the {@code .html} form is what a

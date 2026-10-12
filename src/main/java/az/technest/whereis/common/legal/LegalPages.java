@@ -12,7 +12,7 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 
 /**
- * Renders the two public legal pages once, at startup, from {@code classpath:legal/} and
+ * Renders the public legal pages once, at startup, from {@code classpath:legal/} and
  * {@link LegalProperties}.
  *
  * <p>The files deliberately do NOT live under {@code static/}. Spring's static resource handler
@@ -20,10 +20,10 @@ import org.springframework.stereotype.Component;
  * which is precisely the hole this class exists to close, and it would sit behind the same
  * permitAll matcher as the rendered page.
  *
- * <p><strong>A leftover placeholder fails startup.</strong> These two pages are the privacy notice
- * and the account-deletion instructions Google Play links to from the store listing; serving
- * {@code {{SUPPORT_EMAIL}}} to a reviewer, or to a user looking for how to delete their account, is
- * worse than not booting. Rendering eagerly in the constructor is what turns a misconfiguration
+ * <p><strong>A leftover placeholder fails startup.</strong> These are the privacy notice, the
+ * account-deletion instructions and the marketplace rules Google Play links to from the store
+ * listing; serving {@code {{SUPPORT_EMAIL}}} to a reviewer, or to a user looking for how to delete
+ * their account, is worse than not booting. Rendering eagerly in the constructor is what turns a misconfiguration
  * into a startup error instead of a page nobody looks at until it matters.
  */
 @Component
@@ -52,7 +52,7 @@ public class LegalPages {
         // MINIO_PRESIGN_TTL. The same one-value-two-readers coupling as the retention windows,
         // and a leftover marker still fails startup, so it is enforced for free.
         values.put("PHOTO_LINK_MINUTES", String.valueOf(minio.presignTtl().toMinutes()));
-        for (String page : new String[] {"privacy", "delete-account"}) {
+        for (String page : new String[] {"privacy", "delete-account", "prohibited-items"}) {
             rendered.put(page, render(page, read(page), values));
         }
     }
