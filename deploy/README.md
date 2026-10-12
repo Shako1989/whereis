@@ -760,9 +760,21 @@ ship; they receive nothing until this is done.
 ### 11a. The Pub/Sub topic and push subscription
 
 1. In the Google Cloud project that owns the Play service account, create a Pub/Sub **topic**
-   (e.g. `whereis-play-rtdn`) and grant `service-cloudpubsub@system.gserviceaccount.com` the
-   **Pub/Sub Publisher** role on it. Play publishes as that account; without the grant the Console
-   refuses to save the topic name.
+   (e.g. `whereis-play-rtdn`) and grant **`google-play-developer-notifications@system.gserviceaccount.com`**
+   the **Pub/Sub Publisher** role on it. Play publishes as that account; without the grant the
+   Console refuses to save the topic name.
+
+   > This wave corrected it from `service-cloudpubsub@system.gserviceaccount.com`, which is
+   > Pub/Sub's own service agent and NOT the publisher for Play notifications. Entering it is not a
+   > silent mistake — the IAM dialog rejects it with "Email addresses and domains must be associated
+   > with an active Google Account" — but the error names nothing about Play, so it reads as a
+   > permissions problem rather than a wrong address. Verified against
+   > developer.android.com/google/play/billing/getting-ready on 2026-10-12.
+
+   The Pub/Sub API itself must be enabled on the project first: in a project created for this, the
+   Console shows an "Enable API" screen where the topic list would be, and there is no
+   **Create topic** button until it is enabled. Pub/Sub also requires a billing account on the
+   project, though RTDN volume sits far inside the free tier.
 2. In the Play Console → **Monetisation setup** → *Real-time developer notifications*, paste the full
    topic name and use **Send test notification**. A `TEST` row in `play_notifications` with
    `outcome = 'IGNORED'` is the confirmation, and the app logs
@@ -892,18 +904,29 @@ come out of them.
 4. Prove it end to end, in this order — each step is the prerequisite for trusting the next:
 
    ```sh
-   # a) the endpoint no longer says "not configured". 401 here (this curl carries no JWT) is the
-   #    PASS: what matters is that it is no longer 501.
+   # a) the endpoint no longer says "not configured". THE CALL MUST CARRY A JWT: the 501 is raised
+   #    in PurchaseVerificationService, which runs AFTER authentication, and SecurityConfig ends in
+   #    anyRequest().authenticated() — so a token-less POST is 401 in BOTH modes and proves nothing.
+   #    Log in first and use that access token.
+   TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
+        -d '{"email":"you@example.com","password":"..."}' \
+        https://$WHEREIS_API_HOST/api/v1/auth/login | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')
+
+   #    501 PLAY_BILLING_NOT_CONFIGURED = still disabled. Anything else (400 PLAY_PRODUCT_UNKNOWN,
+   #    502, or a Google-shaped refusal of this junk token) = billing is live and reached Google.
    curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-        -H 'Content-Type: application/json' \
+        -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
         -d '{"purchaseToken":"x","productId":"whereis_pro_annual"}' \
         https://$WHEREIS_API_HOST/api/v1/users/me/plan/purchases
 
    # b) the push path works: Play Console -> Monetisation setup -> Send test notification,
    #    then look for the TEST row
    docker exec -i autoparts-postgres psql -U whereis -d whereis -c \
-     "SELECT message_id, notification_kind, outcome, created_at
-        FROM play_notifications ORDER BY created_at DESC LIMIT 5;"
+     "SELECT message_id, notification_kind, outcome, received_at
+        FROM play_notifications ORDER BY received_at DESC LIMIT 5;"
+   #    The column is received_at (V10), NOT created_at — this query said created_at until
+   #    2026-10-12 and failed with 'column "created_at" does not exist' at the exact moment it was
+   #    needed. Expect ONE row: notification_kind 'TEST', outcome 'IGNORED'.
 
    # c) the scheduled jobs are alive again — they were silent no-ops until now
    docker compose -f docker-compose.prod.yml --env-file .env logs whereis-api | grep -i reconcile
