@@ -39,9 +39,12 @@ Photos live in MinIO; PostgreSQL holds only metadata.
    every listing they have from the board and refuses new ones, and which touches nothing they own
    privately — items, spaces, locations, photos and history are untouched and still theirs. That
    asymmetry is the rule: a marketplace sanction is never an account sanction.
-8. Entitlement is a LADDER — FREE(1 space/100 items) < STANDARD(3/300) < PRO(5/600) < MAX(10/
-   unlimited items) < UNLIMITED(operator grant, never purchasable) — configured in
-   `whereis.plans.*`. The effective tier is `max(users.plan, best entitling subscription)`, so an
+8. Entitlement is a LADDER — FREE < STANDARD < PRO < MAX < UNLIMITED (operator grant, never
+   purchasable). **The numbers are deliberately not written here**: they live in `whereis.plans.*`
+   in `application.yml`, they are environment-overridable without a release
+   (`WHEREIS_PLANS_<TIER>_ITEMS`, pinned by `PlanCatalogTest`), and they were retuned three times
+   in the two weeks after this rule was first written — a copy in prose is a copy that goes stale.
+   Read the file. The effective tier is `max(users.plan, best entitling subscription)`, so an
    operator grant always wins and billing never writes `users.plan`. Beyond a tier's ceiling,
    CREATION is refused with 409 PLAN_LIMIT_REACHED and nothing existing is touched. Archiving frees
    room; locations are never limited. A limit is nullable PER ALLOWANCE (`null` = no ceiling on that
@@ -1612,17 +1615,57 @@ Suites: **unit 571** (+42: `ImageMetadataStripperTest` 17, `FileStorageServiceTe
 `MarketBoardRateLimitFilterTest` 9, `StorageDeletionQueueRepositoryTest` 3, `ListingSchemaTest` +2),
 **integration 213 across 24 classes** (+14, all in the new `MarketplacePhotoPrivacyIT`).
 
+**2026-09-22 → 2026-10-13 — find an item by DESCRIBING it, two ladder retunes, and Play Billing
+actually live.** One month in one entry, because the log had fallen behind and a silent gap reads
+as "nothing happened".
+
+* **Semantic search (`11fb624`, release 0.2.0).** `Matkap haradadır?` found the drill; `divarda
+  deşik açan alət harada?` found nothing, because retrieval was `pg_trgm` — character trigrams,
+  and those two strings share none. The fix was NOT pgvector: plan tiers cap active items, so the
+  whole candidate list fits in the prompt. `AiAssistant.interpretSearch(message, knownItemNames)`
+  now hands the caller's own item names to the model, which returns only names it picked from that
+  list; they are resolved against the caller's own rows by normalized name, so an invented name
+  simply fails to resolve. Above `ai.max-item-names` the list is not sent at all and the trigram
+  path runs unchanged. `privacy.html` was corrected in the same release — it had said "none of your
+  items" reach the provider, which this made false.
+* **`56aa477`** then made a single-word query skip the model entirely when the database already
+  answers it.
+* **The ladder was retuned twice** — `38ee0d8` (2026-09-25) and `719c660` (2026-09-26), the second
+  of which also left `listings` uncapped on every tier while the market is still being learned.
+  Rule 8 in §1 no longer quotes any numbers for exactly this reason.
+* **Play Billing went LIVE on 2026-10-12/13.** Three annual subscriptions exist in Play Console
+  with a 14-day trial, the service account and Pub/Sub push subscription are wired, and a real test
+  purchase landed an `ACTIVE`, `acknowledged` row. `whereis.play.provider` is `google` in
+  production. The chain was slow to light up for reasons worth remembering: the service account
+  needs **View financial data** (its description, not its name, is what says "access the Purchases
+  API"), the Pub/Sub publisher is `google-play-developer-notifications@system.gserviceaccount.com`
+  and not Pub/Sub's own service agent, and a shared secret pasted with a trailing `%` — a zsh
+  "no newline" marker — fails on URL-decode while looking identical to the eye.
+* **Caddy was missing three lines** the repo's `Caddyfile.whereis` already had: both `log_skip`
+  matchers, and `header_up X-Forwarded-For {remote_host}`. The last one is not hygiene — without it
+  `reverse_proxy` APPENDS and Spring reads the FIRST entry, so the marketplace rate limiter was
+  bypassable by sending your own header.
+* **`/legal/prohibited-items` (`34467ac`)** — the marketplace rules page. `PROHIBITED_ITEM` had
+  been a report reason, a hide reason and a seller-block reason since V12/V13 with nothing public
+  saying what was prohibited. Its sanction tables are generated from the enums and a test
+  (`thePolicyDocumentsEveryModerationReasonTheCodeCanShowASeller`) fails if a reason is added
+  without documenting it.
+* **Still not verified in production:** no listing has been published since the public photo bucket
+  was enabled, so the strip-and-copy path has never run with real bytes; and `liveAiTest` — the
+  only proof the semantic search above works in Azerbaijani — has never been executed with a key.
+
 ## 9. Future extension points (design for, do not build)
 
 pgvector/semantic search behind the SearchService port · shared household accounts · QR/NFC
 tags · reminders · real image object detection · notifications · Elasticsearch only if scale
 demands. **Subscriptions (Play Billing + RTDN)**: COMPLETE as of 2026-09-19 — the ladder, schema, port and
 verify endpoint (BR-12), then the RTDN handler, the refund paths, the reconciler, tier changes and
-account-deletion cancellation (V11, BR-13). What is left is not code: the Pub/Sub subscription, the
-audience, and the product ids (see §8). **Since 2026-09-20 that missing Console/Cloud work no
-longer blocks a deploy**: production runs `whereis.play.provider=disabled`, which switches the
-whole of billing off without touching the free tier, and Step 11e switches it on with environment
-variables alone. The obvious follow-ups, deliberately NOT built: an alert on
+account-deletion cancellation (V11, BR-13). The Console and Cloud work that was outstanding — the
+product ids, the service account, the Pub/Sub topic and its push subscription — **was completed on
+2026-10-12/13 and production now runs `whereis.play.provider=google`** with a verified purchase and
+RTDN arriving (see §8). `disabled` remains a legitimate and deployable state, and switching back to
+it is still an `.env` change plus a restart: existing `user_subscriptions` keep entitling, because
+the entitlement query is pure database state and asks Google nothing. The obvious follow-ups, deliberately NOT built: an alert on
 "no `play_notifications` row in N hours" (a quiet ledger is indistinguishable from a quiet week, and
 the reconciler papers over it); `pausedStateContext.autoResumeTime` so a PAUSED strip can show a
 resume date (a third column, and "Paused in Google Play" is honest without it); demoting a token
