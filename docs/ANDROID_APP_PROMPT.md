@@ -319,7 +319,14 @@ formatter so the UI looks uniform.
 - `NOT_UNDERSTOOD` — show `message` and fall back to the manual add-item form, pre-filled with
   whatever the user typed as the item name.
 - `search.answer` is composed from database rows only, never free-form AI text. Render it as the
-  headline, `items` as the result list.
+  headline, `items` as the result list — **except on a single hit**, where the Android client draws
+  the item itself (name as the headline, full location path, cover) and does not draw `answer` at
+  all. With one row the sentence is that row restated in prose ("Your passport is in Home >
+  Bedroom > Wardrobe"), so rendering both printed the same answer twice in two formats. Nothing is
+  invented in its place: the name and the path are the same stored values `answer` was composed
+  from, and the path is rendered **un-elided** there because the chain is the answer to the
+  question. A client that renders `answer` as the headline for one hit is still correct by this
+  contract; a client that replaces it with text of its own is not.
 - `images/analyze` returns **suggestions only** — nothing is persisted. The user must confirm each
   suggestion, which creates items via the normal `POST /items` path. Against both real providers
   (`openai` and `claude`) this endpoint currently returns **501 `AI_NOT_IMPLEMENTED`** — handle that as a graceful
